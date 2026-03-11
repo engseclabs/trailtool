@@ -98,6 +98,9 @@ type Role struct {
 	PeopleCount   int `json:"people_count" dynamodbav:"people_count"`
 	SessionsCount int `json:"sessions_count" dynamodbav:"sessions_count"`
 	AccountsCount int `json:"accounts_count" dynamodbav:"accounts_count"`
+
+	// Enriched information
+	AccountName string `json:"account_name,omitempty"`
 }
 
 // ResourceAccess represents a detailed resource access record
