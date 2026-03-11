@@ -1,0 +1,99 @@
+{
+  "Records": [
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T10:30:00Z",
+      "eventName": "DescribeBuckets",
+      "eventSource": "s3.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "203.0.113.50",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAIDPPEZS35WEXAMPLE:alice@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdminAccess_1234567890abcdef/alice@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T10:00:00Z",
+            "mfaAuthenticated": "true",
+            "sessionCredentialFromConsole": "true"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAIDPPEZS35WEXAMPLE",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdminAccess_1234567890abcdef",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_AdminAccess_1234567890abcdef"
+          }
+        }
+      },
+      "requestParameters": null,
+      "responseElements": null
+    },
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T10:31:00Z",
+      "eventName": "ListObjects",
+      "eventSource": "s3.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "203.0.113.50",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAIDPPEZS35WEXAMPLE:alice@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdminAccess_1234567890abcdef/alice@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T10:00:00Z",
+            "mfaAuthenticated": "true",
+            "sessionCredentialFromConsole": "true"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAIDPPEZS35WEXAMPLE",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdminAccess_1234567890abcdef",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_AdminAccess_1234567890abcdef"
+          }
+        }
+      },
+      "requestParameters": {
+        "bucketName": "my-data-bucket"
+      },
+      "responseElements": null
+    },
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T10:35:00Z",
+      "eventName": "ListFunctions20150331",
+      "eventSource": "lambda.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "203.0.113.50",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAIDPPEZS35WEXAMPLE:alice@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdminAccess_1234567890abcdef/alice@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T10:00:00Z",
+            "mfaAuthenticated": "true",
+            "sessionCredentialFromConsole": "true"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAIDPPEZS35WEXAMPLE",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdminAccess_1234567890abcdef",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_AdminAccess_1234567890abcdef"
+          }
+        }
+      },
+      "requestParameters": null,
+      "responseElements": null
+    }
+  ]
+}

@@ -1,0 +1,271 @@
+{
+  "Records": [
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T11:00:00Z",
+      "eventName": "CreateBucket",
+      "eventSource": "s3.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "203.0.113.75",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAADMINEXAMPLE:admin@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdminAccess_admin123/admin@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T10:30:00Z",
+            "mfaAuthenticated": "true",
+            "sessionCredentialFromConsole": "true"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAADMINEXAMPLE",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdminAccess_admin123",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_AdminAccess_admin123"
+          }
+        }
+      },
+      "requestParameters": {
+        "bucketName": "new-project-data-bucket"
+      },
+      "responseElements": null,
+      "resources": [
+        {
+          "ARN": "arn:aws:s3:::new-project-data-bucket",
+          "accountId": "123456789012",
+          "type": "AWS::S3::Bucket"
+        }
+      ]
+    },
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T11:05:00Z",
+      "eventName": "CreateFunction20150331",
+      "eventSource": "lambda.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "203.0.113.75",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAADMINEXAMPLE:admin@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdminAccess_admin123/admin@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T10:30:00Z",
+            "mfaAuthenticated": "true",
+            "sessionCredentialFromConsole": "true"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAADMINEXAMPLE",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdminAccess_admin123",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_AdminAccess_admin123"
+          }
+        }
+      },
+      "requestParameters": {
+        "functionName": "quick-prototype-function"
+      },
+      "responseElements": null,
+      "resources": [
+        {
+          "ARN": "arn:aws:lambda:us-east-1:123456789012:function:quick-prototype-function",
+          "accountId": "123456789012",
+          "type": "AWS::Lambda::Function"
+        }
+      ]
+    },
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T11:10:00Z",
+      "eventName": "UpdateFunctionConfiguration20150331v2",
+      "eventSource": "lambda.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "203.0.113.75",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAADMINEXAMPLE:admin@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdminAccess_admin123/admin@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T10:30:00Z",
+            "mfaAuthenticated": "true",
+            "sessionCredentialFromConsole": "true"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAADMINEXAMPLE",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdminAccess_admin123",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_AdminAccess_admin123"
+          }
+        }
+      },
+      "requestParameters": {
+        "functionName": "quick-prototype-function"
+      },
+      "responseElements": null,
+      "resources": [
+        {
+          "ARN": "arn:aws:lambda:us-east-1:123456789012:function:quick-prototype-function",
+          "accountId": "123456789012",
+          "type": "AWS::Lambda::Function"
+        }
+      ]
+    },
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T11:15:00Z",
+      "eventName": "CreateTable",
+      "eventSource": "dynamodb.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "203.0.113.75",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAADMINEXAMPLE:admin@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdminAccess_admin123/admin@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T10:30:00Z",
+            "mfaAuthenticated": "true",
+            "sessionCredentialFromConsole": "true"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAADMINEXAMPLE",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdminAccess_admin123",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_AdminAccess_admin123"
+          }
+        }
+      },
+      "requestParameters": {
+        "tableName": "temp-test-table"
+      },
+      "responseElements": null,
+      "resources": [
+        {
+          "ARN": "arn:aws:dynamodb:us-east-1:123456789012:table/temp-test-table",
+          "accountId": "123456789012",
+          "type": "AWS::DynamoDB::Table"
+        }
+      ]
+    },
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T11:20:00Z",
+      "eventName": "PutItem",
+      "eventSource": "dynamodb.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "203.0.113.75",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAADMINEXAMPLE:admin@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdminAccess_admin123/admin@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T10:30:00Z",
+            "mfaAuthenticated": "true",
+            "sessionCredentialFromConsole": "true"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAADMINEXAMPLE",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdminAccess_admin123",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_AdminAccess_admin123"
+          }
+        }
+      },
+      "requestParameters": {
+        "tableName": "temp-test-table"
+      },
+      "responseElements": null,
+      "resources": [
+        {
+          "ARN": "arn:aws:dynamodb:us-east-1:123456789012:table/temp-test-table",
+          "accountId": "123456789012",
+          "type": "AWS::DynamoDB::Table"
+        }
+      ]
+    },
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T11:25:00Z",
+      "eventName": "CreateRole",
+      "eventSource": "iam.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "203.0.113.75",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAADMINEXAMPLE:admin@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdminAccess_admin123/admin@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T10:30:00Z",
+            "mfaAuthenticated": "true",
+            "sessionCredentialFromConsole": "true"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAADMINEXAMPLE",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdminAccess_admin123",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_AdminAccess_admin123"
+          }
+        }
+      },
+      "requestParameters": {
+        "roleName": "LambdaExecutionRole-Temp"
+      },
+      "responseElements": null
+    },
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T11:30:00Z",
+      "eventName": "AttachRolePolicy",
+      "eventSource": "iam.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "203.0.113.75",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAADMINEXAMPLE:admin@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdminAccess_admin123/admin@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T10:30:00Z",
+            "mfaAuthenticated": "true",
+            "sessionCredentialFromConsole": "true"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAADMINEXAMPLE",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdminAccess_admin123",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_AdminAccess_admin123"
+          }
+        }
+      },
+      "requestParameters": {
+        "roleName": "LambdaExecutionRole-Temp",
+        "policyArn": "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      },
+      "responseElements": null
+    }
+  ]
+}

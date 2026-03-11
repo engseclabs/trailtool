@@ -1,0 +1,174 @@
+{
+  "Records": [
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T16:00:00Z",
+      "eventName": "GetObject",
+      "eventSource": "s3.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "192.0.2.100",
+      "userAgent": "aws-cli/2.15.0 Python/3.11.6 Darwin/23.0.0 source/arm64 prompt/off command/s3.cp",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAEXAMPLE12345:charlie@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_ReadOnlyAccess_xyz789/charlie@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T15:30:00Z",
+            "mfaAuthenticated": "false"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAEXAMPLE12345",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_ReadOnlyAccess_xyz789",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_ReadOnlyAccess_xyz789"
+          }
+        }
+      },
+      "requestParameters": {
+        "bucketName": "confidential-data",
+        "key": "secrets/api-keys.json"
+      },
+      "responseElements": null,
+      "errorCode": "AccessDenied",
+      "errorMessage": "Access Denied"
+    },
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T16:01:00Z",
+      "eventName": "DeleteBucket",
+      "eventSource": "s3.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "192.0.2.100",
+      "userAgent": "aws-cli/2.15.0 Python/3.11.6 Darwin/23.0.0 source/arm64 prompt/off command/s3.rb",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAEXAMPLE12345:charlie@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_ReadOnlyAccess_xyz789/charlie@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T15:30:00Z",
+            "mfaAuthenticated": "false"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAEXAMPLE12345",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_ReadOnlyAccess_xyz789",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_ReadOnlyAccess_xyz789"
+          }
+        }
+      },
+      "requestParameters": {
+        "bucketName": "production-logs"
+      },
+      "responseElements": null,
+      "errorCode": "AccessDenied",
+      "errorMessage": "User: arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_ReadOnlyAccess_xyz789/charlie@example.com is not authorized to perform: s3:DeleteBucket on resource: arn:aws:s3:::production-logs with an explicit deny in a service control policy"
+    },
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T16:02:00Z",
+      "eventName": "DeleteFunction20150331",
+      "eventSource": "lambda.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "192.0.2.100",
+      "userAgent": "aws-cli/2.15.0 Python/3.11.6 Darwin/23.0.0 source/arm64 prompt/off command/lambda.delete-function",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAEXAMPLE12345:charlie@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_ReadOnlyAccess_xyz789/charlie@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T15:30:00Z",
+            "mfaAuthenticated": "false"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAEXAMPLE12345",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_ReadOnlyAccess_xyz789",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_ReadOnlyAccess_xyz789"
+          }
+        }
+      },
+      "requestParameters": {
+        "functionName": "critical-api-handler"
+      },
+      "responseElements": null,
+      "errorCode": "AccessDeniedException",
+      "errorMessage": "User: arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_ReadOnlyAccess_xyz789/charlie@example.com is not authorized to perform: lambda:DeleteFunction on resource: arn:aws:lambda:us-east-1:123456789012:function:critical-api-handler because no identity-based policy allows the lambda:DeleteFunction action"
+    },
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T16:05:00Z",
+      "eventName": "GetAnomalySubscriptions",
+      "eventSource": "ce.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "192.0.2.100",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAEXAMPLE12345:charlie@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_ReadOnlyAccess_xyz789/charlie@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T15:30:00Z",
+            "mfaAuthenticated": "false",
+            "sessionCredentialFromConsole": "true"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAEXAMPLE12345",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_ReadOnlyAccess_xyz789",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_ReadOnlyAccess_xyz789"
+          }
+        }
+      },
+      "requestParameters": null,
+      "responseElements": null,
+      "errorCode": "AccessDeniedException",
+      "errorMessage": "User: arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_ReadOnlyAccess_xyz789/charlie@example.com is not authorized to perform: ce:GetAnomalySubscriptions because no identity-based policy allows the ce:GetAnomalySubscriptions action"
+    },
+    {
+      "eventVersion": "1.08",
+      "eventTime": "2024-01-15T16:10:00Z",
+      "eventName": "CreateUser",
+      "eventSource": "iam.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "sourceIPAddress": "192.0.2.100",
+      "userAgent": "aws-cli/2.15.0 Python/3.11.6 Darwin/23.0.0 source/arm64",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROAEXAMPLE12345:charlie@example.com",
+        "arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_ReadOnlyAccess_xyz789/charlie@example.com",
+        "accountId": "123456789012",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2024-01-15T15:30:00Z",
+            "mfaAuthenticated": "false"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROAEXAMPLE12345",
+            "arn": "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_ReadOnlyAccess_xyz789",
+            "accountId": "123456789012",
+            "userName": "AWSReservedSSO_ReadOnlyAccess_xyz789"
+          }
+        }
+      },
+      "requestParameters": {
+        "userName": "new-admin-user"
+      },
+      "responseElements": null,
+      "errorCode": "AccessDenied",
+      "errorMessage": "User: arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_ReadOnlyAccess_xyz789/charlie@example.com is not authorized to perform: iam:CreateUser on resource: arn:aws:iam::123456789012:user/new-admin-user with an explicit deny in an identity policy enforced by arn:aws:iam::123456789012:policy/DenyIAMWrite"
+    }
+  ]
+}

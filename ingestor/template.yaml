@@ -1,0 +1,250 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: TrailTool Ingestor - Processes CloudTrail logs from S3 and writes to DynamoDB (single-tenant)
+
+Parameters:
+  CloudTrailBucketName:
+    Type: String
+    Description: Name of the S3 bucket containing CloudTrail logs
+
+  CloudTrailBucketArn:
+    Type: String
+    Description: ARN of the S3 bucket containing CloudTrail logs
+
+  IdentityCenterInstanceArn:
+    Type: String
+    Description: ARN of the IAM Identity Center instance (optional - enables display name enrichment)
+    Default: ""
+
+Conditions:
+  HasIdentityCenter: !Not [!Equals [!Ref IdentityCenterInstanceArn, ""]]
+
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 512
+    Runtime: provided.al2023
+    Architectures:
+      - x86_64
+
+Resources:
+  # DynamoDB Tables
+
+  RolesAggregatedTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: trailtool-roles-aggregated
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: customerId
+          AttributeType: S
+        - AttributeName: arn
+          AttributeType: S
+      KeySchema:
+        - AttributeName: customerId
+          KeyType: HASH
+        - AttributeName: arn
+          KeyType: RANGE
+
+  ServicesAggregatedTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: trailtool-services-aggregated
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: customerId
+          AttributeType: S
+        - AttributeName: event_source
+          AttributeType: S
+      KeySchema:
+        - AttributeName: customerId
+          KeyType: HASH
+        - AttributeName: event_source
+          KeyType: RANGE
+
+  ResourcesAggregatedTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: trailtool-resources-aggregated
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: customerId
+          AttributeType: S
+        - AttributeName: identifier
+          AttributeType: S
+      KeySchema:
+        - AttributeName: customerId
+          KeyType: HASH
+        - AttributeName: identifier
+          KeyType: RANGE
+
+  PeopleAggregatedTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: trailtool-people-aggregated
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: customerId
+          AttributeType: S
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: customerId
+          KeyType: HASH
+        - AttributeName: email
+          KeyType: RANGE
+
+  SessionsAggregatedTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: trailtool-sessions-aggregated
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: customerId
+          AttributeType: S
+        - AttributeName: session_start
+          AttributeType: S
+        - AttributeName: person_email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: customerId
+          KeyType: HASH
+        - AttributeName: session_start
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: person_email_index
+          KeySchema:
+            - AttributeName: customerId
+              KeyType: HASH
+            - AttributeName: person_email
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  AccountsAggregatedTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: trailtool-accounts-aggregated
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: customerId
+          AttributeType: S
+        - AttributeName: account_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: customerId
+          KeyType: HASH
+        - AttributeName: account_id
+          KeyType: RANGE
+
+  # IAM Role for Lambda
+  TrailToolIngestorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: trailtool-ingestor-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBWritePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt RolesAggregatedTable.Arn
+                  - !GetAtt ServicesAggregatedTable.Arn
+                  - !GetAtt ResourcesAggregatedTable.Arn
+                  - !GetAtt PeopleAggregatedTable.Arn
+                  - !GetAtt SessionsAggregatedTable.Arn
+                  - !Sub "${SessionsAggregatedTable.Arn}/index/*"
+                  - !GetAtt AccountsAggregatedTable.Arn
+        - PolicyName: S3ReadPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub "${CloudTrailBucketArn}/*"
+
+  # Lambda Function
+  TrailToolIngestorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: trailtool-ingestor
+      CodeUri: bin/bootstrap.zip
+      Handler: bootstrap
+      Role: !GetAtt TrailToolIngestorRole.Arn
+      Environment:
+        Variables:
+          ROLES_AGGREGATED_TABLE: !Ref RolesAggregatedTable
+          SERVICES_AGGREGATED_TABLE: !Ref ServicesAggregatedTable
+          RESOURCES_AGGREGATED_TABLE: !Ref ResourcesAggregatedTable
+          PEOPLE_AGGREGATED_TABLE: !Ref PeopleAggregatedTable
+          SESSIONS_AGGREGATED_TABLE: !Ref SessionsAggregatedTable
+          ACCOUNTS_AGGREGATED_TABLE: !Ref AccountsAggregatedTable
+          IDENTITY_CENTER_INSTANCE_ARN: !If [HasIdentityCenter, !Ref IdentityCenterInstanceArn, ""]
+      Description: Processes CloudTrail logs from S3 and writes aggregated data to DynamoDB
+
+  # EventBridge Rule to trigger on S3 object creation
+  CloudTrailEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: trailtool-cloudtrail-trigger
+      Description: Triggers ingestor when new CloudTrail logs are written to S3
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - "Object Created"
+        detail:
+          bucket:
+            name:
+              - !Ref CloudTrailBucketName
+      Targets:
+        - Arn: !GetAtt TrailToolIngestorFunction.Arn
+          Id: TrailToolIngestor
+
+  EventBridgeInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TrailToolIngestorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CloudTrailEventRule.Arn
+
+  # CloudWatch Log Group
+  IngestorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${TrailToolIngestorFunction}"
+      RetentionInDays: 7
+
+Outputs:
+  FunctionName:
+    Description: Name of the CloudTrail ingestor Lambda function
+    Value: !Ref TrailToolIngestorFunction
+
+  FunctionArn:
+    Description: ARN of the CloudTrail ingestor Lambda function
+    Value: !GetAtt TrailToolIngestorFunction.Arn
+
+  SessionsTableName:
+    Description: Name of the sessions aggregated DynamoDB table
+    Value: !Ref SessionsAggregatedTable
+
+  RolesTableName:
+    Description: Name of the roles aggregated DynamoDB table
+    Value: !Ref RolesAggregatedTable
