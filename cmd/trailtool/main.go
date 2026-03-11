@@ -15,7 +15,13 @@ import (
 	"github.com/engseclabs/trailtool/core/store"
 )
 
-const customerID = "default"
+var customerID = "default"
+
+func init() {
+	if id := os.Getenv("TRAILTOOL_CUSTOMER_ID"); id != "" {
+		customerID = id
+	}
+}
 
 var format string
 
