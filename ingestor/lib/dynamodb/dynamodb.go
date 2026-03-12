@@ -1,6 +1,5 @@
-// Package main provides the CloudTrail ingestor Lambda function.
-// dynamodb.go contains DynamoDB write and merge operations.
-package main
+// Package dynamodb contains DynamoDB write and merge operations for the ingestor.
+package dynamodb
 
 import (
 	"context"
@@ -12,18 +11,19 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
+	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
 
-// writeRoleToDynamoDB writes or updates a role in DynamoDB using read-merge-write pattern
-// This is similar to writeSessionToDynamoDB and ensures proper deduplication of ResourceAccesses
-func writeRoleToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, role *DynamoDBRole) error {
+// WriteRoleToDynamoDB writes or updates a role in DynamoDB using read-merge-write pattern
+func WriteRoleToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, role *types.DynamoDBRole) error {
 	// Query for existing role with the same customerId and arn
 	getInput := &dynamodb.GetItemInput{
-		TableName: aws.String(rolesAggregatedTable),
-		Key: map[string]types.AttributeValue{
-			"customerId": &types.AttributeValueMemberS{Value: role.CustomerID},
-			"arn":        &types.AttributeValueMemberS{Value: role.ARN},
+		TableName: aws.String(tableName),
+		Key: map[string]ddbtypes.AttributeValue{
+			"customerId": &ddbtypes.AttributeValueMemberS{Value: role.CustomerID},
+			"arn":        &ddbtypes.AttributeValueMemberS{Value: role.ARN},
 		},
 	}
 
@@ -33,14 +33,14 @@ func writeRoleToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, role *
 		// Continue with normal write if get fails
 	} else if getResult.Item != nil && len(getResult.Item) > 0 {
 		// Role exists - merge it
-		var existingRole DynamoDBRole
+		var existingRole types.DynamoDBRole
 		if err := attributevalue.UnmarshalMap(getResult.Item, &existingRole); err != nil {
 			log.Printf("WARNING: Failed to unmarshal existing role: %v", err)
 		} else {
 			log.Printf("ROLE_MERGE: arn=%s existing_events=%d new_events=%d", role.ARN, existingRole.TotalEvents, role.TotalEvents)
 
 			// Merge the roles
-			merged := mergeRoleAggregated(&existingRole, role)
+			merged := MergeRoleAggregated(&existingRole, role)
 
 			// Write the merged role
 			item, err := attributevalue.MarshalMap(merged)
@@ -49,7 +49,7 @@ func writeRoleToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, role *
 			}
 
 			_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
-				TableName: aws.String(rolesAggregatedTable),
+				TableName: aws.String(tableName),
 				Item:      item,
 			})
 
@@ -74,15 +74,15 @@ func writeRoleToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, role *
 	}
 
 	_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String(rolesAggregatedTable),
+		TableName: aws.String(tableName),
 		Item:      item,
 	})
 
 	return err
 }
 
-// mergeRoleAggregated merges two DynamoDBRole records, combining their data
-func mergeRoleAggregated(existing *DynamoDBRole, new *DynamoDBRole) *DynamoDBRole {
+// MergeRoleAggregated merges two DynamoDBRole records, combining their data
+func MergeRoleAggregated(existing *types.DynamoDBRole, new *types.DynamoDBRole) *types.DynamoDBRole {
 	// Use earlier first_seen and later last_seen
 	firstSeen := existing.FirstSeen
 	if new.FirstSeen < firstSeen {
@@ -94,15 +94,15 @@ func mergeRoleAggregated(existing *DynamoDBRole, new *DynamoDBRole) *DynamoDBRol
 	}
 
 	// Merge event counts and service/resource counts
-	mergedTopEventNames := mergeIntMaps(existing.TopEventNames, new.TopEventNames)
-	mergedServicesCount := mergeIntMaps(existing.ServicesCount, new.ServicesCount)
-	mergedResourcesCount := mergeIntMaps(existing.ResourcesCount, new.ResourcesCount)
-	mergedTopDeniedEventNames := mergeIntMaps(existing.TopDeniedEventNames, new.TopDeniedEventNames)
+	mergedTopEventNames := MergeIntMaps(existing.TopEventNames, new.TopEventNames)
+	mergedServicesCount := MergeIntMaps(existing.ServicesCount, new.ServicesCount)
+	mergedResourcesCount := MergeIntMaps(existing.ResourcesCount, new.ResourcesCount)
+	mergedTopDeniedEventNames := MergeIntMaps(existing.TopDeniedEventNames, new.TopDeniedEventNames)
 
 	// Merge resource accesses using similar logic to session merging
-	mergedResourceAccesses := mergeResourceAccessItems(existing.ResourceAccesses, new.ResourceAccesses)
-	mergedDeniedResourceAccesses := mergeResourceAccessItems(existing.DeniedResourceAccesses, new.DeniedResourceAccesses)
-	mergedDeniedEventAccesses := mergeEventAccessItems(existing.DeniedEventAccesses, new.DeniedEventAccesses)
+	mergedResourceAccesses := MergeResourceAccessItems(existing.ResourceAccesses, new.ResourceAccesses)
+	mergedDeniedResourceAccesses := MergeResourceAccessItems(existing.DeniedResourceAccesses, new.DeniedResourceAccesses)
+	mergedDeniedEventAccesses := MergeEventAccessItems(existing.DeniedEventAccesses, new.DeniedEventAccesses)
 
 	// Build services_used and resources_used from merged counts
 	servicesUsed := make([]string, 0, len(mergedServicesCount))
@@ -114,7 +114,7 @@ func mergeRoleAggregated(existing *DynamoDBRole, new *DynamoDBRole) *DynamoDBRol
 		resourcesUsed = append(resourcesUsed, resource)
 	}
 
-	merged := &DynamoDBRole{
+	merged := &types.DynamoDBRole{
 		CustomerID:             new.CustomerID,
 		ARN:                    new.ARN,
 		Name:                   new.Name,
@@ -140,15 +140,15 @@ func mergeRoleAggregated(existing *DynamoDBRole, new *DynamoDBRole) *DynamoDBRol
 	return merged
 }
 
-// mergeResourceAccessItems merges two ResourceAccessItem slices, combining counts for duplicates
-func mergeResourceAccessItems(a, b []ResourceAccessItem) []ResourceAccessItem {
+// MergeResourceAccessItems merges two ResourceAccessItem slices, combining counts for duplicates
+func MergeResourceAccessItems(a, b []types.ResourceAccessItem) []types.ResourceAccessItem {
 	// Use map to aggregate by unique combination of Resource+Service+EventName
-	accessMap := make(map[string]*ResourceAccessItem)
+	accessMap := make(map[string]*types.ResourceAccessItem)
 
 	// Add all from first slice
 	for _, ra := range a {
 		key := fmt.Sprintf("%s:%s:%s", ra.Service, ra.EventName, ra.Resource)
-		accessMap[key] = &ResourceAccessItem{
+		accessMap[key] = &types.ResourceAccessItem{
 			Resource:     ra.Resource,
 			Service:      ra.Service,
 			EventName:    ra.EventName,
@@ -171,7 +171,7 @@ func mergeResourceAccessItems(a, b []ResourceAccessItem) []ResourceAccessItem {
 				existing.ErrorMessage = ra.ErrorMessage
 			}
 		} else {
-			accessMap[key] = &ResourceAccessItem{
+			accessMap[key] = &types.ResourceAccessItem{
 				Resource:     ra.Resource,
 				Service:      ra.Service,
 				EventName:    ra.EventName,
@@ -184,7 +184,7 @@ func mergeResourceAccessItems(a, b []ResourceAccessItem) []ResourceAccessItem {
 	}
 
 	// Convert back to slice
-	result := make([]ResourceAccessItem, 0, len(accessMap))
+	result := make([]types.ResourceAccessItem, 0, len(accessMap))
 	for _, ra := range accessMap {
 		result = append(result, *ra)
 	}
@@ -192,15 +192,15 @@ func mergeResourceAccessItems(a, b []ResourceAccessItem) []ResourceAccessItem {
 	return result
 }
 
-// mergeEventAccessItems merges two EventAccessItem slices, combining counts for duplicates
-func mergeEventAccessItems(a, b []EventAccessItem) []EventAccessItem {
+// MergeEventAccessItems merges two EventAccessItem slices, combining counts for duplicates
+func MergeEventAccessItems(a, b []types.EventAccessItem) []types.EventAccessItem {
 	// Use map to aggregate by unique combination of Service+EventName+PolicyARN
-	accessMap := make(map[string]*EventAccessItem)
+	accessMap := make(map[string]*types.EventAccessItem)
 
 	// Add all from first slice
 	for _, ea := range a {
 		key := fmt.Sprintf("%s:%s:%s", ea.Service, ea.EventName, ea.PolicyARN)
-		accessMap[key] = &EventAccessItem{
+		accessMap[key] = &types.EventAccessItem{
 			Service:      ea.Service,
 			EventName:    ea.EventName,
 			Count:        ea.Count,
@@ -220,7 +220,7 @@ func mergeEventAccessItems(a, b []EventAccessItem) []EventAccessItem {
 				existing.ErrorMessage = ea.ErrorMessage
 			}
 		} else {
-			accessMap[key] = &EventAccessItem{
+			accessMap[key] = &types.EventAccessItem{
 				Service:      ea.Service,
 				EventName:    ea.EventName,
 				Count:        ea.Count,
@@ -232,7 +232,7 @@ func mergeEventAccessItems(a, b []EventAccessItem) []EventAccessItem {
 	}
 
 	// Convert back to slice
-	result := make([]EventAccessItem, 0, len(accessMap))
+	result := make([]types.EventAccessItem, 0, len(accessMap))
 	for _, ea := range accessMap {
 		result = append(result, *ea)
 	}
@@ -240,8 +240,8 @@ func mergeEventAccessItems(a, b []EventAccessItem) []EventAccessItem {
 	return result
 }
 
-// writeServiceToDynamoDB writes or updates a service in DynamoDB
-func writeServiceToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, service *DynamoDBService) error {
+// WriteServiceToDynamoDB writes or updates a service in DynamoDB
+func WriteServiceToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, service *types.DynamoDBService) error {
 	service.RolesCount = len(service.RolesUsing)
 	service.ResourcesCount = len(service.ResourcesUsed)
 
@@ -251,15 +251,15 @@ func writeServiceToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, ser
 	}
 
 	_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String(servicesAggregatedTable),
+		TableName: aws.String(tableName),
 		Item:      item,
 	})
 
 	return err
 }
 
-// writeResourceToDynamoDB writes or updates a resource in DynamoDB
-func writeResourceToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, resource *DynamoDBResource) error {
+// WriteResourceToDynamoDB writes or updates a resource in DynamoDB
+func WriteResourceToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, resource *types.DynamoDBResource) error {
 	resource.RolesCount = len(resource.RolesUsing)
 
 	item, err := attributevalue.MarshalMap(resource)
@@ -268,43 +268,43 @@ func writeResourceToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, re
 	}
 
 	_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String(resourcesAggregatedTable),
+		TableName: aws.String(tableName),
 		Item:      item,
 	})
 
 	return err
 }
 
-// writePersonToDynamoDB writes or updates a person in DynamoDB
-func writePersonToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, person *DynamoDBPerson) error {
+// WritePersonToDynamoDB writes or updates a person in DynamoDB
+func WritePersonToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, person *types.DynamoDBPerson) error {
 	item, err := attributevalue.MarshalMap(person)
 	if err != nil {
 		return fmt.Errorf("failed to marshal person: %w", err)
 	}
 
 	_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String(peopleAggregatedTable),
+		TableName: aws.String(tableName),
 		Item:      item,
 	})
 
 	return err
 }
 
-// writeSessionToDynamoDB writes or updates a session in DynamoDB
+// WriteSessionToDynamoDB writes or updates a session in DynamoDB
 // Uses IAM session creation time (start_time) as the authoritative session identifier
 // All events from the same IAM session have the exact same sessionContext.attributes.creationDate
-func writeSessionToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, session *DynamoDBSessionAggregated) error {
+func WriteSessionToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, session *types.DynamoDBSessionAggregated) error {
 	// Set session_start to same value as start_time (IAM session creation time)
 	session.SessionStart = session.StartTime
 
 	// Query for existing session with exact same customerId and session_start
 	// Since session_start is the IAM session creation time, it's the same for all events in a session
 	queryInput := &dynamodb.QueryInput{
-		TableName:              aws.String(sessionsAggregatedTable),
+		TableName:              aws.String(tableName),
 		KeyConditionExpression: aws.String("customerId = :cid AND session_start = :st"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":cid": &types.AttributeValueMemberS{Value: session.CustomerID},
-			":st":  &types.AttributeValueMemberS{Value: session.SessionStart},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":cid": &ddbtypes.AttributeValueMemberS{Value: session.CustomerID},
+			":st":  &ddbtypes.AttributeValueMemberS{Value: session.SessionStart},
 		},
 		Limit: aws.Int32(1),
 	}
@@ -315,7 +315,7 @@ func writeSessionToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, ses
 		// Continue with normal write if query fails
 	} else if queryResult.Items != nil && len(queryResult.Items) > 0 {
 		// Session exists - update it by merging events
-		var existingSession DynamoDBSessionAggregated
+		var existingSession types.DynamoDBSessionAggregated
 		if err := attributevalue.UnmarshalMap(queryResult.Items[0], &existingSession); err != nil {
 			log.Printf("WARNING: Failed to unmarshal existing session: %v", err)
 		} else {
@@ -324,7 +324,7 @@ func writeSessionToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, ses
 			log.Printf("  Previous event_count: %d", existingSession.EventsCount)
 
 			// Merge the sessions - use latest end time and accumulate events
-			merged := mergeSessionAggregated(&existingSession, session)
+			merged := MergeSessionAggregated(&existingSession, session)
 
 			// Write the merged session
 			item, err := attributevalue.MarshalMap(merged)
@@ -333,7 +333,7 @@ func writeSessionToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, ses
 			}
 
 			_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
-				TableName: aws.String(sessionsAggregatedTable),
+				TableName: aws.String(tableName),
 				Item:      item,
 			})
 
@@ -361,15 +361,15 @@ func writeSessionToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, ses
 	}
 
 	_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String(sessionsAggregatedTable),
+		TableName: aws.String(tableName),
 		Item:      item,
 	})
 
 	return err
 }
 
-// mergeSessionAggregated merges two SessionAggregated records, combining their data
-func mergeSessionAggregated(existing *DynamoDBSessionAggregated, new *DynamoDBSessionAggregated) *DynamoDBSessionAggregated {
+// MergeSessionAggregated merges two SessionAggregated records, combining their data
+func MergeSessionAggregated(existing *types.DynamoDBSessionAggregated, new *types.DynamoDBSessionAggregated) *types.DynamoDBSessionAggregated {
 	layout := "2006-01-02T15:04:05Z"
 
 	// Parse times to determine which is earlier/later
@@ -396,17 +396,17 @@ func mergeSessionAggregated(existing *DynamoDBSessionAggregated, new *DynamoDBSe
 	durationMinutes := int(end.Sub(start).Minutes())
 
 	// Merge event counts and resources accessed
-	mergedEventCounts := mergeIntMaps(existing.EventCounts, new.EventCounts)
-	mergedResourcesAccessed := mergeIntMaps(existing.ResourcesAccessed, new.ResourcesAccessed)
-	mergedResourceAccesses := mergeResourceAccesses(existing.ResourceAccesses, new.ResourceAccesses)
+	mergedEventCounts := MergeIntMaps(existing.EventCounts, new.EventCounts)
+	mergedResourcesAccessed := MergeIntMaps(existing.ResourcesAccessed, new.ResourcesAccessed)
+	mergedResourceAccesses := MergeResourceAccesses(existing.ResourceAccesses, new.ResourceAccesses)
 
 	// Merge denied event counts and resources
-	mergedDeniedEventCounts := mergeIntMaps(existing.DeniedEventCounts, new.DeniedEventCounts)
-	mergedDeniedResourcesAccessed := mergeIntMaps(existing.DeniedResourcesAccessed, new.DeniedResourcesAccessed)
-	mergedDeniedResourceAccesses := mergeResourceAccesses(existing.DeniedResourceAccesses, new.DeniedResourceAccesses)
-	mergedDeniedEventAccesses := mergeEventAccesses(existing.DeniedEventAccesses, new.DeniedEventAccesses)
+	mergedDeniedEventCounts := MergeIntMaps(existing.DeniedEventCounts, new.DeniedEventCounts)
+	mergedDeniedResourcesAccessed := MergeIntMaps(existing.DeniedResourcesAccessed, new.DeniedResourcesAccessed)
+	mergedDeniedResourceAccesses := MergeResourceAccesses(existing.DeniedResourceAccesses, new.DeniedResourceAccesses)
+	mergedDeniedEventAccesses := MergeEventAccesses(existing.DeniedEventAccesses, new.DeniedEventAccesses)
 
-	merged := &DynamoDBSessionAggregated{
+	merged := &types.DynamoDBSessionAggregated{
 		CustomerID:        new.CustomerID,
 		SessionID:         existing.SessionID,
 		SessionType:       existing.SessionType, // Both sessions have same IAM creation time, so same type
@@ -420,8 +420,8 @@ func mergeSessionAggregated(existing *DynamoDBSessionAggregated, new *DynamoDBSe
 		RoleARN:           existing.RoleARN,
 		RoleName:          existing.RoleName,
 		EventsCount:       existing.EventsCount + new.EventsCount,
-		SourceIPs:         mergeUniqueStrings(existing.SourceIPs, new.SourceIPs),
-		UserAgents:        mergeUniqueStrings(existing.UserAgents, new.UserAgents),
+		SourceIPs:         MergeUniqueStrings(existing.SourceIPs, new.SourceIPs),
+		UserAgents:        MergeUniqueStrings(existing.UserAgents, new.UserAgents),
 		EventCounts:       mergedEventCounts,
 		ResourcesAccessed: mergedResourcesAccessed,
 		ResourceAccesses:  mergedResourceAccesses,
@@ -432,15 +432,15 @@ func mergeSessionAggregated(existing *DynamoDBSessionAggregated, new *DynamoDBSe
 		DeniedResourceAccesses:  mergedDeniedResourceAccesses,
 		DeniedEventAccesses:     mergedDeniedEventAccesses,
 		// CRITICAL FIX: Calculate counts from merged unique sets, not by adding
-		ServicesCount:  countUniqueServices(mergedEventCounts),
+		ServicesCount:  CountUniqueServices(mergedEventCounts),
 		ResourcesCount: len(mergedResourcesAccessed),
 	}
 
 	return merged
 }
 
-// mergeUniqueStrings merges two string slices, removing duplicates
-func mergeUniqueStrings(a, b []string) []string {
+// MergeUniqueStrings merges two string slices, removing duplicates
+func MergeUniqueStrings(a, b []string) []string {
 	seen := make(map[string]bool)
 	result := []string{}
 
@@ -461,8 +461,8 @@ func mergeUniqueStrings(a, b []string) []string {
 	return result
 }
 
-// mergeIntMaps merges two map[string]int by adding counts
-func mergeIntMaps(a, b map[string]int) map[string]int {
+// MergeIntMaps merges two map[string]int by adding counts
+func MergeIntMaps(a, b map[string]int) map[string]int {
 	result := make(map[string]int)
 
 	for k, v := range a {
@@ -476,9 +476,9 @@ func mergeIntMaps(a, b map[string]int) map[string]int {
 	return result
 }
 
-// countUniqueServices counts unique services from event counts map
+// CountUniqueServices counts unique services from event counts map
 // Event counts are stored as "eventSource:eventName" -> count
-func countUniqueServices(eventCounts map[string]int) int {
+func CountUniqueServices(eventCounts map[string]int) int {
 	services := make(map[string]bool)
 	for eventKey := range eventCounts {
 		// Extract eventSource from "eventSource:eventName"
@@ -490,15 +490,15 @@ func countUniqueServices(eventCounts map[string]int) int {
 	return len(services)
 }
 
-// mergeResourceAccesses merges two ResourceAccess slices, combining counts for duplicates
-func mergeResourceAccesses(a, b []ResourceAccess) []ResourceAccess {
+// MergeResourceAccesses merges two ResourceAccess slices, combining counts for duplicates
+func MergeResourceAccesses(a, b []types.ResourceAccess) []types.ResourceAccess {
 	// Use map to aggregate by unique combination of Resource+Service+EventName
-	accessMap := make(map[string]*ResourceAccess)
+	accessMap := make(map[string]*types.ResourceAccess)
 
 	// Add all from first slice
 	for _, ra := range a {
 		key := fmt.Sprintf("%s:%s:%s", ra.Service, ra.EventName, ra.Resource)
-		accessMap[key] = &ResourceAccess{
+		accessMap[key] = &types.ResourceAccess{
 			Resource:  ra.Resource,
 			Service:   ra.Service,
 			EventName: ra.EventName,
@@ -512,7 +512,7 @@ func mergeResourceAccesses(a, b []ResourceAccess) []ResourceAccess {
 		if existing, exists := accessMap[key]; exists {
 			existing.Count += ra.Count
 		} else {
-			accessMap[key] = &ResourceAccess{
+			accessMap[key] = &types.ResourceAccess{
 				Resource:  ra.Resource,
 				Service:   ra.Service,
 				EventName: ra.EventName,
@@ -522,7 +522,7 @@ func mergeResourceAccesses(a, b []ResourceAccess) []ResourceAccess {
 	}
 
 	// Convert back to slice
-	result := make([]ResourceAccess, 0, len(accessMap))
+	result := make([]types.ResourceAccess, 0, len(accessMap))
 	for _, ra := range accessMap {
 		result = append(result, *ra)
 	}
@@ -530,15 +530,15 @@ func mergeResourceAccesses(a, b []ResourceAccess) []ResourceAccess {
 	return result
 }
 
-// mergeEventAccesses merges two EventAccess slices, combining counts for duplicates
-func mergeEventAccesses(a, b []EventAccess) []EventAccess {
+// MergeEventAccesses merges two EventAccess slices, combining counts for duplicates
+func MergeEventAccesses(a, b []types.EventAccess) []types.EventAccess {
 	// Use map to aggregate by unique combination of Service+EventName+PolicyARN
-	accessMap := make(map[string]*EventAccess)
+	accessMap := make(map[string]*types.EventAccess)
 
 	// Add all from first slice
 	for _, ea := range a {
 		key := fmt.Sprintf("%s:%s:%s", ea.Service, ea.EventName, ea.PolicyARN)
-		accessMap[key] = &EventAccess{
+		accessMap[key] = &types.EventAccess{
 			Service:      ea.Service,
 			EventName:    ea.EventName,
 			Count:        ea.Count,
@@ -558,7 +558,7 @@ func mergeEventAccesses(a, b []EventAccess) []EventAccess {
 				existing.ErrorMessage = ea.ErrorMessage
 			}
 		} else {
-			accessMap[key] = &EventAccess{
+			accessMap[key] = &types.EventAccess{
 				Service:      ea.Service,
 				EventName:    ea.EventName,
 				Count:        ea.Count,
@@ -570,7 +570,7 @@ func mergeEventAccesses(a, b []EventAccess) []EventAccess {
 	}
 
 	// Convert back to slice
-	result := make([]EventAccess, 0, len(accessMap))
+	result := make([]types.EventAccess, 0, len(accessMap))
 	for _, ea := range accessMap {
 		result = append(result, *ea)
 	}
@@ -578,15 +578,15 @@ func mergeEventAccesses(a, b []EventAccess) []EventAccess {
 	return result
 }
 
-// writeAccountToDynamoDB writes or updates an account in DynamoDB
-func writeAccountToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, account *DynamoDBAccount) error {
+// WriteAccountToDynamoDB writes or updates an account in DynamoDB
+func WriteAccountToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, account *types.DynamoDBAccount) error {
 	item, err := attributevalue.MarshalMap(account)
 	if err != nil {
 		return fmt.Errorf("failed to marshal account: %w", err)
 	}
 
 	_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String(accountsAggregatedTable),
+		TableName: aws.String(tableName),
 		Item:      item,
 	})
 

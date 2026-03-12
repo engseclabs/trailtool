@@ -1,16 +1,17 @@
-// Package main provides the CloudTrail ingestor Lambda function.
-// resources.go contains functions for extracting resource identifiers from CloudTrail events
+// Package resources contains functions for extracting resource identifiers from CloudTrail events
 // and classifying AWS services.
-package main
+package resources
 
 import (
 	"fmt"
 	"log"
 	"strings"
+
+	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
 
 // ExtractResources normalizes resources from an event
-func ExtractResources(event CloudTrailRecord) []string {
+func ExtractResources(event types.CloudTrailRecord) []string {
 	var resources []string
 	seen := make(map[string]bool)
 
@@ -137,7 +138,7 @@ func ExtractResources(event CloudTrailRecord) []string {
 	// Fallback: include resources array from CloudTrail to capture services we don't explicitly parse
 	for _, r := range event.Resources {
 		if r.ARN != "" {
-			norm := normalizeResourceFromARN(r.ARN)
+			norm := NormalizeResourceFromARN(r.ARN)
 			if !seen[norm] {
 				resources = append(resources, norm)
 				seen[norm] = true
@@ -156,8 +157,8 @@ func ExtractResources(event CloudTrailRecord) []string {
 	return resources
 }
 
-// normalizeResourceFromARN creates a stable identifier from an ARN
-func normalizeResourceFromARN(arnStr string) string {
+// NormalizeResourceFromARN creates a stable identifier from an ARN
+func NormalizeResourceFromARN(arnStr string) string {
 	parts := strings.SplitN(arnStr, ":", 6)
 	if len(parts) < 6 {
 		return arnStr
@@ -407,7 +408,7 @@ func extractControlTowerResource(params interface{}) string {
 	for _, key := range arnKeys {
 		if val, exists := paramMap[key]; exists {
 			if arnStr, ok := val.(string); ok && arnStr != "" {
-				return normalizeResourceFromARN(arnStr)
+				return NormalizeResourceFromARN(arnStr)
 			}
 		}
 	}
@@ -509,7 +510,7 @@ func extractSNSTopic(params interface{}) string {
 
 	if topicArn, exists := paramMap["topicArn"]; exists {
 		if arnStr, ok := topicArn.(string); ok && arnStr != "" {
-			return normalizeResourceFromARN(arnStr)
+			return NormalizeResourceFromARN(arnStr)
 		}
 	}
 	if name, exists := paramMap["name"]; exists {
@@ -531,7 +532,7 @@ func extractKMSKey(params interface{}) string {
 	if keyID, exists := paramMap["keyId"]; exists {
 		if key, ok := keyID.(string); ok && key != "" {
 			if strings.HasPrefix(key, "arn:aws:kms:") {
-				return normalizeResourceFromARN(key)
+				return NormalizeResourceFromARN(key)
 			}
 			return fmt.Sprintf("kms:key:%s", key)
 		}
@@ -555,7 +556,7 @@ func extractSecret(params interface{}) string {
 	if secretID, exists := paramMap["secretId"]; exists {
 		if sec, ok := secretID.(string); ok && sec != "" {
 			if strings.HasPrefix(sec, "arn:aws:secretsmanager:") {
-				return normalizeResourceFromARN(sec)
+				return NormalizeResourceFromARN(sec)
 			}
 			return sec
 		}
@@ -594,7 +595,7 @@ func extractEventRule(params interface{}) string {
 	}
 	if ruleArn, exists := paramMap["ruleArn"]; exists {
 		if arnStr, ok := ruleArn.(string); ok && arnStr != "" {
-			return normalizeResourceFromARN(arnStr)
+			return NormalizeResourceFromARN(arnStr)
 		}
 	}
 
@@ -610,7 +611,7 @@ func extractStateMachine(params interface{}) string {
 
 	if smArn, exists := paramMap["stateMachineArn"]; exists {
 		if arnStr, ok := smArn.(string); ok && arnStr != "" {
-			return normalizeResourceFromARN(arnStr)
+			return NormalizeResourceFromARN(arnStr)
 		}
 	}
 	if name, exists := paramMap["name"]; exists {

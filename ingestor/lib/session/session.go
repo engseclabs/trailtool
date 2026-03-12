@@ -1,7 +1,6 @@
-// Package main provides the CloudTrail ingestor Lambda function.
-// session.go contains functions for session detection, user identity extraction,
+// Package session contains functions for session detection, user identity extraction,
 // and session type classification.
-package main
+package session
 
 import (
 	"fmt"
@@ -10,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
 
 // ExtractEmailFromPrincipalID extracts email from principalId
@@ -283,7 +284,7 @@ func ExtractPolicyInfo(errorMessage string) PolicyInfo {
 }
 
 // GetRoleARN extracts the role ARN from the event
-func GetRoleARN(event CloudTrailRecord) string {
+func GetRoleARN(event types.CloudTrailRecord) string {
 	if event.UserIdentity.SessionContext != nil {
 		return event.UserIdentity.SessionContext.SessionIssuer.ARN
 	}
@@ -309,7 +310,7 @@ func GetRoleARN(event CloudTrailRecord) string {
 }
 
 // GetSessionCreationTime extracts session creation time
-func GetSessionCreationTime(event CloudTrailRecord) string {
+func GetSessionCreationTime(event types.CloudTrailRecord) string {
 	if event.UserIdentity.SessionContext != nil {
 		return event.UserIdentity.SessionContext.Attributes.CreationDate
 	}

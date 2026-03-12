@@ -1,7 +1,9 @@
-package main
+package resources
 
 import (
 	"testing"
+
+	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
 
 func TestExtractS3Bucket(t *testing.T) {
@@ -491,9 +493,9 @@ func TestNormalizeResourceFromARN(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeResourceFromARN(tt.arn)
+			got := NormalizeResourceFromARN(tt.arn)
 			if got != tt.want {
-				t.Errorf("normalizeResourceFromARN(%q) = %q, want %q", tt.arn, got, tt.want)
+				t.Errorf("NormalizeResourceFromARN(%q) = %q, want %q", tt.arn, got, tt.want)
 			}
 		})
 	}
@@ -502,12 +504,12 @@ func TestNormalizeResourceFromARN(t *testing.T) {
 func TestExtractResources(t *testing.T) {
 	tests := []struct {
 		name  string
-		event CloudTrailRecord
+		event types.CloudTrailRecord
 		want  []string
 	}{
 		{
 			name: "S3 GetObject",
-			event: CloudTrailRecord{
+			event: types.CloudTrailRecord{
 				EventSource: "s3.amazonaws.com",
 				EventName:   "GetObject",
 				RequestParameters: map[string]interface{}{
@@ -518,7 +520,7 @@ func TestExtractResources(t *testing.T) {
 		},
 		{
 			name: "Lambda Invoke",
-			event: CloudTrailRecord{
+			event: types.CloudTrailRecord{
 				EventSource: "lambda.amazonaws.com",
 				EventName:   "Invoke",
 				RequestParameters: map[string]interface{}{
@@ -529,7 +531,7 @@ func TestExtractResources(t *testing.T) {
 		},
 		{
 			name: "DynamoDB GetItem",
-			event: CloudTrailRecord{
+			event: types.CloudTrailRecord{
 				EventSource: "dynamodb.amazonaws.com",
 				EventName:   "GetItem",
 				RequestParameters: map[string]interface{}{
@@ -540,7 +542,7 @@ func TestExtractResources(t *testing.T) {
 		},
 		{
 			name: "No extractable resource",
-			event: CloudTrailRecord{
+			event: types.CloudTrailRecord{
 				EventSource:       "sts.amazonaws.com",
 				EventName:         "AssumeRole",
 				RequestParameters: map[string]interface{}{},

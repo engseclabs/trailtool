@@ -1,6 +1,6 @@
-// Package main provides the CloudTrail ingestor Lambda function.
-// types.go contains all struct definitions for CloudTrail events and DynamoDB records.
-package main
+// Package types contains all struct definitions for CloudTrail events and DynamoDB records
+// used by the ingestor.
+package types
 
 // CloudTrailLog represents the structure of a CloudTrail log file
 type CloudTrailLog struct {

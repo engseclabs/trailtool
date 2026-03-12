@@ -15,6 +15,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	ddblib "github.com/engseclabs/trailtool/ingestor/lib/dynamodb"
+	"github.com/engseclabs/trailtool/ingestor/lib/parser"
+	"github.com/engseclabs/trailtool/ingestor/lib/resources"
+	"github.com/engseclabs/trailtool/ingestor/lib/session"
+	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
 
 // Hardcoded single-tenant customer ID
@@ -30,11 +36,6 @@ var (
 	accountsAggregatedTable  = getEnvOrDefault("ACCOUNTS_AGGREGATED_TABLE", "trailtool-accounts-aggregated")
 )
 
-// NOTE: All type definitions moved to types.go
-// NOTE: IsAWSIP and IsAWSUserAgent functions moved to session.go
-// NOTE: IsAccessDeniedError, PolicyInfo, and ExtractPolicyInfo moved to session.go
-// NOTE: ExtractEmailFromPrincipalID moved to session.go
-
 // Helper function to get environment variable with default
 func getEnvOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
@@ -43,32 +44,11 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-
-// NOTE: ExtractRoleIDFromPrincipalID, ExtractRoleNameFromARN, ExtractAccountIDFromARN,
-// IsIdentityCenterRole, NormalizeUserAgent, ClassifySessionType, IsClickOpsOperation,
-// IsValidSourceIP, IsValidUserAgent, GetRoleARN, GetSessionCreationTime, GenerateSessionKey
-// all moved to session.go
-
-// NOTE: Resource extraction functions moved to resources.go:
-// - ExtractResources
-// - normalizeResourceFromARN
-// - extractS3Bucket, extractLambdaFunction, extractDynamoTable, extractEC2Instance
-// - extractIAMResource, extractCloudFormationStack, extractControlTowerResource
-// - extractRDSResource, extractECRRepository, extractECSResource, extractSQSQueue
-// - extractSNSTopic, extractKMSKey, extractSecret, extractLogGroup
-// - extractEventRule, extractStateMachine, extractRestApi, extractHostedZone
-// - extractCloudFrontDistribution, GetServiceDisplayName, GetServiceCategory
-
-
-
-
-
-
 // processPersonEvent tracks aggregated data for a person
-func processPersonEvent(people map[string]*DynamoDBPerson, email, accountID, roleARN, eventSource, eventDate string) {
+func processPersonEvent(people map[string]*types.DynamoDBPerson, email, accountID, roleARN, eventSource, eventDate string) {
 	person, exists := people[email]
 	if !exists {
-		person = &DynamoDBPerson{
+		person = &types.DynamoDBPerson{
 			Email:     email,
 			FirstSeen: eventDate,
 			LastSeen:  eventDate,
@@ -83,8 +63,8 @@ func processPersonEvent(people map[string]*DynamoDBPerson, email, accountID, rol
 // processSessionEvent tracks aggregated data for a session
 // sessionMapKey is the in-memory unique key (email:roleID:startTime) used for grouping events.
 // truncatedSessionID is the stable partition key stored in DynamoDB (email:roleID) without creation time.
-func processSessionEvent(sessions map[string]*DynamoDBSessionAggregated, people map[string]*DynamoDBPerson, customerID, sessionMapKey, truncatedSessionID, email, roleID, accountID, roleARN, roleName, sessionCreationTime, eventTime, sourceIP, userAgent, eventSource, eventName, errorCode, errorMessage string, resources []string, eventDate string) {
-	session, exists := sessions[sessionMapKey]
+func processSessionEvent(sessions map[string]*types.DynamoDBSessionAggregated, people map[string]*types.DynamoDBPerson, customerID, sessionMapKey, truncatedSessionID, email, roleID, accountID, roleARN, roleName, sessionCreationTime, eventTime, sourceIP, userAgent, eventSource, eventName, errorCode, errorMessage string, resourceList []string, eventDate string) {
+	sess, exists := sessions[sessionMapKey]
 	if !exists {
 		// Look up person display name
 		displayName := ""
@@ -93,7 +73,7 @@ func processSessionEvent(sessions map[string]*DynamoDBSessionAggregated, people 
 		}
 
 		// Classify session type based on first user agent seen
-		sessionType := ClassifySessionType(userAgent)
+		sessionType := session.ClassifySessionType(userAgent)
 
 		// Skip sessions with unrecognized user agents - don't create or merge them
 		if sessionType == "" {
@@ -101,7 +81,7 @@ func processSessionEvent(sessions map[string]*DynamoDBSessionAggregated, people 
 			return
 		}
 
-		session = &DynamoDBSessionAggregated{
+		sess = &types.DynamoDBSessionAggregated{
 			CustomerID:              customerID,
 			SessionID:               truncatedSessionID,  // Partition key (stable person+role)
 			SessionType:             sessionType,         // "web-console" or "cli-sdk"
@@ -116,57 +96,55 @@ func processSessionEvent(sessions map[string]*DynamoDBSessionAggregated, people 
 			UserAgents:              []string{},
 			EventCounts:             make(map[string]int),
 			ResourcesAccessed:       make(map[string]int),
-			ResourceAccesses:        []ResourceAccess{}, // Will be populated during event processing
+			ResourceAccesses:        []types.ResourceAccess{}, // Will be populated during event processing
 			DeniedEventCount:        0,
 			DeniedEventCounts:       make(map[string]int),
 			DeniedResourcesAccessed: make(map[string]int),
-			DeniedResourceAccesses:  []ResourceAccess{},
-			DeniedEventAccesses:     []EventAccess{},
+			DeniedResourceAccesses:  []types.ResourceAccess{},
+			DeniedEventAccesses:     []types.EventAccess{},
 		}
-		sessions[sessionMapKey] = session
+		sessions[sessionMapKey] = sess
 	}
 
-	session.EndTime = eventTime
+	sess.EndTime = eventTime
 
 	// Check if this is an AccessDenied error
-	isAccessDenied := IsAccessDeniedError(errorCode)
+	isAccessDenied := session.IsAccessDeniedError(errorCode)
 
 	// Track event counts (flattened eventSource:eventName)
 	eventKey := fmt.Sprintf("%s:%s", eventSource, eventName)
 
 	if isAccessDenied {
 		// Extract policy info from error message (AWS Jan 2026 update includes policy ARNs)
-		policyInfo := ExtractPolicyInfo(errorMessage)
+		policyInfo := session.ExtractPolicyInfo(errorMessage)
 		if policyInfo.PolicyARN != "" {
 			log.Printf("ACCESS_DENIED: session=%s event=%s errorCode=%s policy_arn=%s policy_type=%s errorMessage=%q", sessionMapKey, eventKey, errorCode, policyInfo.PolicyARN, policyInfo.PolicyType, errorMessage)
 		} else {
 			log.Printf("ACCESS_DENIED: session=%s event=%s errorCode=%s errorMessage=%q", sessionMapKey, eventKey, errorCode, errorMessage)
 		}
 		// Track denied events separately
-		session.DeniedEventCount++
-		session.DeniedEventCounts[eventKey]++
+		sess.DeniedEventCount++
+		sess.DeniedEventCounts[eventKey]++
 
-		if len(resources) > 0 {
+		if len(resourceList) > 0 {
 			// Track denied resources accessed (both old format and new detailed format)
-			for _, resource := range resources {
-				session.DeniedResourcesAccessed[resource]++
+			for _, resource := range resourceList {
+				sess.DeniedResourcesAccessed[resource]++
 
 				// Track detailed denied resource access (service + event + resource + count + policy info)
-				// Find existing ResourceAccess or create new one
-				// Note: We match on resource+service+event+policy to track denials from different policies separately
 				found := false
-				for i := range session.DeniedResourceAccesses {
-					if session.DeniedResourceAccesses[i].Resource == resource &&
-						session.DeniedResourceAccesses[i].Service == eventSource &&
-						session.DeniedResourceAccesses[i].EventName == eventName &&
-						session.DeniedResourceAccesses[i].PolicyARN == policyInfo.PolicyARN {
-						session.DeniedResourceAccesses[i].Count++
+				for i := range sess.DeniedResourceAccesses {
+					if sess.DeniedResourceAccesses[i].Resource == resource &&
+						sess.DeniedResourceAccesses[i].Service == eventSource &&
+						sess.DeniedResourceAccesses[i].EventName == eventName &&
+						sess.DeniedResourceAccesses[i].PolicyARN == policyInfo.PolicyARN {
+						sess.DeniedResourceAccesses[i].Count++
 						found = true
 						break
 					}
 				}
 				if !found {
-					session.DeniedResourceAccesses = append(session.DeniedResourceAccesses, ResourceAccess{
+					sess.DeniedResourceAccesses = append(sess.DeniedResourceAccesses, types.ResourceAccess{
 						Resource:     resource,
 						Service:      eventSource,
 						EventName:    eventName,
@@ -179,20 +157,18 @@ func processSessionEvent(sessions map[string]*DynamoDBSessionAggregated, people 
 			}
 		} else {
 			// Track denied events without specific resources
-			// Find existing EventAccess or create new one
-			// Note: We match on service+event+policy to track denials from different policies separately
 			found := false
-			for i := range session.DeniedEventAccesses {
-				if session.DeniedEventAccesses[i].Service == eventSource &&
-					session.DeniedEventAccesses[i].EventName == eventName &&
-					session.DeniedEventAccesses[i].PolicyARN == policyInfo.PolicyARN {
-					session.DeniedEventAccesses[i].Count++
+			for i := range sess.DeniedEventAccesses {
+				if sess.DeniedEventAccesses[i].Service == eventSource &&
+					sess.DeniedEventAccesses[i].EventName == eventName &&
+					sess.DeniedEventAccesses[i].PolicyARN == policyInfo.PolicyARN {
+					sess.DeniedEventAccesses[i].Count++
 					found = true
 					break
 				}
 			}
 			if !found {
-				session.DeniedEventAccesses = append(session.DeniedEventAccesses, EventAccess{
+				sess.DeniedEventAccesses = append(sess.DeniedEventAccesses, types.EventAccess{
 					Service:      eventSource,
 					EventName:    eventName,
 					Count:        1,
@@ -204,27 +180,26 @@ func processSessionEvent(sessions map[string]*DynamoDBSessionAggregated, people 
 		}
 	} else {
 		// Track successful events (existing logic)
-		session.EventsCount++
-		session.EventCounts[eventKey]++
+		sess.EventsCount++
+		sess.EventCounts[eventKey]++
 
 		// Track resources accessed (both old format and new detailed format)
-		for _, resource := range resources {
-			session.ResourcesAccessed[resource]++
+		for _, resource := range resourceList {
+			sess.ResourcesAccessed[resource]++
 
 			// Track detailed resource access (service + event + resource + count)
-			// Find existing ResourceAccess or create new one
 			found := false
-			for i := range session.ResourceAccesses {
-				if session.ResourceAccesses[i].Resource == resource &&
-					session.ResourceAccesses[i].Service == eventSource &&
-					session.ResourceAccesses[i].EventName == eventName {
-					session.ResourceAccesses[i].Count++
+			for i := range sess.ResourceAccesses {
+				if sess.ResourceAccesses[i].Resource == resource &&
+					sess.ResourceAccesses[i].Service == eventSource &&
+					sess.ResourceAccesses[i].EventName == eventName {
+					sess.ResourceAccesses[i].Count++
 					found = true
 					break
 				}
 			}
 			if !found {
-				session.ResourceAccesses = append(session.ResourceAccesses, ResourceAccess{
+				sess.ResourceAccesses = append(sess.ResourceAccesses, types.ResourceAccess{
 					Resource:  resource,
 					Service:   eventSource,
 					EventName: eventName,
@@ -235,39 +210,39 @@ func processSessionEvent(sessions map[string]*DynamoDBSessionAggregated, people 
 	}
 
 	// Track ClickOps operations (web console create/modify operations)
-	if !isAccessDenied && session.SessionType == "web-console" && IsClickOpsOperation(eventName) {
-		session.ClickOpsEventCount++
-		if session.ClickOpsEventCounts == nil {
-			session.ClickOpsEventCounts = make(map[string]int)
+	if !isAccessDenied && sess.SessionType == "web-console" && session.IsClickOpsOperation(eventName) {
+		sess.ClickOpsEventCount++
+		if sess.ClickOpsEventCounts == nil {
+			sess.ClickOpsEventCounts = make(map[string]int)
 		}
-		session.ClickOpsEventCounts[eventName]++
+		sess.ClickOpsEventCounts[eventName]++
 	}
 
 	// Add source IP if not already present and it's a valid user IP
-	if sourceIP != "" && IsValidSourceIP(sourceIP) {
+	if sourceIP != "" && session.IsValidSourceIP(sourceIP) {
 		found := false
-		for _, ip := range session.SourceIPs {
+		for _, ip := range sess.SourceIPs {
 			if ip == sourceIP {
 				found = true
 				break
 			}
 		}
 		if !found {
-			session.SourceIPs = append(session.SourceIPs, sourceIP)
+			sess.SourceIPs = append(sess.SourceIPs, sourceIP)
 		}
 	}
 
 	// Add user agent if not already present and it's a valid user agent (not service-to-service)
-	if userAgent != "" && IsValidUserAgent(userAgent) {
+	if userAgent != "" && session.IsValidUserAgent(userAgent) {
 		found := false
-		for _, ua := range session.UserAgents {
+		for _, ua := range sess.UserAgents {
 			if ua == userAgent {
 				found = true
 				break
 			}
 		}
 		if !found {
-			session.UserAgents = append(session.UserAgents, userAgent)
+			sess.UserAgents = append(sess.UserAgents, userAgent)
 		}
 	}
 
@@ -275,10 +250,10 @@ func processSessionEvent(sessions map[string]*DynamoDBSessionAggregated, people 
 }
 
 // processAccountEvent tracks aggregated data for an account
-func processAccountEvent(accounts map[string]*DynamoDBAccount, accountID, email, sessionID, roleARN, eventSource, eventDate string) {
+func processAccountEvent(accounts map[string]*types.DynamoDBAccount, accountID, email, sessionID, roleARN, eventSource, eventDate string) {
 	account, exists := accounts[accountID]
 	if !exists {
-		account = &DynamoDBAccount{
+		account = &types.DynamoDBAccount{
 			AccountID: accountID,
 			FirstSeen: eventDate,
 			LastSeen:  eventDate,
@@ -294,17 +269,17 @@ func processAccountEvent(accounts map[string]*DynamoDBAccount, accountID, email,
 
 // ProcessRolesServicesResources processes all events for roles, services, and resources
 // Now also processes people, sessions, and accounts (noun-based architecture)
-func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Client, customerID string, events []CloudTrailRecord) error {
+func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Client, customerID string, ctEvents []types.CloudTrailRecord) error {
 	log.Printf("=== Processing Noun-Based Aggregation ===")
-	log.Printf("Processing %d events for aggregation (customer: %s)", len(events), customerID)
+	log.Printf("Processing %d events for aggregation (customer: %s)", len(ctEvents), customerID)
 
 	// Aggregation maps for all nouns
-	roles := make(map[string]*DynamoDBRole)
-	services := make(map[string]*DynamoDBService)
-	resources := make(map[string]*DynamoDBResource)
-	people := make(map[string]*DynamoDBPerson)
-	sessions := make(map[string]*DynamoDBSessionAggregated)
-	accounts := make(map[string]*DynamoDBAccount)
+	roles := make(map[string]*types.DynamoDBRole)
+	services := make(map[string]*types.DynamoDBService)
+	resourceMap := make(map[string]*types.DynamoDBResource)
+	people := make(map[string]*types.DynamoDBPerson)
+	sessions := make(map[string]*types.DynamoDBSessionAggregated)
+	accounts := make(map[string]*types.DynamoDBAccount)
 
 	// Tracking sets for unique counts
 	rolepeople := make(map[string]map[string]bool)       // role -> set of people
@@ -329,7 +304,7 @@ func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Clie
 	sessionResources := make(map[string]map[string]bool) // session -> set of resources
 
 	// Aggregate all events
-	for _, event := range events {
+	for _, event := range ctEvents {
 		eventTime := event.EventTime
 		eventDate := eventTime[:10] // Extract date part YYYY-MM-DD
 
@@ -339,23 +314,23 @@ func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Clie
 		}
 
 		// Extract core identifiers for this event
-		email := ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
-		roleARN := GetRoleARN(event)
+		email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
+		roleARN := session.GetRoleARN(event)
 
 		// Fallback to UserIdentity.ARN if SessionContext ARN is not available
 		if roleARN == "" {
 			roleARN = event.UserIdentity.ARN
 		}
 
-		roleID := ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
+		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
 
 		// Try to get account ID from multiple sources (fallback chain)
-		accountID := ExtractAccountIDFromARN(roleARN)
+		accountID := session.ExtractAccountIDFromARN(roleARN)
 		if accountID == "" {
 			accountID = event.UserIdentity.AccountID
 		}
 		if accountID == "" && event.UserIdentity.ARN != "" {
-			accountID = ExtractAccountIDFromARN(event.UserIdentity.ARN)
+			accountID = session.ExtractAccountIDFromARN(event.UserIdentity.ARN)
 		}
 
 		// Build unique in-memory key (includes creation time) and truncated stable ID for storage.
@@ -363,10 +338,10 @@ func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Clie
 		var sessionMapKey, truncatedSessionID, sessionCreationTime string
 		if email != "" && roleID != "" {
 			// Normalize user agent by stripping brackets
-			normalizedUserAgent := NormalizeUserAgent(event.UserAgent)
+			normalizedUserAgent := session.NormalizeUserAgent(event.UserAgent)
 
 			// Try time-based windowing for CLI sessions first
-			cliSessionKey, cliStartTime := GenerateSessionKey(email, roleID, normalizedUserAgent, eventTime)
+			cliSessionKey, cliStartTime := session.GenerateSessionKey(email, roleID, normalizedUserAgent, eventTime)
 
 			if cliSessionKey != "" {
 				// CLI session: use 4-hour time window
@@ -375,7 +350,7 @@ func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Clie
 				truncatedSessionID = fmt.Sprintf("%s:%s", email, roleID)
 			} else {
 				// Console session: use IAM creation time
-				sessionCreationTime = GetSessionCreationTime(event)
+				sessionCreationTime = session.GetSessionCreationTime(event)
 				if sessionCreationTime != "" { // Only form key if we have creation time
 					truncatedSessionID = fmt.Sprintf("%s:%s", email, roleID)
 					sessionMapKey = fmt.Sprintf("%s:%s:%s", email, roleID, sessionCreationTime)
@@ -423,9 +398,9 @@ func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Clie
 		// Process session (if sessionMapKey present - means we have email and session info)
 		// Skip sessions with missing account or role info - these are incomplete
 		if sessionMapKey != "" && accountID != "" && roleARN != "" {
-			normalizedUserAgent := NormalizeUserAgent(event.UserAgent)
-			resourceList := ExtractResources(event)
-			processSessionEvent(sessions, people, customerID, sessionMapKey, truncatedSessionID, email, roleID, accountID, roleARN, ExtractRoleNameFromARN(roleARN),
+			normalizedUserAgent := session.NormalizeUserAgent(event.UserAgent)
+			resourceList := resources.ExtractResources(event)
+			processSessionEvent(sessions, people, customerID, sessionMapKey, truncatedSessionID, email, roleID, accountID, roleARN, session.ExtractRoleNameFromARN(roleARN),
 				sessionCreationTime, eventTime, event.SourceIPAddress, normalizedUserAgent, eventSource, event.EventName, event.ErrorCode, event.ErrorMessage, resourceList, eventDate)
 
 			// Track unique services/resources for this session (keyed by sessionMapKey for uniqueness)
@@ -525,19 +500,19 @@ func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Clie
 		}
 
 		// Process resources
-		resourceList := ExtractResources(event)
+		resourceList := resources.ExtractResources(event)
 		for _, resource := range resourceList {
-			if err := processResourceEvent(resources, event, resource, accountID, eventDate); err != nil {
+			if err := processResourceEvent(resourceMap, event, resource, accountID, eventDate); err != nil {
 				log.Printf("WARNING: Failed to process resource event: %v", err)
 			}
 
 			// Track ClickOps operations (web console create/modify operations)
 			if sessionMapKey != "" {
 				// Check if this is a web-console session and a ClickOps operation
-				if session, exists := sessions[sessionMapKey]; exists {
-					if session.SessionType == "web-console" && IsClickOpsOperation(event.EventName) {
+				if sess, exists := sessions[sessionMapKey]; exists {
+					if sess.SessionType == "web-console" && session.IsClickOpsOperation(event.EventName) {
 						// Get or create the resource entry
-						if resourceEntry, exists := resources[resource]; exists {
+						if resourceEntry, exists := resourceMap[resource]; exists {
 							// Check if this ClickOps access already exists to update count
 							found := false
 							for i := range resourceEntry.ClickOpsAccesses {
@@ -552,7 +527,7 @@ func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Clie
 							// If not found, add new ClickOps access
 							if !found {
 								log.Printf("DEBUG: Adding ClickOps access for resource=%s event=%s sessionCreationTime='%s' eventDate='%s'", resource, event.EventName, sessionCreationTime, eventDate)
-								resourceEntry.ClickOpsAccesses = append(resourceEntry.ClickOpsAccesses, ClickOpsAccess{
+								resourceEntry.ClickOpsAccesses = append(resourceEntry.ClickOpsAccesses, types.ClickOpsAccess{
 									SessionID:   truncatedSessionID,
 									PersonEmail: email,
 									EventName:   event.EventName,
@@ -627,7 +602,7 @@ func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Clie
 		}
 	}
 
-	for resourceID, resource := range resources {
+	for resourceID, resource := range resourceMap {
 		if peopleSet, exists := resourcePeople[resourceID]; exists {
 			resource.PeopleCount = len(peopleSet)
 		}
@@ -656,12 +631,12 @@ func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Clie
 	}
 
 	// Update counts for sessions based on unique sets
-	for sessionID, session := range sessions {
+	for sessionID, sess := range sessions {
 		if servicesSet, exists := sessionServices[sessionID]; exists {
-			session.ServicesCount = len(servicesSet)
+			sess.ServicesCount = len(servicesSet)
 		}
 		if resourcesSet, exists := sessionResources[sessionID]; exists {
-			session.ResourcesCount = len(resourcesSet)
+			sess.ResourcesCount = len(resourcesSet)
 		}
 	}
 
@@ -701,7 +676,7 @@ func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Clie
 			role.CustomerID, role.ARN, role.TotalEvents, len(role.TopEventNames), len(role.ServicesCount), len(role.ResourcesCount), eventNames)
 		log.Printf("ROLE_WRITE_DENIED: arn=%s total_denied_events=%d denied_event_names=%v denied_resources_count=%d",
 			role.ARN, role.TotalDeniedEvents, deniedEventNames, len(role.DeniedResourceAccesses))
-		if err := writeRoleToDynamoDB(ctx, ddbClient, role); err != nil {
+		if err := ddblib.WriteRoleToDynamoDB(ctx, ddbClient, rolesAggregatedTable, role); err != nil {
 			log.Printf("ERROR: Failed to write role: %v", err)
 		}
 	}
@@ -709,15 +684,15 @@ func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Clie
 	for _, service := range services {
 		// Set customerId field
 		service.CustomerID = customerID
-		if err := writeServiceToDynamoDB(ctx, ddbClient, service); err != nil {
+		if err := ddblib.WriteServiceToDynamoDB(ctx, ddbClient, servicesAggregatedTable, service); err != nil {
 			log.Printf("ERROR: Failed to write service: %v", err)
 		}
 	}
 
-	for _, resource := range resources {
+	for _, resource := range resourceMap {
 		// Set customerId field
 		resource.CustomerID = customerID
-		if err := writeResourceToDynamoDB(ctx, ddbClient, resource); err != nil {
+		if err := ddblib.WriteResourceToDynamoDB(ctx, ddbClient, resourcesAggregatedTable, resource); err != nil {
 			log.Printf("ERROR: Failed to write resource: %v", err)
 		}
 	}
@@ -725,24 +700,24 @@ func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Clie
 	// Log summary of what was found
 	log.Printf("=== Aggregation Summary ===")
 	log.Printf("Found %d unique people, %d sessions, %d roles, %d services, %d resources, %d accounts",
-		len(people), len(sessions), len(roles), len(services), len(resources), len(accounts))
+		len(people), len(sessions), len(roles), len(services), len(resourceMap), len(accounts))
 
 	// Count session types
 	cliSessions := 0
 	webSessions := 0
-	for _, session := range sessions {
-		if session.SessionType == "cli-sdk" {
+	for _, sess := range sessions {
+		if sess.SessionType == "cli-sdk" {
 			cliSessions++
-		} else if session.SessionType == "web-console" {
+		} else if sess.SessionType == "web-console" {
 			webSessions++
 		}
 	}
 	log.Printf("Session breakdown: %d CLI/SDK sessions, %d web console sessions", cliSessions, webSessions)
 
 	// Log details about each session
-	for _, session := range sessions {
+	for _, sess := range sessions {
 		log.Printf("Session: type=%s email=%s role=%s account=%s events=%d startTime=%s",
-			session.SessionType, session.PersonEmail, session.RoleName, session.AccountID, session.EventsCount, session.StartTime)
+			sess.SessionType, sess.PersonEmail, sess.RoleName, sess.AccountID, sess.EventsCount, sess.StartTime)
 	}
 
 	// Log roles found
@@ -759,22 +734,22 @@ func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Clie
 	for _, person := range people {
 		// Set customerId field
 		person.CustomerID = customerID
-		if err := writePersonToDynamoDB(ctx, ddbClient, person); err != nil {
+		if err := ddblib.WritePersonToDynamoDB(ctx, ddbClient, peopleAggregatedTable, person); err != nil {
 			log.Printf("ERROR: Failed to write person: %v", err)
 		}
 	}
 
-	for _, session := range sessions {
+	for _, sess := range sessions {
 		// Calculate duration before writing
-		if session.StartTime != "" && session.EndTime != "" {
-			startTime, _ := time.Parse(time.RFC3339, session.StartTime)
-			endTime, _ := time.Parse(time.RFC3339, session.EndTime)
-			session.DurationMinutes = int(endTime.Sub(startTime).Minutes())
+		if sess.StartTime != "" && sess.EndTime != "" {
+			startTime, _ := time.Parse(time.RFC3339, sess.StartTime)
+			endTime, _ := time.Parse(time.RFC3339, sess.EndTime)
+			sess.DurationMinutes = int(endTime.Sub(startTime).Minutes())
 		}
 
 		// Set customerId field
-		session.CustomerID = customerID
-		if err := writeSessionToDynamoDB(ctx, ddbClient, session); err != nil {
+		sess.CustomerID = customerID
+		if err := ddblib.WriteSessionToDynamoDB(ctx, ddbClient, sessionsAggregatedTable, sess); err != nil {
 			log.Printf("ERROR: Failed to write session: %v", err)
 		}
 	}
@@ -782,49 +757,48 @@ func ProcessRolesServicesResources(ctx context.Context, ddbClient *dynamodb.Clie
 	for _, account := range accounts {
 		// Set customerId field
 		account.CustomerID = customerID
-		if err := writeAccountToDynamoDB(ctx, ddbClient, account); err != nil {
+		if err := ddblib.WriteAccountToDynamoDB(ctx, ddbClient, accountsAggregatedTable, account); err != nil {
 			log.Printf("ERROR: Failed to write account: %v", err)
 		}
 	}
 
 	log.Printf("Processed %d roles, %d services, %d resources, %d people, %d sessions, %d accounts",
-		len(roles), len(services), len(resources), len(people), len(sessions), len(accounts))
+		len(roles), len(services), len(resourceMap), len(people), len(sessions), len(accounts))
 	return nil
 }
 
 // processRoleEvent aggregates an event for a role
-func processRoleEvent(roles map[string]*DynamoDBRole, event CloudTrailRecord, roleARN string, eventDate string) error {
+func processRoleEvent(roles map[string]*types.DynamoDBRole, event types.CloudTrailRecord, roleARN string, eventDate string) error {
 	role, exists := roles[roleARN]
 	if !exists {
-		role = &DynamoDBRole{
+		role = &types.DynamoDBRole{
 			ARN:                    roleARN,
-			Name:                   ExtractRoleNameFromARN(roleARN),
-			AccountID:              ExtractAccountIDFromARN(roleARN),
+			Name:                   session.ExtractRoleNameFromARN(roleARN),
+			AccountID:              session.ExtractAccountIDFromARN(roleARN),
 			FirstSeen:              eventDate,
 			LastSeen:               eventDate,
 			TotalEvents:            0,
 			ServicesCount:          make(map[string]int),
 			ResourcesCount:         make(map[string]int),
 			TopEventNames:          make(map[string]int),
-			ResourceAccesses:       []ResourceAccessItem{},
+			ResourceAccesses:       []types.ResourceAccessItem{},
 			TotalDeniedEvents:      0,
 			TopDeniedEventNames:    make(map[string]int),
-			DeniedResourceAccesses: []ResourceAccessItem{},
-			DeniedEventAccesses:    []EventAccessItem{},
+			DeniedResourceAccesses: []types.ResourceAccessItem{},
+			DeniedEventAccesses:    []types.EventAccessItem{},
 		}
 		roles[roleARN] = role
 	}
 
 	// Check if this is an AccessDenied error
-	isAccessDenied := IsAccessDeniedError(event.ErrorCode)
+	isAccessDenied := session.IsAccessDeniedError(event.ErrorCode)
 
 	// Track event names with service prefix (format: "eventSource:eventName")
-	// This matches the session EventCounts format and enables IAM action mapping
 	eventKey := event.EventSource + ":" + event.EventName
 
 	if isAccessDenied {
 		// Extract policy info from error message (AWS Jan 2026 update includes policy ARNs)
-		policyInfo := ExtractPolicyInfo(event.ErrorMessage)
+		policyInfo := session.ExtractPolicyInfo(event.ErrorMessage)
 		if policyInfo.PolicyARN != "" {
 			log.Printf("ROLE_ACCESS_DENIED: role=%s event=%s errorCode=%s policy_arn=%s policy_type=%s errorMessage=%q", roleARN, eventKey, event.ErrorCode, policyInfo.PolicyARN, policyInfo.PolicyType, event.ErrorMessage)
 		} else {
@@ -836,11 +810,9 @@ func processRoleEvent(roles map[string]*DynamoDBRole, event CloudTrailRecord, ro
 		role.TopDeniedEventNames[eventKey]++
 
 		// Track denied resource accesses
-		resourceList := ExtractResources(event)
+		resourceList := resources.ExtractResources(event)
 		if len(resourceList) > 0 {
 			for _, resource := range resourceList {
-				// Find or create the denied resource access entry
-				// Note: We match on resource+event+policy to track denials from different policies separately
 				found := false
 				for i := range role.DeniedResourceAccesses {
 					ra := &role.DeniedResourceAccesses[i]
@@ -851,14 +823,13 @@ func processRoleEvent(roles map[string]*DynamoDBRole, event CloudTrailRecord, ro
 					}
 				}
 				if !found {
-					// Extract service from resource identifier (format: "service:type:name")
 					parts := strings.Split(resource, ":")
 					service := event.EventSource
 					if len(parts) > 0 {
 						service = parts[0] + ".amazonaws.com"
 					}
 
-					role.DeniedResourceAccesses = append(role.DeniedResourceAccesses, ResourceAccessItem{
+					role.DeniedResourceAccesses = append(role.DeniedResourceAccesses, types.ResourceAccessItem{
 						Resource:     resource,
 						Service:      service,
 						EventName:    event.EventName,
@@ -870,9 +841,6 @@ func processRoleEvent(roles map[string]*DynamoDBRole, event CloudTrailRecord, ro
 				}
 			}
 		} else {
-			// Track denied events without specific resources
-			// Find or create the denied event access entry
-			// Note: We match on service+event+policy to track denials from different policies separately
 			found := false
 			for i := range role.DeniedEventAccesses {
 				ea := &role.DeniedEventAccesses[i]
@@ -883,7 +851,7 @@ func processRoleEvent(roles map[string]*DynamoDBRole, event CloudTrailRecord, ro
 				}
 			}
 			if !found {
-				role.DeniedEventAccesses = append(role.DeniedEventAccesses, EventAccessItem{
+				role.DeniedEventAccesses = append(role.DeniedEventAccesses, types.EventAccessItem{
 					Service:      event.EventSource,
 					EventName:    event.EventName,
 					Count:        1,
@@ -900,12 +868,10 @@ func processRoleEvent(roles map[string]*DynamoDBRole, event CloudTrailRecord, ro
 		role.TopEventNames[eventKey]++
 
 		// Track resources and resource accesses
-		resourceList := ExtractResources(event)
+		resourceList := resources.ExtractResources(event)
 		for _, resource := range resourceList {
 			role.ResourcesCount[resource]++
 
-			// Track resource access details (resource + service + event)
-			// Find or create the resource access entry
 			found := false
 			for i := range role.ResourceAccesses {
 				ra := &role.ResourceAccesses[i]
@@ -916,14 +882,13 @@ func processRoleEvent(roles map[string]*DynamoDBRole, event CloudTrailRecord, ro
 				}
 			}
 			if !found {
-				// Extract service from resource identifier (format: "service:type:name")
 				parts := strings.Split(resource, ":")
 				service := event.EventSource
 				if len(parts) > 0 {
 					service = parts[0] + ".amazonaws.com"
 				}
 
-				role.ResourceAccesses = append(role.ResourceAccesses, ResourceAccessItem{
+				role.ResourceAccesses = append(role.ResourceAccesses, types.ResourceAccessItem{
 					Resource:  resource,
 					Service:   service,
 					EventName: event.EventName,
@@ -939,14 +904,14 @@ func processRoleEvent(roles map[string]*DynamoDBRole, event CloudTrailRecord, ro
 }
 
 // processServiceEvent aggregates an event for a service
-func processServiceEvent(services map[string]*DynamoDBService, event CloudTrailRecord, roleARN string, eventDate string) error {
+func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event types.CloudTrailRecord, roleARN string, eventDate string) error {
 	eventSource := event.EventSource
-	service, exists := services[eventSource]
+	service, exists := serviceMap[eventSource]
 	if !exists {
-		service = &DynamoDBService{
+		service = &types.DynamoDBService{
 			EventSource:         eventSource,
-			DisplayName:         GetServiceDisplayName(eventSource),
-			Category:            GetServiceCategory(eventSource),
+			DisplayName:         resources.GetServiceDisplayName(eventSource),
+			Category:            resources.GetServiceCategory(eventSource),
 			FirstSeen:           eventDate,
 			LastSeen:            eventDate,
 			TotalEvents:         0,
@@ -954,18 +919,16 @@ func processServiceEvent(services map[string]*DynamoDBService, event CloudTrailR
 			TotalDeniedEvents:   0,
 			TopDeniedEventNames: make(map[string]int),
 		}
-		services[eventSource] = service
+		serviceMap[eventSource] = service
 	}
 
 	// Check if this is an AccessDenied error
-	isAccessDenied := IsAccessDeniedError(event.ErrorCode)
+	isAccessDenied := session.IsAccessDeniedError(event.ErrorCode)
 
 	if isAccessDenied {
-		// Track denied events separately
 		service.TotalDeniedEvents++
 		service.TopDeniedEventNames[event.EventName]++
 	} else {
-		// Track successful events (existing logic)
 		service.TotalEvents++
 		service.TopEventNames[event.EventName]++
 	}
@@ -974,12 +937,10 @@ func processServiceEvent(services map[string]*DynamoDBService, event CloudTrailR
 
 	// Track roles using this service
 	if roleARN != "" {
-		// Add role to set (using map as set)
 		if service.RolesUsing == nil {
 			service.RolesUsing = []string{}
 		}
 
-		// Check if role already in list
 		found := false
 		for _, existingRole := range service.RolesUsing {
 			if existingRole == roleARN {
@@ -996,23 +957,19 @@ func processServiceEvent(services map[string]*DynamoDBService, event CloudTrailR
 }
 
 // findMatchingCloudTrailResource attempts to match a simplified resource identifier
-// (e.g., "lambda:function:trailtool-ingestor") with an entry in the CloudTrail Resources array
-func findMatchingCloudTrailResource(event CloudTrailRecord, resourceIdentifier string) *CloudTrailResource {
+// with an entry in the CloudTrail Resources array
+func findMatchingCloudTrailResource(event types.CloudTrailRecord, resourceIdentifier string) *types.CloudTrailResource {
 	if len(event.Resources) == 0 {
 		return nil
 	}
 
-	// For events with a single resource, return it
 	if len(event.Resources) == 1 {
 		return &event.Resources[0]
 	}
 
-	// For events with multiple resources, try to match by resource name/identifier
-	// Extract the resource name from the identifier (e.g., "trailtool-ingestor" from "lambda:function:trailtool-ingestor")
 	parts := strings.Split(resourceIdentifier, ":")
 	if len(parts) >= 3 {
 		resourceName := parts[2]
-		// Try to find a CloudTrail resource whose ARN contains this name
 		for i := range event.Resources {
 			if strings.Contains(event.Resources[i].ARN, resourceName) {
 				return &event.Resources[i]
@@ -1020,13 +977,12 @@ func findMatchingCloudTrailResource(event CloudTrailRecord, resourceIdentifier s
 		}
 	}
 
-	// If no match found, return the first resource as a fallback
 	return &event.Resources[0]
 }
 
 // processResourceEvent aggregates an event for a resource
-func processResourceEvent(resources map[string]*DynamoDBResource, event CloudTrailRecord, resourceIdentifier string, accountID string, eventDate string) error {
-	resource, exists := resources[resourceIdentifier]
+func processResourceEvent(resourceMap map[string]*types.DynamoDBResource, event types.CloudTrailRecord, resourceIdentifier string, accountID string, eventDate string) error {
+	resource, exists := resourceMap[resourceIdentifier]
 	if !exists {
 		parts := strings.Split(resourceIdentifier, ":")
 		resourceType := "unknown"
@@ -1037,23 +993,20 @@ func processResourceEvent(resources map[string]*DynamoDBResource, event CloudTra
 			resourceName = parts[2]
 		}
 
-		// Try to extract account ID and ARN from the CloudTrail Resources array
 		ctResource := findMatchingCloudTrailResource(event, resourceIdentifier)
 		resourceARN := ""
-		resourceAccountID := accountID // Default to UserIdentity account
+		resourceAccountID := accountID
 
 		if ctResource != nil {
-			// Use the resource's actual account ID if available
 			if ctResource.AccountID != "" {
 				resourceAccountID = ctResource.AccountID
 			}
-			// Capture the full ARN
 			if ctResource.ARN != "" {
 				resourceARN = ctResource.ARN
 			}
 		}
 
-		resource = &DynamoDBResource{
+		resource = &types.DynamoDBResource{
 			Identifier:          resourceIdentifier,
 			Type:                resourceType,
 			Name:                resourceName,
@@ -1066,31 +1019,26 @@ func processResourceEvent(resources map[string]*DynamoDBResource, event CloudTra
 			TotalDeniedEvents:   0,
 			TopDeniedEventNames: make(map[string]int),
 		}
-		resources[resourceIdentifier] = resource
+		resourceMap[resourceIdentifier] = resource
 	}
 
-	// Check if this is an AccessDenied error
-	isAccessDenied := IsAccessDeniedError(event.ErrorCode)
+	isAccessDenied := session.IsAccessDeniedError(event.ErrorCode)
 
 	if isAccessDenied {
-		// Track denied events separately
 		resource.TotalDeniedEvents++
 		resource.TopDeniedEventNames[event.EventName]++
 	} else {
-		// Track successful events (existing logic)
 		resource.TotalEvents++
 		resource.TopEventNames[event.EventName]++
 	}
 
 	resource.LastSeen = eventDate
 
-	// Track roles using this resource
-	if roleARN := GetRoleARN(event); roleARN != "" {
+	if roleARN := session.GetRoleARN(event); roleARN != "" {
 		if resource.RolesUsing == nil {
 			resource.RolesUsing = []string{}
 		}
 
-		// Check if role already in list
 		found := false
 		for _, existingRole := range resource.RolesUsing {
 			if existingRole == roleARN {
@@ -1103,7 +1051,6 @@ func processResourceEvent(resources map[string]*DynamoDBResource, event CloudTra
 		}
 	}
 
-	// Track services using this resource
 	if resource.ServicesUsed == nil {
 		resource.ServicesUsed = []string{}
 	}
@@ -1122,17 +1069,7 @@ func processResourceEvent(resources map[string]*DynamoDBResource, event CloudTra
 	return nil
 }
 
-// NOTE: DynamoDB write and merge functions moved to dynamodb.go:
-// - writeRoleToDynamoDB, mergeRoleAggregated, mergeResourceAccessItems, mergeEventAccessItems
-// - writeServiceToDynamoDB, writeResourceToDynamoDB, writePersonToDynamoDB
-// - writeSessionToDynamoDB, mergeSessionAggregated, mergeUniqueStrings, mergeIntMaps
-// - countUniqueServices, mergeResourceAccesses, mergeEventAccesses, writeAccountToDynamoDB
-
 // handler processes CloudTrail management events delivered by EventBridge
-// EventBridge delivers events with detail-type "AWS API Call via CloudTrail"
-// Each invocation represents a single API call (not batched like S3 logs)
-// NOTE: EventBridgeS3Event type moved to types.go
-
 func handler(ctx context.Context, event json.RawMessage) error {
 	log.Printf("FULL_EVENT_RECEIVED: %s", string(event))
 
@@ -1144,7 +1081,7 @@ func handler(ctx context.Context, event json.RawMessage) error {
 	}
 
 	// Try to parse as EventBridge event
-	var ebEvent EventBridgeS3Event
+	var ebEvent types.EventBridgeS3Event
 	if err := json.Unmarshal(event, &ebEvent); err == nil && ebEvent.Source == "aws.s3" {
 		log.Printf("Processing EventBridge S3 event: detail-type=%s", ebEvent.DetailType)
 
@@ -1221,7 +1158,7 @@ func handleS3(ctx context.Context, ddbClient *dynamodb.Client, s3Client *s3.Clie
 		defer result.Body.Close()
 
 		// Parse CloudTrail log (handles gzip decompression and JSON parsing)
-		cloudTrailLog, err := ParseCloudTrailLog(result.Body)
+		cloudTrailLog, err := parser.ParseCloudTrailLog(result.Body)
 		if err != nil {
 			return err
 		}
