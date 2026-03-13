@@ -7,18 +7,6 @@ Parameters:
     Type: String
     Description: Name of the S3 bucket containing CloudTrail logs
 
-  CloudTrailBucketArn:
-    Type: String
-    Description: ARN of the S3 bucket containing CloudTrail logs
-
-  IdentityCenterInstanceArn:
-    Type: String
-    Description: ARN of the IAM Identity Center instance (optional - enables display name enrichment)
-    Default: ""
-
-Conditions:
-  HasIdentityCenter: !Not [!Equals [!Ref IdentityCenterInstanceArn, ""]]
-
 Globals:
   Function:
     Timeout: 300
@@ -177,7 +165,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource: !Sub "${CloudTrailBucketArn}/*"
+                Resource: !Sub "arn:aws:s3:::${CloudTrailBucketName}/*"
 
   # Lambda Function
   TrailToolIngestorFunction:
@@ -195,12 +183,103 @@ Resources:
           PEOPLE_AGGREGATED_TABLE: !Ref PeopleAggregatedTable
           SESSIONS_AGGREGATED_TABLE: !Ref SessionsAggregatedTable
           ACCOUNTS_AGGREGATED_TABLE: !Ref AccountsAggregatedTable
-          IDENTITY_CENTER_INSTANCE_ARN: !If [HasIdentityCenter, !Ref IdentityCenterInstanceArn, ""]
       Description: Processes CloudTrail logs from S3 and writes aggregated data to DynamoDB
+
+  # Custom Resource - Enable EventBridge notifications on S3 bucket
+  BucketEventBridgeHelperRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3NotificationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutBucketNotificationConfiguration
+                  - s3:GetBucketNotificationConfiguration
+                Resource: !Sub 'arn:aws:s3:::${CloudTrailBucketName}'
+
+  BucketEventBridgeHelperFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: trailtool-bucket-eventbridge
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt BucketEventBridgeHelperRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          from urllib.request import Request, urlopen
+
+          s3 = boto3.client('s3')
+
+          SUCCESS = "SUCCESS"
+          FAILED = "FAILED"
+
+          def send(event, context, status, data, reason=None):
+              body = json.dumps({
+                  'Status': status,
+                  'Reason': reason or f"See CloudWatch Log Stream: {context.log_stream_name}",
+                  'PhysicalResourceId': context.log_stream_name,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': data
+              })
+              try:
+                  req = Request(event['ResponseURL'], data=body.encode('utf-8'),
+                                headers={'content-type': '', 'content-length': str(len(body))}, method='PUT')
+                  urlopen(req)
+              except Exception as e:
+                  print(f"send failed: {e}")
+
+          def handler(event, context):
+              try:
+                  print(f"Event: {json.dumps(event)}")
+                  bucket = event['ResourceProperties']['BucketName']
+
+                  if event['RequestType'] == 'Delete':
+                      send(event, context, SUCCESS, {})
+                      return
+
+                  config = s3.get_bucket_notification_configuration(Bucket=bucket)
+                  config.pop('ResponseMetadata', None)
+
+                  if 'EventBridgeConfiguration' not in config:
+                      config['EventBridgeConfiguration'] = {}
+                      s3.put_bucket_notification_configuration(
+                          Bucket=bucket, NotificationConfiguration=config)
+                      print(f"Enabled EventBridge on bucket {bucket}")
+                  else:
+                      print(f"EventBridge already enabled on bucket {bucket}")
+
+                  send(event, context, SUCCESS, {})
+              except Exception as e:
+                  print(f"Error: {e}")
+                  send(event, context, FAILED, {}, reason=str(e))
+
+  EnableBucketEventBridge:
+    Type: Custom::EnableEventBridge
+    Properties:
+      ServiceToken: !GetAtt BucketEventBridgeHelperFunction.Arn
+      BucketName: !Ref CloudTrailBucketName
 
   # EventBridge Rule to trigger on S3 object creation
   CloudTrailEventRule:
     Type: AWS::Events::Rule
+    DependsOn: EnableBucketEventBridge
     Properties:
       Name: trailtool-cloudtrail-trigger
       Description: Triggers ingestor when new CloudTrail logs are written to S3
@@ -208,11 +287,15 @@ Resources:
         source:
           - aws.s3
         detail-type:
-          - "Object Created"
+          - Object Created
         detail:
           bucket:
             name:
               - !Ref CloudTrailBucketName
+          object:
+            key:
+              - prefix: AWSLogs/
+              - suffix: .json.gz
       Targets:
         - Arn: !GetAtt TrailToolIngestorFunction.Arn
           Id: TrailToolIngestor
