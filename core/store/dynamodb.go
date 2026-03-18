@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	PeopleTableName   = "trailtool-people-aggregated"
-	SessionsTableName = "trailtool-sessions-aggregated"
-	RolesTableName    = "trailtool-roles-aggregated"
+	PeopleTableName    = "trailtool-people-aggregated"
+	SessionsTableName  = "trailtool-sessions-aggregated"
+	RolesTableName     = "trailtool-roles-aggregated"
+	ResourcesTableName = "trailtool-resources-aggregated"
 )
 
 // Store wraps the DynamoDB client
@@ -196,6 +197,98 @@ func (s *Store) ListSessions(ctx context.Context, customerID, email string, days
 	}
 
 	return sessions, nil
+}
+
+// ResourceFilter controls which resources are returned by ListResources
+type ResourceFilter struct {
+	ClickOpsOnly     bool   // Only return resources with ClickOps activity
+	ServiceType      string // Filter by service type prefix (e.g. "s3", "iam")
+	StartTime        string // Only include ClickOps accesses after this time (ISO8601)
+	EndTime          string // Only include ClickOps accesses before this time (ISO8601)
+	MinClickOpsCount int    // Minimum ClickOps event count (only applies when ClickOpsOnly=true)
+}
+
+// ListResources returns resources for a customer, with optional filters
+func (s *Store) ListResources(ctx context.Context, customerID string, filter ResourceFilter) ([]models.Resource, error) {
+	var resources []models.Resource
+	var lastKey map[string]types.AttributeValue
+
+	for {
+		input := &dynamodb.QueryInput{
+			TableName:              aws.String(ResourcesTableName),
+			KeyConditionExpression: aws.String("customerId = :customerId"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":customerId": &types.AttributeValueMemberS{Value: customerID},
+			},
+			ExclusiveStartKey: lastKey,
+		}
+
+		result, err := s.client.Query(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query resources: %w", err)
+		}
+
+		for _, item := range result.Items {
+			var resource models.Resource
+			if err := attributevalue.UnmarshalMap(item, &resource); err != nil {
+				continue
+			}
+
+			// Filter by service type
+			if filter.ServiceType != "" && !strings.HasPrefix(resource.Type, filter.ServiceType+":") {
+				continue
+			}
+
+			// Time range filter on last_seen (applies to all resources)
+			if filter.StartTime != "" && resource.LastSeen < filter.StartTime {
+				continue
+			}
+			if filter.EndTime != "" && resource.LastSeen > filter.EndTime {
+				continue
+			}
+
+			// ClickOps filters
+			if filter.ClickOpsOnly {
+				if len(resource.ClickOpsAccesses) == 0 {
+					continue
+				}
+				minCount := filter.MinClickOpsCount
+				if minCount < 1 {
+					minCount = 1
+				}
+				if resource.ClickOpsCount < minCount {
+					continue
+				}
+
+				// Time range filter on ClickOps accesses
+				if filter.StartTime != "" || filter.EndTime != "" {
+					hasMatch := false
+					for _, access := range resource.ClickOpsAccesses {
+						if filter.StartTime != "" && access.AccessTime < filter.StartTime {
+							continue
+						}
+						if filter.EndTime != "" && access.AccessTime > filter.EndTime {
+							continue
+						}
+						hasMatch = true
+						break
+					}
+					if !hasMatch {
+						continue
+					}
+				}
+			}
+
+			resources = append(resources, resource)
+		}
+
+		if result.LastEvaluatedKey == nil {
+			break
+		}
+		lastKey = result.LastEvaluatedKey
+	}
+
+	return resources, nil
 }
 
 // GetSession fetches a session by start time

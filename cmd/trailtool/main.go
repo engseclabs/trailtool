@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -37,6 +38,7 @@ func main() {
 	rootCmd.AddCommand(usersCmd())
 	rootCmd.AddCommand(policyCmd())
 	rootCmd.AddCommand(sessionsCmd())
+	rootCmd.AddCommand(resourcesCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -377,6 +379,108 @@ func sessionsSummarizeCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&sessionID, "session-id", "", "Session ID")
 	cmd.Flags().StringVar(&startTime, "start-time", "", "Session start time (ISO8601)")
+
+	return cmd
+}
+
+// --- resources ---
+
+func resourcesCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "resources",
+		Short: "Resource operations",
+	}
+	cmd.AddCommand(resourcesListCmd())
+	return cmd
+}
+
+func resourcesListCmd() *cobra.Command {
+	var days int
+	var serviceType string
+	var clickops bool
+	var minClickOps int
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List tracked AWS resources",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+			s, err := store.NewStore(ctx)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to connect to AWS: %v\n", err)
+				os.Exit(1)
+				return nil
+			}
+
+			filter := store.ResourceFilter{
+				ClickOpsOnly:     clickops,
+				ServiceType:      serviceType,
+				MinClickOpsCount: minClickOps,
+			}
+			if days > 0 {
+				filter.StartTime = time.Now().AddDate(0, 0, -days).Format("2006-01-02")
+			}
+
+			resources, err := s.ListResources(ctx, customerID, filter)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+				return nil
+			}
+
+			if format == "json" {
+				if resources == nil {
+					resources = []models.Resource{}
+				}
+				return printJSON(resources)
+			}
+
+			if len(resources) == 0 {
+				fmt.Println("No resources found.")
+				return nil
+			}
+
+			if clickops {
+				fmt.Printf("Found %d resources created/modified via web console:\n\n", len(resources))
+
+				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+				fmt.Fprintln(w, "RESOURCE\tTYPE\tACCOUNT\tCLICKOPS EVENTS\tLAST SEEN")
+				for _, r := range resources {
+					fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n",
+						r.Name, r.Type, r.AccountID, r.ClickOpsCount, r.LastSeen)
+				}
+				w.Flush()
+
+				fmt.Println("\n--- Console Operations ---")
+				for _, r := range resources {
+					fmt.Printf("\n%s (%s)\n", r.Name, r.Type)
+					for _, access := range r.ClickOpsAccesses {
+						date := access.AccessTime
+						if len(date) >= 10 {
+							date = date[:10]
+						}
+						fmt.Printf("  %s by %s (%dx) - %s\n",
+							access.EventName, access.PersonEmail, access.EventCount, date)
+					}
+				}
+			} else {
+				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+				fmt.Fprintln(w, "RESOURCE\tTYPE\tACCOUNT\tEVENTS\tCLICKOPS\tLAST SEEN")
+				for _, r := range resources {
+					fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%s\n",
+						r.Name, r.Type, r.AccountID, r.TotalEvents, r.ClickOpsCount, r.LastSeen)
+				}
+				w.Flush()
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVar(&days, "days", 0, "Filter to last N days")
+	cmd.Flags().StringVar(&serviceType, "service", "", "Filter by AWS service type (e.g. s3, lambda, ec2)")
+	cmd.Flags().BoolVar(&clickops, "clickops", false, "Only show resources created/modified via web console")
+	cmd.Flags().IntVar(&minClickOps, "min-clickops", 1, "Minimum ClickOps events (used with --clickops)")
 
 	return cmd
 }

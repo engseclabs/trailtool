@@ -135,6 +135,48 @@ type ResourceAccessItem struct {
 	ErrorMessage string `json:"error_message,omitempty" dynamodbav:"error_message"`
 }
 
+// ClickOpsAccess represents a ClickOps (web console) modification to a resource
+type ClickOpsAccess struct {
+	SessionID   string `json:"session_id" dynamodbav:"session_id"`
+	PersonEmail string `json:"person_email" dynamodbav:"person_email"`
+	EventName   string `json:"event_name" dynamodbav:"event_name"`
+	AccessTime  string `json:"access_time" dynamodbav:"access_time"`
+	EventCount  int    `json:"event_count" dynamodbav:"event_count"`
+	AccountID   string `json:"account_id" dynamodbav:"account_id"`
+}
+
+// Resource represents an aggregated resource record from the resources-aggregated table
+type Resource struct {
+	Identifier string `json:"identifier" dynamodbav:"identifier"`
+	Type       string `json:"type" dynamodbav:"type"`
+	ARN        string `json:"arn,omitempty" dynamodbav:"arn"`
+	Name       string `json:"name" dynamodbav:"name"`
+	AccountID  string `json:"account_id" dynamodbav:"account_id"`
+
+	// Aggregated counts
+	TotalEvents   int            `json:"total_events" dynamodbav:"total_events"`
+	RolesUsing    []string       `json:"roles_using,omitempty" dynamodbav:"roles_using"`
+	RolesCount    int            `json:"roles_count" dynamodbav:"roles_count"`
+	ServicesUsed  []string       `json:"services_used,omitempty" dynamodbav:"services_used"`
+	TopEventNames map[string]int `json:"top_event_names,omitempty" dynamodbav:"top_event_names"`
+
+	// Access Denied tracking
+	TotalDeniedEvents   int            `json:"total_denied_events,omitempty" dynamodbav:"total_denied_events"`
+	TopDeniedEventNames map[string]int `json:"top_denied_event_names,omitempty" dynamodbav:"top_denied_event_names"`
+
+	// Noun-based architecture counts
+	PeopleCount   int `json:"people_count" dynamodbav:"people_count"`
+	SessionsCount int `json:"sessions_count" dynamodbav:"sessions_count"`
+
+	// ClickOps tracking
+	ClickOpsAccesses []ClickOpsAccess `json:"clickops_accesses,omitempty" dynamodbav:"clickops_accesses"`
+	ClickOpsCount    int              `json:"clickops_count" dynamodbav:"clickops_count"`
+
+	// Activity tracking
+	FirstSeen string `json:"first_seen" dynamodbav:"first_seen"`
+	LastSeen  string `json:"last_seen" dynamodbav:"last_seen"`
+}
+
 // EventAccessItem tracks event access details for role aggregation
 type EventAccessItem struct {
 	Service      string `json:"service" dynamodbav:"service"`

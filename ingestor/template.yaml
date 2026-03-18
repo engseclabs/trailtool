@@ -205,8 +205,8 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - s3:PutBucketNotificationConfiguration
-                  - s3:GetBucketNotificationConfiguration
+                  - s3:PutBucketNotification
+                  - s3:GetBucketNotification
                 Resource: !Sub 'arn:aws:s3:::${CloudTrailBucketName}'
 
   BucketEventBridgeHelperFunction:
