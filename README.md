@@ -44,6 +44,12 @@ sam deploy --parameter-overrides \
 ## Install the CLI
 
 ```bash
+brew install engseclabs/tap/trailtool
+```
+
+Or with Go:
+
+```bash
 go install github.com/engseclabs/trailtool/cmd/trailtool@latest
 ```
 
@@ -80,3 +86,9 @@ trailtool resources list --service s3 --days 7
 ```
 
 All commands support `--format json` for machine-readable output.
+
+## Using TrailTool with AI Coding Agents
+
+TrailTool is designed to work well with AI coding agents like Claude Code and Cursor. To teach your agent about TrailTool's capabilities, copy [`docs/agent-instructions.md`](docs/agent-instructions.md) into your project as `CLAUDE.md` (or your agent's equivalent configuration file).
+
+This gives your agent full knowledge of the CLI and step-by-step workflows for common tasks like detecting ClickOps, generating least-privilege IAM policies, and validating break-glass access.

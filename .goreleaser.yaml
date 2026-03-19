@@ -1,0 +1,32 @@
+version: 2
+
+builds:
+  - main: ./cmd/trailtool
+    binary: trailtool
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats:
+      - tar.gz
+
+homebrew_casks:
+  - name: trailtool
+    repository:
+      owner: engseclabs
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/engseclabs/trailtool
+    description: CLI for querying precomputed CloudTrail data — people, sessions, roles, services, resources
+    license: MIT
+
+release:
+  github:
+    owner: engseclabs
+    name: trailtool
