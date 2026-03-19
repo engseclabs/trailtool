@@ -6,20 +6,15 @@ TrailTool aggregates CloudTrail logs to simplify analysis for AI agents. It comb
 - DynamoDB tables for persisting queryable entities: People, Sessions, Roles, Services, Resources
 - `trailtool` CLI for accessing entity data to support common security and operational use cases
 
-```
-CloudTrail S3 → EventBridge → Ingestor Lambda → DynamoDB ← CLI
-```
-
-*A hosted version with more features (e.g. UI, API, MCP) is available - see [trailtool.io](https://trailtool.io).*
-
-## Use cases
+With TrailTool, you can:
 
 - Investigate and summarize web/CLI sessions clarifying access patterns
 - Generate least-privilege IAM policies from actual usage
 - Detect ClickOps resources created or modified via console instead of IaC
 
-For details, see https://engseclabs.com/blog/cloudtrail-for-ai-agents/
+For more details about how to use TrailTool, see https://engseclabs.com/blog/cloudtrail-for-ai-agents/.
 
+A hosted version with more features (e.g. UI, API, MCP) is available - see [trailtool.io](https://trailtool.io).
 
 ## Quick Start
 
