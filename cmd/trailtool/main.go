@@ -30,14 +30,16 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:   "trailtool",
 		Short: "TrailTool - AWS CloudTrail analysis CLI",
-		Long:  "Analyze AWS CloudTrail data for user sessions, role usage, and IAM policy generation.",
+		Long:  "Analyze AWS CloudTrail data for people, sessions, accounts, roles, services, and resources.",
 	}
 
 	rootCmd.PersistentFlags().StringVar(&format, "format", "text", "Output format: text or json")
 
-	rootCmd.AddCommand(usersCmd())
-	rootCmd.AddCommand(policyCmd())
+	rootCmd.AddCommand(peopleCmd())
 	rootCmd.AddCommand(sessionsCmd())
+	rootCmd.AddCommand(accountsCmd())
+	rootCmd.AddCommand(rolesCmd())
+	rootCmd.AddCommand(servicesCmd())
 	rootCmd.AddCommand(resourcesCmd())
 
 	if err := rootCmd.Execute(); err != nil {
@@ -45,35 +47,31 @@ func main() {
 	}
 }
 
-// --- users ---
+// --- people ---
 
-func usersCmd() *cobra.Command {
+func peopleCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "users",
-		Short: "Manage users",
+		Use:   "people",
+		Short: "People tracked in CloudTrail",
 	}
-	cmd.AddCommand(usersListCmd())
+	cmd.AddCommand(peopleListCmd())
 	return cmd
 }
 
-func usersListCmd() *cobra.Command {
+func peopleListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List all tracked users",
+		Short: "List all tracked people",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: failed to connect to AWS: %v\n", err)
-				os.Exit(1)
-				return nil
+				return fatal("failed to connect to AWS: %v", err)
 			}
 
 			people, err := s.ListPeople(ctx, customerID)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-				return nil
+				return fatal("%v", err)
 			}
 
 			if format == "json" {
@@ -91,101 +89,12 @@ func usersListCmd() *cobra.Command {
 	}
 }
 
-// --- policy ---
-
-func policyCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "policy",
-		Short: "IAM policy operations",
-	}
-	cmd.AddCommand(policyGenerateCmd())
-	return cmd
-}
-
-func policyGenerateCmd() *cobra.Command {
-	var roleName string
-	var days int
-	var includeDenied bool
-	var explain bool
-
-	cmd := &cobra.Command{
-		Use:   "generate",
-		Short: "Generate least-privilege IAM policy for a role",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if roleName == "" {
-				fmt.Fprintln(os.Stderr, "Error: --role is required")
-				os.Exit(3)
-				return nil
-			}
-
-			ctx := context.Background()
-			s, err := store.NewStore(ctx)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: failed to connect to AWS: %v\n", err)
-				os.Exit(1)
-				return nil
-			}
-
-			// Try as ARN first, then by name
-			var role *models.Role
-			if len(roleName) >= 3 && roleName[:3] == "arn" {
-				role, err = s.GetRole(ctx, customerID, roleName)
-			} else {
-				role, err = s.GetRoleByName(ctx, customerID, roleName)
-			}
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-				return nil
-			}
-			if role == nil {
-				fmt.Fprintf(os.Stderr, "Error: role not found: %s\n", roleName)
-				os.Exit(2)
-				return nil
-			}
-
-			result, err := policy.GeneratePolicy(role, includeDenied)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-				return nil
-			}
-
-			if format == "json" {
-				return printJSON(result)
-			}
-
-			fmt.Println(result.PolicyJSON)
-
-			if explain {
-				fmt.Fprintf(os.Stderr, "\n--- Policy Summary ---\n")
-				fmt.Fprintf(os.Stderr, "Role: %s (%s)\n", result.RoleName, result.RoleARN)
-				fmt.Fprintf(os.Stderr, "Total unique IAM actions: %d\n", result.TotalActionsUsed)
-				if len(result.UnmappedEvents) > 0 {
-					fmt.Fprintf(os.Stderr, "Unmapped CloudTrail events: %d\n", len(result.UnmappedEvents))
-					for _, e := range result.UnmappedEvents {
-						fmt.Fprintf(os.Stderr, "  - %s\n", e)
-					}
-				}
-			}
-			return nil
-		},
-	}
-
-	cmd.Flags().StringVar(&roleName, "role", "", "Role name or ARN")
-	cmd.Flags().IntVar(&days, "days", 0, "Filter to last N days of activity")
-	cmd.Flags().BoolVar(&includeDenied, "include-denied", false, "Include denied events in policy")
-	cmd.Flags().BoolVar(&explain, "explain", false, "Show policy explanation on stderr")
-
-	return cmd
-}
-
 // --- sessions ---
 
 func sessionsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sessions",
-		Short: "Session operations",
+		Short: "CloudTrail sessions",
 	}
 	cmd.AddCommand(sessionsListCmd())
 	cmd.AddCommand(sessionsDetailCmd())
@@ -204,16 +113,12 @@ func sessionsListCmd() *cobra.Command {
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: failed to connect to AWS: %v\n", err)
-				os.Exit(1)
-				return nil
+				return fatal("failed to connect to AWS: %v", err)
 			}
 
 			sessions, err := session.ListSessions(ctx, s, customerID, user, days)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-				return nil
+				return fatal("%v", err)
 			}
 
 			if format == "json" {
@@ -240,7 +145,6 @@ func sessionsListCmd() *cobra.Command {
 }
 
 func sessionsDetailCmd() *cobra.Command {
-	var sessionID string
 	var startTime string
 
 	cmd := &cobra.Command{
@@ -248,29 +152,21 @@ func sessionsDetailCmd() *cobra.Command {
 		Short: "Show session details",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if startTime == "" {
-				fmt.Fprintln(os.Stderr, "Error: --start-time is required")
-				os.Exit(3)
-				return nil
+				return fatal("--start-time is required")
 			}
 
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: failed to connect to AWS: %v\n", err)
-				os.Exit(1)
-				return nil
+				return fatal("failed to connect to AWS: %v", err)
 			}
 
 			sess, err := s.GetSession(ctx, customerID, startTime)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-				return nil
+				return fatal("%v", err)
 			}
 			if sess == nil {
-				fmt.Fprintln(os.Stderr, "Error: session not found")
-				os.Exit(2)
-				return nil
+				return fatal("session not found")
 			}
 
 			if format == "json" {
@@ -305,14 +201,12 @@ func sessionsDetailCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&sessionID, "session-id", "", "Session ID")
 	cmd.Flags().StringVar(&startTime, "start-time", "", "Session start time (ISO8601)")
 
 	return cmd
 }
 
 func sessionsSummarizeCmd() *cobra.Command {
-	var sessionID string
 	var startTime string
 
 	cmd := &cobra.Command{
@@ -320,29 +214,21 @@ func sessionsSummarizeCmd() *cobra.Command {
 		Short: "Generate AI summary of a session via Bedrock",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if startTime == "" {
-				fmt.Fprintln(os.Stderr, "Error: --start-time is required")
-				os.Exit(3)
-				return nil
+				return fatal("--start-time is required")
 			}
 
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: failed to connect to AWS: %v\n", err)
-				os.Exit(1)
-				return nil
+				return fatal("failed to connect to AWS: %v", err)
 			}
 
 			sess, err := s.GetSession(ctx, customerID, startTime)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-				return nil
+				return fatal("%v", err)
 			}
 			if sess == nil {
-				fmt.Fprintln(os.Stderr, "Error: session not found")
-				os.Exit(2)
-				return nil
+				return fatal("session not found")
 			}
 
 			// Check for cached summary
@@ -361,9 +247,7 @@ func sessionsSummarizeCmd() *cobra.Command {
 
 			summary, err := session.SummarizeSession(ctx, sess)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: bedrock invocation failed: %v\n", err)
-				os.Exit(4)
-				return nil
+				return fatal("bedrock invocation failed: %v", err)
 			}
 
 			if format == "json" {
@@ -377,8 +261,355 @@ func sessionsSummarizeCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&sessionID, "session-id", "", "Session ID")
 	cmd.Flags().StringVar(&startTime, "start-time", "", "Session start time (ISO8601)")
+
+	return cmd
+}
+
+// --- accounts ---
+
+func accountsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "accounts",
+		Short: "AWS accounts",
+	}
+	cmd.AddCommand(accountsListCmd())
+	cmd.AddCommand(accountsDetailCmd())
+	return cmd
+}
+
+func accountsListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List all tracked AWS accounts",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+			s, err := store.NewStore(ctx)
+			if err != nil {
+				return fatal("failed to connect to AWS: %v", err)
+			}
+
+			accounts, err := s.ListAccounts(ctx, customerID)
+			if err != nil {
+				return fatal("%v", err)
+			}
+
+			if format == "json" {
+				return printJSON(accounts)
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "ACCOUNT ID\tNAME\tPEOPLE\tSESSIONS\tROLES\tSERVICES\tRESOURCES\tLAST SEEN")
+			for _, a := range accounts {
+				fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n",
+					a.AccountID, a.AccountName, a.PeopleCount, a.SessionsCount,
+					a.RolesCount, a.ServicesCount, a.ResourcesCount, a.LastSeen)
+			}
+			return w.Flush()
+		},
+	}
+}
+
+func accountsDetailCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "detail [account-id]",
+		Short: "Show account details",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+			s, err := store.NewStore(ctx)
+			if err != nil {
+				return fatal("failed to connect to AWS: %v", err)
+			}
+
+			account, err := s.GetAccount(ctx, customerID, args[0])
+			if err != nil {
+				return fatal("%v", err)
+			}
+			if account == nil {
+				return fatal("account not found: %s", args[0])
+			}
+
+			if format == "json" {
+				return printJSON(account)
+			}
+
+			fmt.Printf("Account: %s\n", account.AccountID)
+			if account.AccountName != "" {
+				fmt.Printf("Name: %s\n", account.AccountName)
+			}
+			fmt.Printf("First Seen: %s\n", account.FirstSeen)
+			fmt.Printf("Last Seen: %s\n", account.LastSeen)
+			fmt.Printf("People: %d\n", account.PeopleCount)
+			fmt.Printf("Sessions: %d\n", account.SessionsCount)
+			fmt.Printf("Roles: %d\n", account.RolesCount)
+			fmt.Printf("Services: %d\n", account.ServicesCount)
+			fmt.Printf("Resources: %d\n", account.ResourcesCount)
+			fmt.Printf("Events: %d\n", account.EventsCount)
+
+			return nil
+		},
+	}
+
+	return cmd
+}
+
+// --- roles ---
+
+func rolesCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "roles",
+		Short: "IAM roles",
+	}
+	cmd.AddCommand(rolesListCmd())
+	cmd.AddCommand(rolesDetailCmd())
+	cmd.AddCommand(rolesPolicyCmd())
+	return cmd
+}
+
+func rolesListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List all tracked IAM roles",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+			s, err := store.NewStore(ctx)
+			if err != nil {
+				return fatal("failed to connect to AWS: %v", err)
+			}
+
+			roles, err := s.ListRoles(ctx, customerID)
+			if err != nil {
+				return fatal("%v", err)
+			}
+
+			if format == "json" {
+				return printJSON(roles)
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "NAME\tACCOUNT\tEVENTS\tPEOPLE\tSESSIONS\tDENIED\tLAST SEEN")
+			for _, r := range roles {
+				fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
+					r.Name, r.AccountID, r.TotalEvents, r.PeopleCount,
+					r.SessionsCount, r.TotalDeniedEvents, r.LastSeen)
+			}
+			return w.Flush()
+		},
+	}
+}
+
+func rolesDetailCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "detail [role-name-or-arn]",
+		Short: "Show role details",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+			s, err := store.NewStore(ctx)
+			if err != nil {
+				return fatal("failed to connect to AWS: %v", err)
+			}
+
+			role, err := lookupRole(ctx, s, args[0])
+			if err != nil {
+				return fatal("%v", err)
+			}
+			if role == nil {
+				return fatal("role not found: %s", args[0])
+			}
+
+			if format == "json" {
+				return printJSON(role)
+			}
+
+			fmt.Printf("Role: %s\n", role.Name)
+			fmt.Printf("ARN: %s\n", role.ARN)
+			fmt.Printf("Account: %s\n", role.AccountID)
+			fmt.Printf("First Seen: %s\n", role.FirstSeen)
+			fmt.Printf("Last Seen: %s\n", role.LastSeen)
+			fmt.Printf("Total Events: %d\n", role.TotalEvents)
+			fmt.Printf("People: %d\n", role.PeopleCount)
+			fmt.Printf("Sessions: %d\n", role.SessionsCount)
+
+			if role.TotalDeniedEvents > 0 {
+				fmt.Printf("Denied Events: %d\n", role.TotalDeniedEvents)
+			}
+
+			if len(role.ServicesUsed) > 0 {
+				fmt.Println("\nServices Used:")
+				for _, svc := range role.ServicesUsed {
+					fmt.Printf("  %s\n", svc)
+				}
+			}
+
+			if len(role.TopEventNames) > 0 {
+				fmt.Println("\nTop Events:")
+				for event, count := range role.TopEventNames {
+					fmt.Printf("  %s: %d\n", event, count)
+				}
+			}
+
+			return nil
+		},
+	}
+
+	return cmd
+}
+
+func rolesPolicyCmd() *cobra.Command {
+	var includeDenied bool
+	var explain bool
+
+	cmd := &cobra.Command{
+		Use:   "policy [role-name-or-arn]",
+		Short: "Generate least-privilege IAM policy for a role",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+			s, err := store.NewStore(ctx)
+			if err != nil {
+				return fatal("failed to connect to AWS: %v", err)
+			}
+
+			role, err := lookupRole(ctx, s, args[0])
+			if err != nil {
+				return fatal("%v", err)
+			}
+			if role == nil {
+				return fatal("role not found: %s", args[0])
+			}
+
+			result, err := policy.GeneratePolicy(role, includeDenied)
+			if err != nil {
+				return fatal("%v", err)
+			}
+
+			if format == "json" {
+				return printJSON(result)
+			}
+
+			fmt.Println(result.PolicyJSON)
+
+			if explain {
+				fmt.Fprintf(os.Stderr, "\n--- Policy Summary ---\n")
+				fmt.Fprintf(os.Stderr, "Role: %s (%s)\n", result.RoleName, result.RoleARN)
+				fmt.Fprintf(os.Stderr, "Total unique IAM actions: %d\n", result.TotalActionsUsed)
+				if len(result.UnmappedEvents) > 0 {
+					fmt.Fprintf(os.Stderr, "Unmapped CloudTrail events: %d\n", len(result.UnmappedEvents))
+					for _, e := range result.UnmappedEvents {
+						fmt.Fprintf(os.Stderr, "  - %s\n", e)
+					}
+				}
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&includeDenied, "include-denied", false, "Include denied events in policy")
+	cmd.Flags().BoolVar(&explain, "explain", false, "Show policy explanation on stderr")
+
+	return cmd
+}
+
+// --- services ---
+
+func servicesCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "services",
+		Short: "AWS services",
+	}
+	cmd.AddCommand(servicesListCmd())
+	cmd.AddCommand(servicesDetailCmd())
+	return cmd
+}
+
+func servicesListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List all tracked AWS services",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+			s, err := store.NewStore(ctx)
+			if err != nil {
+				return fatal("failed to connect to AWS: %v", err)
+			}
+
+			services, err := s.ListServices(ctx, customerID)
+			if err != nil {
+				return fatal("%v", err)
+			}
+
+			if format == "json" {
+				return printJSON(services)
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "SERVICE\tDISPLAY NAME\tEVENTS\tROLES\tRESOURCES\tPEOPLE\tLAST SEEN")
+			for _, svc := range services {
+				fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
+					svc.EventSource, svc.DisplayName, svc.TotalEvents,
+					svc.RolesCount, svc.ResourcesCount, svc.PeopleCount, svc.LastSeen)
+			}
+			return w.Flush()
+		},
+	}
+}
+
+func servicesDetailCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "detail [event-source]",
+		Short: "Show service details",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+			s, err := store.NewStore(ctx)
+			if err != nil {
+				return fatal("failed to connect to AWS: %v", err)
+			}
+
+			svc, err := s.GetService(ctx, customerID, args[0])
+			if err != nil {
+				return fatal("%v", err)
+			}
+			if svc == nil {
+				return fatal("service not found: %s", args[0])
+			}
+
+			if format == "json" {
+				return printJSON(svc)
+			}
+
+			fmt.Printf("Service: %s\n", svc.EventSource)
+			if svc.DisplayName != "" {
+				fmt.Printf("Display Name: %s\n", svc.DisplayName)
+			}
+			if svc.Category != "" {
+				fmt.Printf("Category: %s\n", svc.Category)
+			}
+			fmt.Printf("First Seen: %s\n", svc.FirstSeen)
+			fmt.Printf("Last Seen: %s\n", svc.LastSeen)
+			fmt.Printf("Total Events: %d\n", svc.TotalEvents)
+			fmt.Printf("Roles: %d\n", svc.RolesCount)
+			fmt.Printf("Resources: %d\n", svc.ResourcesCount)
+			fmt.Printf("People: %d\n", svc.PeopleCount)
+			fmt.Printf("Sessions: %d\n", svc.SessionsCount)
+			fmt.Printf("Accounts: %d\n", svc.AccountsCount)
+
+			if svc.TotalDeniedEvents > 0 {
+				fmt.Printf("Denied Events: %d\n", svc.TotalDeniedEvents)
+			}
+
+			if len(svc.TopEventNames) > 0 {
+				fmt.Println("\nTop Events:")
+				for event, count := range svc.TopEventNames {
+					fmt.Printf("  %s: %d\n", event, count)
+				}
+			}
+
+			return nil
+		},
+	}
 
 	return cmd
 }
@@ -388,7 +619,7 @@ func sessionsSummarizeCmd() *cobra.Command {
 func resourcesCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "resources",
-		Short: "Resource operations",
+		Short: "AWS resources",
 	}
 	cmd.AddCommand(resourcesListCmd())
 	return cmd
@@ -407,9 +638,7 @@ func resourcesListCmd() *cobra.Command {
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: failed to connect to AWS: %v\n", err)
-				os.Exit(1)
-				return nil
+				return fatal("failed to connect to AWS: %v", err)
 			}
 
 			filter := store.ResourceFilter{
@@ -423,9 +652,7 @@ func resourcesListCmd() *cobra.Command {
 
 			resources, err := s.ListResources(ctx, customerID, filter)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-				return nil
+				return fatal("%v", err)
 			}
 
 			if format == "json" {
@@ -483,6 +710,21 @@ func resourcesListCmd() *cobra.Command {
 	cmd.Flags().IntVar(&minClickOps, "min-clickops", 1, "Minimum ClickOps events (used with --clickops)")
 
 	return cmd
+}
+
+// --- helpers ---
+
+func lookupRole(ctx context.Context, s *store.Store, nameOrARN string) (*models.Role, error) {
+	if len(nameOrARN) >= 3 && nameOrARN[:3] == "arn" {
+		return s.GetRole(ctx, customerID, nameOrARN)
+	}
+	return s.GetRoleByName(ctx, customerID, nameOrARN)
+}
+
+func fatal(format string, args ...interface{}) error {
+	fmt.Fprintf(os.Stderr, "Error: "+format+"\n", args...)
+	os.Exit(1)
+	return nil
 }
 
 func printJSON(v interface{}) error {

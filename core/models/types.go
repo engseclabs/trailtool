@@ -186,3 +186,47 @@ type EventAccessItem struct {
 	PolicyType   string `json:"policy_type,omitempty" dynamodbav:"policy_type"`
 	ErrorMessage string `json:"error_message,omitempty" dynamodbav:"error_message"`
 }
+
+// Account represents an aggregated account record from the accounts-aggregated table
+type Account struct {
+	AccountID   string `json:"account_id" dynamodbav:"account_id"`
+	AccountName string `json:"account_name,omitempty" dynamodbav:"account_name"`
+	FirstSeen   string `json:"first_seen" dynamodbav:"first_seen"`
+	LastSeen    string `json:"last_seen" dynamodbav:"last_seen"`
+
+	// Aggregated counts
+	PeopleCount    int `json:"people_count" dynamodbav:"people_count"`
+	SessionsCount  int `json:"sessions_count" dynamodbav:"sessions_count"`
+	RolesCount     int `json:"roles_count" dynamodbav:"roles_count"`
+	ServicesCount  int `json:"services_count" dynamodbav:"services_count"`
+	ResourcesCount int `json:"resources_count" dynamodbav:"resources_count"`
+	EventsCount    int `json:"events_count" dynamodbav:"events_count"`
+}
+
+// Service represents an aggregated AWS service record from the services-aggregated table
+type Service struct {
+	EventSource string `json:"event_source" dynamodbav:"event_source"`
+	DisplayName string `json:"display_name" dynamodbav:"display_name"`
+	Category    string `json:"category" dynamodbav:"category"`
+
+	// Aggregated counts
+	TotalEvents    int            `json:"total_events" dynamodbav:"total_events"`
+	RolesUsing     []string       `json:"roles_using" dynamodbav:"roles_using"`
+	RolesCount     int            `json:"roles_count" dynamodbav:"roles_count"`
+	ResourcesUsed  []string       `json:"resources_used" dynamodbav:"resources_used"`
+	ResourcesCount int            `json:"resources_count" dynamodbav:"resources_count"`
+	TopEventNames  map[string]int `json:"top_event_names" dynamodbav:"top_event_names"`
+
+	// Access Denied tracking
+	TotalDeniedEvents   int            `json:"total_denied_events,omitempty" dynamodbav:"total_denied_events"`
+	TopDeniedEventNames map[string]int `json:"top_denied_event_names,omitempty" dynamodbav:"top_denied_event_names"`
+
+	// Noun-based architecture counts
+	PeopleCount   int `json:"people_count" dynamodbav:"people_count"`
+	SessionsCount int `json:"sessions_count" dynamodbav:"sessions_count"`
+	AccountsCount int `json:"accounts_count" dynamodbav:"accounts_count"`
+
+	// Activity tracking
+	FirstSeen string `json:"first_seen" dynamodbav:"first_seen"`
+	LastSeen  string `json:"last_seen" dynamodbav:"last_seen"`
+}

@@ -19,6 +19,8 @@ const (
 	SessionsTableName  = "trailtool-sessions-aggregated"
 	RolesTableName     = "trailtool-roles-aggregated"
 	ResourcesTableName = "trailtool-resources-aggregated"
+	AccountsTableName  = "trailtool-accounts-aggregated"
+	ServicesTableName  = "trailtool-services-aggregated"
 )
 
 // Store wraps the DynamoDB client
@@ -289,6 +291,122 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 	}
 
 	return resources, nil
+}
+
+// ListAccounts returns all accounts for a customer
+func (s *Store) ListAccounts(ctx context.Context, customerID string) ([]models.Account, error) {
+	var accounts []models.Account
+	var lastKey map[string]types.AttributeValue
+
+	for {
+		input := &dynamodb.QueryInput{
+			TableName:              aws.String(AccountsTableName),
+			KeyConditionExpression: aws.String("customerId = :customerId"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":customerId": &types.AttributeValueMemberS{Value: customerID},
+			},
+			ExclusiveStartKey: lastKey,
+		}
+
+		result, err := s.client.Query(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query accounts: %w", err)
+		}
+
+		var page []models.Account
+		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal accounts: %w", err)
+		}
+		accounts = append(accounts, page...)
+
+		if result.LastEvaluatedKey == nil {
+			break
+		}
+		lastKey = result.LastEvaluatedKey
+	}
+
+	return accounts, nil
+}
+
+// GetAccount fetches an account by account ID
+func (s *Store) GetAccount(ctx context.Context, customerID, accountID string) (*models.Account, error) {
+	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(AccountsTableName),
+		Key: map[string]types.AttributeValue{
+			"customerId": &types.AttributeValueMemberS{Value: customerID},
+			"account_id": &types.AttributeValueMemberS{Value: accountID},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get account: %w", err)
+	}
+	if result.Item == nil {
+		return nil, nil
+	}
+
+	var account models.Account
+	if err := attributevalue.UnmarshalMap(result.Item, &account); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal account: %w", err)
+	}
+	return &account, nil
+}
+
+// ListServices returns all services for a customer
+func (s *Store) ListServices(ctx context.Context, customerID string) ([]models.Service, error) {
+	var services []models.Service
+	var lastKey map[string]types.AttributeValue
+
+	for {
+		input := &dynamodb.QueryInput{
+			TableName:              aws.String(ServicesTableName),
+			KeyConditionExpression: aws.String("customerId = :customerId"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":customerId": &types.AttributeValueMemberS{Value: customerID},
+			},
+			ExclusiveStartKey: lastKey,
+		}
+
+		result, err := s.client.Query(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query services: %w", err)
+		}
+
+		var page []models.Service
+		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal services: %w", err)
+		}
+		services = append(services, page...)
+
+		if result.LastEvaluatedKey == nil {
+			break
+		}
+		lastKey = result.LastEvaluatedKey
+	}
+
+	return services, nil
+}
+
+// GetService fetches a service by event source
+func (s *Store) GetService(ctx context.Context, customerID, eventSource string) (*models.Service, error) {
+	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(ServicesTableName),
+		Key: map[string]types.AttributeValue{
+			"customerId":   &types.AttributeValueMemberS{Value: customerID},
+			"event_source": &types.AttributeValueMemberS{Value: eventSource},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get service: %w", err)
+	}
+	if result.Item == nil {
+		return nil, nil
+	}
+
+	var service models.Service
+	if err := attributevalue.UnmarshalMap(result.Item, &service); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal service: %w", err)
+	}
+	return &service, nil
 }
 
 // GetSession fetches a session by start time
