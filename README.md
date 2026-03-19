@@ -14,9 +14,9 @@ CloudTrail S3 → EventBridge → Ingestor Lambda → DynamoDB ← CLI
 
 ## Use cases
 
-- **Investigate and summarize web/CLI sessions** clarifying access patterns
-- **Generate least-privilege IAM policies** from actual usage
-- **Detect ClickOps** resources created or modified via console instead of IaC
+- Investigate and summarize web/CLI sessions clarifying access patterns
+- Generate least-privilege IAM policies from actual usage
+- Detect ClickOps resources created or modified via console instead of IaC
 
 For details, see https://engseclabs.com/blog/cloudtrail-for-ai-agents/
 
