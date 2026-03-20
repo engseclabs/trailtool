@@ -12,9 +12,8 @@ TrailTool precomputes and caches CloudTrail data into queryable entities (People
 
 Before using trailtool, verify the environment is ready:
 
-1. **Active AWS session**: Run `aws sts get-caller-identity`. If this fails, the user needs to authenticate first. TrailTool uses standard AWS SDK credential resolution — if `AWS_PROFILE` and `AWS_REGION` are not set and the default profile doesn't point to the account where TrailTool is deployed, commands will fail. Ensure the correct profile and region are set (e.g. `export AWS_PROFILE=<profile> AWS_REGION=<region>`) before running trailtool commands.
-2. **Ingestor deployed**: Run `aws cloudformation describe-stacks --stack-name trailtool 2>/dev/null || aws cloudformation describe-stacks --stack-name sam-app 2>/dev/null`. If neither stack exists, the TrailTool ingestor hasn't been deployed. Direct the user to the [TrailTool README](https://github.com/engseclabs/trailtool) to deploy it first.
-3. **CLI installed**: Run `which trailtool`. If not found: `brew install engseclabs/tap/trailtool`.
+1. **CLI installed**: Run `which trailtool`. If not found: `brew install engseclabs/tap/trailtool`.
+2. **Status check**: Run `trailtool status`. This verifies AWS credentials, that the ingestor CloudFormation stack is deployed, and that TrailTool data is accessible. If any check fails, follow the printed guidance. If AWS credentials are not configured, ensure the correct profile and region are set (e.g. `export AWS_PROFILE=<profile> AWS_REGION=<region>`) before retrying.
 
 ## CLI Reference
 

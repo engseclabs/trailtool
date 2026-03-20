@@ -9,6 +9,7 @@ bootstrap.zip
 
 # Go build artifacts
 ingestor/ingestor
+trailtool
 
 # IDE
 .idea/
