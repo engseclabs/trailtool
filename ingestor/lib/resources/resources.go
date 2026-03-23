@@ -135,9 +135,24 @@ func ExtractResources(event types.CloudTrailRecord) []string {
 		}
 	}
 
+	// Services that are already handled explicitly above — skip their ARNs in the fallback
+	// to avoid creating duplicate resource entries with different identifier formats.
+	handledServices := map[string]bool{
+		"s3": true, "lambda": true, "dynamodb": true, "ec2": true, "iam": true,
+		"cloudformation": true, "controltower": true, "rds": true, "ecr": true,
+		"ecs": true, "sqs": true, "sns": true, "kms": true, "secretsmanager": true,
+		"logs": true, "events": true, "states": true, "apigateway": true,
+		"route53": true, "cloudfront": true,
+	}
+
 	// Fallback: include resources array from CloudTrail to capture services we don't explicitly parse
 	for _, r := range event.Resources {
 		if r.ARN != "" {
+			// Skip ARNs for services we already extract explicitly
+			arnParts := strings.SplitN(r.ARN, ":", 6)
+			if len(arnParts) >= 3 && handledServices[arnParts[2]] {
+				continue
+			}
 			norm := NormalizeResourceFromARN(r.ARN)
 			if !seen[norm] {
 				resources = append(resources, norm)

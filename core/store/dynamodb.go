@@ -261,7 +261,6 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 				if resource.ClickOpsCount < minCount {
 					continue
 				}
-
 				// Time range filter on ClickOps accesses
 				if filter.StartTime != "" || filter.EndTime != "" {
 					hasMatch := false

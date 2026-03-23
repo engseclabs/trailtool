@@ -258,10 +258,41 @@ func WriteServiceToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tab
 	return err
 }
 
-// WriteResourceToDynamoDB writes or updates a resource in DynamoDB
+// WriteResourceToDynamoDB writes or updates a resource in DynamoDB using read-merge-write pattern
 func WriteResourceToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, resource *types.DynamoDBResource) error {
 	resource.RolesCount = len(resource.RolesUsing)
 
+	// Query for existing resource
+	getInput := &dynamodb.GetItemInput{
+		TableName: aws.String(tableName),
+		Key: map[string]ddbtypes.AttributeValue{
+			"customerId": &ddbtypes.AttributeValueMemberS{Value: resource.CustomerID},
+			"identifier": &ddbtypes.AttributeValueMemberS{Value: resource.Identifier},
+		},
+	}
+
+	getResult, err := ddbClient.GetItem(ctx, getInput)
+	if err != nil {
+		log.Printf("WARNING: Failed to get existing resource: %v", err)
+	} else if getResult.Item != nil && len(getResult.Item) > 0 {
+		var existingResource types.DynamoDBResource
+		if err := attributevalue.UnmarshalMap(getResult.Item, &existingResource); err != nil {
+			log.Printf("WARNING: Failed to unmarshal existing resource: %v", err)
+		} else {
+			merged := MergeResourceAggregated(&existingResource, resource)
+			item, err := attributevalue.MarshalMap(merged)
+			if err != nil {
+				return fmt.Errorf("failed to marshal merged resource: %w", err)
+			}
+			_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
+				TableName: aws.String(tableName),
+				Item:      item,
+			})
+			return err
+		}
+	}
+
+	// No existing resource - write as new
 	item, err := attributevalue.MarshalMap(resource)
 	if err != nil {
 		return fmt.Errorf("failed to marshal resource: %w", err)
@@ -273,6 +304,92 @@ func WriteResourceToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, ta
 	})
 
 	return err
+}
+
+// MergeResourceAggregated merges two DynamoDBResource records, combining their data
+func MergeResourceAggregated(existing *types.DynamoDBResource, incoming *types.DynamoDBResource) *types.DynamoDBResource {
+	firstSeen := existing.FirstSeen
+	if incoming.FirstSeen < firstSeen {
+		firstSeen = incoming.FirstSeen
+	}
+	lastSeen := existing.LastSeen
+	if incoming.LastSeen > lastSeen {
+		lastSeen = incoming.LastSeen
+	}
+
+	// Use non-empty ARN
+	arn := existing.ARN
+	if arn == "" {
+		arn = incoming.ARN
+	}
+
+	// Use non-unknown type
+	resourceType := existing.Type
+	if resourceType == "unknown" && incoming.Type != "unknown" {
+		resourceType = incoming.Type
+	}
+
+	mergedClickOps := MergeClickOpsAccesses(existing.ClickOpsAccesses, incoming.ClickOpsAccesses)
+
+	// Sum clickops counts, but recount from merged accesses to be accurate
+	clickOpsCount := 0
+	for _, access := range mergedClickOps {
+		clickOpsCount += access.EventCount
+	}
+
+	merged := &types.DynamoDBResource{
+		CustomerID:          incoming.CustomerID,
+		Identifier:          incoming.Identifier,
+		Type:                resourceType,
+		ARN:                 arn,
+		Name:                incoming.Name,
+		AccountID:           incoming.AccountID,
+		TotalEvents:         existing.TotalEvents + incoming.TotalEvents,
+		RolesUsing:          MergeUniqueStrings(existing.RolesUsing, incoming.RolesUsing),
+		ServicesUsed:        MergeUniqueStrings(existing.ServicesUsed, incoming.ServicesUsed),
+		TopEventNames:       MergeIntMaps(existing.TopEventNames, incoming.TopEventNames),
+		FirstSeen:           firstSeen,
+		LastSeen:            lastSeen,
+		TotalDeniedEvents:   existing.TotalDeniedEvents + incoming.TotalDeniedEvents,
+		TopDeniedEventNames: MergeIntMaps(existing.TopDeniedEventNames, incoming.TopDeniedEventNames),
+		PeopleCount:         existing.PeopleCount + incoming.PeopleCount,
+		SessionsCount:       existing.SessionsCount + incoming.SessionsCount,
+		ClickOpsAccesses:    mergedClickOps,
+		ClickOpsCount:       clickOpsCount,
+	}
+	merged.RolesCount = len(merged.RolesUsing)
+
+	return merged
+}
+
+// MergeClickOpsAccesses merges two slices of ClickOpsAccess, deduplicating by session+event
+func MergeClickOpsAccesses(a, b []types.ClickOpsAccess) []types.ClickOpsAccess {
+	type key struct {
+		SessionID string
+		EventName string
+	}
+	merged := make(map[key]*types.ClickOpsAccess)
+
+	for i := range a {
+		k := key{a[i].SessionID, a[i].EventName}
+		cp := a[i]
+		merged[k] = &cp
+	}
+	for i := range b {
+		k := key{b[i].SessionID, b[i].EventName}
+		if existing, ok := merged[k]; ok {
+			existing.EventCount += b[i].EventCount
+		} else {
+			cp := b[i]
+			merged[k] = &cp
+		}
+	}
+
+	result := make([]types.ClickOpsAccess, 0, len(merged))
+	for _, v := range merged {
+		result = append(result, *v)
+	}
+	return result
 }
 
 // WritePersonToDynamoDB writes or updates a person in DynamoDB
