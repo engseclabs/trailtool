@@ -130,19 +130,39 @@ func (s *Store) GetRole(ctx context.Context, customerID, roleARN string) (*model
 	return &role, nil
 }
 
-// GetRoleByName finds a role by name (searches all roles for the customer)
-func (s *Store) GetRoleByName(ctx context.Context, customerID, roleName string) (*models.Role, error) {
+// GetRoleByName finds a role by name (searches all roles for the customer).
+// If accountID is non-empty, results are scoped to that account.
+// Returns an error if multiple roles match (ambiguous name).
+func (s *Store) GetRoleByName(ctx context.Context, customerID, roleName, accountID string) (*models.Role, error) {
 	roles, err := s.ListRoles(ctx, customerID)
 	if err != nil {
 		return nil, err
 	}
 
+	var matches []models.Role
 	for i := range roles {
-		if roles[i].Name == roleName || strings.Contains(roles[i].ARN, roleName) {
-			return &roles[i], nil
+		if roles[i].Name != roleName && !strings.Contains(roles[i].ARN, roleName) {
+			continue
 		}
+		if accountID != "" && roles[i].AccountID != accountID {
+			continue
+		}
+		matches = append(matches, roles[i])
 	}
-	return nil, nil
+
+	switch len(matches) {
+	case 0:
+		return nil, nil
+	case 1:
+		return &matches[0], nil
+	default:
+		msg := fmt.Sprintf("role name %q is ambiguous — found %d matches:\n", roleName, len(matches))
+		for _, m := range matches {
+			msg += fmt.Sprintf("  %s (account %s)\n", m.ARN, m.AccountID)
+		}
+		msg += "Use the full ARN or --account to disambiguate."
+		return nil, fmt.Errorf("%s", msg)
+	}
 }
 
 // ListSessions returns sessions, optionally filtered by email and days

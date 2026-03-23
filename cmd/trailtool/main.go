@@ -481,6 +481,8 @@ func rolesListCmd() *cobra.Command {
 }
 
 func rolesDetailCmd() *cobra.Command {
+	var accountID string
+
 	cmd := &cobra.Command{
 		Use:   "detail [role-name-or-arn]",
 		Short: "Show role details",
@@ -492,7 +494,7 @@ func rolesDetailCmd() *cobra.Command {
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			role, err := lookupRole(ctx, s, args[0])
+			role, err := lookupRole(ctx, s, args[0], accountID)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -535,12 +537,15 @@ func rolesDetailCmd() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().StringVar(&accountID, "account", "", "Filter by AWS account ID (disambiguates roles with the same name)")
+
 	return cmd
 }
 
 func rolesPolicyCmd() *cobra.Command {
 	var includeDenied bool
 	var explain bool
+	var accountID string
 
 	cmd := &cobra.Command{
 		Use:   "policy [role-name-or-arn]",
@@ -553,7 +558,7 @@ func rolesPolicyCmd() *cobra.Command {
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			role, err := lookupRole(ctx, s, args[0])
+			role, err := lookupRole(ctx, s, args[0], accountID)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -589,6 +594,7 @@ func rolesPolicyCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&includeDenied, "include-denied", false, "Include denied events in policy")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Show policy explanation on stderr")
+	cmd.Flags().StringVar(&accountID, "account", "", "Filter by AWS account ID (disambiguates roles with the same name)")
 
 	return cmd
 }
@@ -795,11 +801,11 @@ func resourcesListCmd() *cobra.Command {
 
 // --- helpers ---
 
-func lookupRole(ctx context.Context, s *store.Store, nameOrARN string) (*models.Role, error) {
+func lookupRole(ctx context.Context, s *store.Store, nameOrARN, accountID string) (*models.Role, error) {
 	if len(nameOrARN) >= 3 && nameOrARN[:3] == "arn" {
 		return s.GetRole(ctx, customerID, nameOrARN)
 	}
-	return s.GetRoleByName(ctx, customerID, nameOrARN)
+	return s.GetRoleByName(ctx, customerID, nameOrARN, accountID)
 }
 
 func fatal(format string, args ...interface{}) error {
