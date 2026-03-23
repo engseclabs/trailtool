@@ -16,7 +16,7 @@ archives:
   - formats:
       - tar.gz
 
-homebrew_casks:
+brews:
   - name: trailtool
     repository:
       owner: engseclabs
