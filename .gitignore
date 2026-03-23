@@ -11,6 +11,9 @@ bootstrap.zip
 ingestor/ingestor
 trailtool
 
+# SAM build artifacts
+.aws-sam/
+
 # IDE
 .idea/
 .vscode/
