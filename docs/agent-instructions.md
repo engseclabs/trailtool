@@ -13,7 +13,9 @@ TrailTool precomputes and caches CloudTrail data into queryable entities (People
 Before using trailtool, verify the environment is ready:
 
 1. **CLI installed**: Run `which trailtool`. If not found: `brew install engseclabs/tap/trailtool`.
-2. **Status check**: Run `trailtool status`. This verifies AWS credentials, that the ingestor CloudFormation stack is deployed, and that TrailTool data is accessible. If any check fails, follow the printed guidance. If AWS credentials are not configured, ensure the correct profile and region are set (e.g. `export AWS_PROFILE=<profile> AWS_REGION=<region>`) before retrying.
+2. **Status check**: Run `trailtool status`. This verifies AWS credentials, that the ingestor CloudFormation stack is deployed, and that TrailTool data is accessible. If any check fails, follow the printed guidance before erroring out:
+   - **AWS credentials not configured**: Ensure the correct profile is set (e.g. `export AWS_PROFILE=<profile>`).
+   - **Ingestor stack not found**: The wrong region is configured. Set `AWS_REGION` to the region where the ingestor was deployed (e.g. `export AWS_REGION=us-east-1`) and re-run `trailtool status`.
 
 ## CLI Reference
 

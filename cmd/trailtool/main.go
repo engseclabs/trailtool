@@ -85,7 +85,7 @@ func statusCmd() *cobra.Command {
 				if err == nil {
 					cfnClient := cloudformation.NewFromConfig(cfg)
 					stackFound := false
-					for _, name := range []string{"trailtool", "sam-app"} {
+					for _, name := range []string{"trailtool-ingestor", "trailtool", "sam-app"} {
 						_, err := cfnClient.DescribeStacks(ctx, &cloudformation.DescribeStacksInput{
 							StackName: aws.String(name),
 						})
@@ -97,7 +97,7 @@ func statusCmd() *cobra.Command {
 					}
 					if !stackFound {
 						fmt.Println("Ingestor stack: NOT FOUND")
-						fmt.Fprintf(os.Stderr, "  Neither 'trailtool' nor 'sam-app' CloudFormation stack found.\n")
+						fmt.Fprintf(os.Stderr, "  No 'trailtool-ingestor', 'trailtool', or 'sam-app' CloudFormation stack found.\n")
 						fmt.Fprintf(os.Stderr, "  Deploy the ingestor first: https://github.com/engseclabs/trailtool\n")
 						ok = false
 					}
