@@ -20,6 +20,8 @@ import (
 	"github.com/engseclabs/trailtool/core/store"
 )
 
+var version = "dev"
+
 var customerID = "default"
 
 func init() {
@@ -39,6 +41,7 @@ func main() {
 
 	rootCmd.PersistentFlags().StringVar(&format, "format", "text", "Output format: text or json")
 
+	rootCmd.Version = version
 	rootCmd.AddCommand(statusCmd())
 	rootCmd.AddCommand(peopleCmd())
 	rootCmd.AddCommand(sessionsCmd())

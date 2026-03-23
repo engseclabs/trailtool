@@ -1,10 +1,13 @@
 version: 2
 
 builds:
-  - main: ./cmd/trailtool
+  - id: trailtool
+    main: ./cmd/trailtool
     binary: trailtool
     env:
       - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}}
     goos:
       - linux
       - darwin
@@ -16,7 +19,7 @@ archives:
   - formats:
       - tar.gz
 
-brews:
+homebrew_casks:
   - name: trailtool
     repository:
       owner: engseclabs
@@ -24,7 +27,13 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: https://github.com/engseclabs/trailtool
     description: CLI for querying precomputed CloudTrail data — people, sessions, roles, services, resources
-    license: MIT
+    hooks:
+      post:
+        install: |
+          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/trailtool"]
+    caveats: |
+      trailtool is not yet code-signed. macOS may block it on first run.
+      If that happens, run: xattr -d com.apple.quarantine $(which trailtool)
 
 release:
   github:
