@@ -186,6 +186,10 @@ func sessionsCmd() *cobra.Command {
 func sessionsListCmd() *cobra.Command {
 	var user string
 	var days int
+	var role string
+	var account string
+	var after string
+	var before string
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -197,7 +201,15 @@ func sessionsListCmd() *cobra.Command {
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			sessions, err := session.ListSessions(ctx, s, customerID, user, days)
+			filter := store.SessionFilter{
+				Days:      days,
+				Role:      role,
+				AccountID: account,
+				After:     after,
+				Before:    before,
+			}
+
+			sessions, err := session.ListSessions(ctx, s, customerID, user, filter)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -207,12 +219,12 @@ func sessionsListCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "START TIME\tUSER\tROLE\tACCOUNT\tEVENTS\tTYPE\tDURATION")
+			fmt.Fprintln(w, "SESSION KEY\tUSER\tROLE\tACCOUNT\tEVENTS\tTYPE\tDURATION")
 			for _, sess := range sessions {
 				sessionType := sess.DetectSessionType()
 				duration := fmt.Sprintf("%dm", sess.DurationMinutes)
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
-					sess.StartTime, sess.PersonEmail, sess.RoleName, sess.AccountID,
+					sess.SessionStart, sess.PersonEmail, sess.RoleName, sess.AccountID,
 					sess.EventsCount, sessionType, duration)
 			}
 			return w.Flush()
@@ -221,19 +233,23 @@ func sessionsListCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&user, "user", "", "Filter by user email")
 	cmd.Flags().IntVar(&days, "days", 0, "Filter to last N days")
+	cmd.Flags().StringVar(&role, "role", "", "Filter by role name (substring match)")
+	cmd.Flags().StringVar(&account, "account", "", "Filter by AWS account ID")
+	cmd.Flags().StringVar(&after, "after", "", "Only sessions starting at or after this time (ISO8601)")
+	cmd.Flags().StringVar(&before, "before", "", "Only sessions starting before this time (ISO8601)")
 
 	return cmd
 }
 
 func sessionsDetailCmd() *cobra.Command {
-	var startTime string
+	var sessionKey string
 
 	cmd := &cobra.Command{
 		Use:   "detail",
 		Short: "Show session details",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if startTime == "" {
-				return fatal("--start-time is required")
+			if sessionKey == "" {
+				return fatal("--session-key is required")
 			}
 
 			ctx := context.Background()
@@ -242,7 +258,7 @@ func sessionsDetailCmd() *cobra.Command {
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			sess, err := s.GetSession(ctx, customerID, startTime)
+			sess, err := s.GetSession(ctx, customerID, sessionKey)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -282,20 +298,20 @@ func sessionsDetailCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&startTime, "start-time", "", "Session start time (ISO8601)")
+	cmd.Flags().StringVar(&sessionKey, "session-key", "", "Session key from 'sessions list' output (startTime#sessionID)")
 
 	return cmd
 }
 
 func sessionsSummarizeCmd() *cobra.Command {
-	var startTime string
+	var sessionKey string
 
 	cmd := &cobra.Command{
 		Use:   "summarize",
 		Short: "Generate AI summary of a session via Bedrock",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if startTime == "" {
-				return fatal("--start-time is required")
+			if sessionKey == "" {
+				return fatal("--session-key is required")
 			}
 
 			ctx := context.Background()
@@ -304,7 +320,7 @@ func sessionsSummarizeCmd() *cobra.Command {
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			sess, err := s.GetSession(ctx, customerID, startTime)
+			sess, err := s.GetSession(ctx, customerID, sessionKey)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -342,7 +358,7 @@ func sessionsSummarizeCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&startTime, "start-time", "", "Session start time (ISO8601)")
+	cmd.Flags().StringVar(&sessionKey, "session-key", "", "Session key from 'sessions list' output (startTime#sessionID)")
 
 	return cmd
 }

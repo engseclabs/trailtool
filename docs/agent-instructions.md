@@ -30,9 +30,14 @@ trailtool people list                          # List all tracked identities
 ```bash
 trailtool sessions list                        # List all sessions
 trailtool sessions list --user <email> --days 7  # Filter by user and recency
-trailtool sessions detail --start-time <ISO8601> # Full session detail: events, resources, denied calls
-trailtool sessions summarize --start-time <ISO8601>  # AI-generated session summary (requires Bedrock)
+trailtool sessions list --role <name> --user <email>  # Filter by role name (substring match)
+trailtool sessions list --account <id>         # Filter by AWS account ID
+trailtool sessions list --after 2026-01-01T00:00:00Z --before 2026-01-02T00:00:00Z  # Time range
+trailtool sessions detail --session-key <key>     # Full session detail (key from 'sessions list' output)
+trailtool sessions summarize --session-key <key>  # AI-generated session summary (requires Bedrock)
 ```
+
+**Filtering tips:** Combine flags to narrow results. `--role` does substring matching (e.g. `--role BreakGlass` matches `AWSReservedSSO_BreakGlassEmergency_...`). `--after`/`--before` take ISO8601 timestamps and override `--days` if both are set.
 
 ### Accounts
 ```bash
@@ -111,8 +116,8 @@ When a tightened IAM policy blocks legitimate access, use the denied event data 
 When someone uses emergency/break-glass access, compare what they said they would do (the justification) with what they actually did (the session).
 
 **Steps:**
-1. `trailtool sessions list --user <email> --days 1 --format json` — find the relevant session
-2. `trailtool sessions detail --start-time <start-time> --format json` — get the full session: events, resources accessed, services used, denied actions
+1. `trailtool sessions list --user <email> --role <break-glass-role> --after <time> --before <time> --format json` — find the specific break-glass session using role name, user, and time range
+2. `trailtool sessions detail --session-key <session-key> --format json` — get the full session: events, resources accessed, services used, denied actions
 3. Compare the session activity against the stated justification
 4. Flag discrepancies: actions that don't align with the justification, unexpected services accessed, or resources modified that weren't mentioned
 

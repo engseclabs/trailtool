@@ -408,14 +408,14 @@ func WritePersonToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tabl
 }
 
 // WriteSessionToDynamoDB writes or updates a session in DynamoDB
-// Uses IAM session creation time (start_time) as the authoritative session identifier
-// All events from the same IAM session have the exact same sessionContext.attributes.creationDate
+// Uses composite sort key "startTime#sessionID" to disambiguate sessions from different
+// roles that share the same time bucket (CLI/SDK) or timestamp (console)
 func WriteSessionToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, session *types.DynamoDBSessionAggregated) error {
-	// Set session_start to same value as start_time (IAM session creation time)
-	session.SessionStart = session.StartTime
+	// Build composite sort key: startTime#sessionID to disambiguate sessions from
+	// different roles that fall in the same time bucket (CLI) or same second (console)
+	session.SessionStart = session.StartTime + "#" + session.SessionID
 
-	// Query for existing session with exact same customerId and session_start
-	// Since session_start is the IAM session creation time, it's the same for all events in a session
+	// Query for existing session with exact same customerId and session_start (composite key)
 	queryInput := &dynamodb.QueryInput{
 		TableName:              aws.String(tableName),
 		KeyConditionExpression: aws.String("customerId = :cid AND session_start = :st"),
@@ -527,8 +527,8 @@ func MergeSessionAggregated(existing *types.DynamoDBSessionAggregated, new *type
 		CustomerID:        new.CustomerID,
 		SessionID:         existing.SessionID,
 		SessionType:       existing.SessionType, // Both sessions have same IAM creation time, so same type
-		SessionStart:      startTime,            // Range key
-		StartTime:         startTime,            // Compatibility field
+		SessionStart:      existing.SessionStart,  // Preserve composite range key
+		StartTime:         startTime,             // Pure timestamp
 		EndTime:           endTime,
 		DurationMinutes:   durationMinutes,
 		PersonEmail:       existing.PersonEmail,

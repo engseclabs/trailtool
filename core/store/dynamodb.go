@@ -165,8 +165,17 @@ func (s *Store) GetRoleByName(ctx context.Context, customerID, roleName, account
 	}
 }
 
-// ListSessions returns sessions, optionally filtered by email and days
-func (s *Store) ListSessions(ctx context.Context, customerID, email string, days int) ([]models.SessionAggregated, error) {
+// SessionFilter controls which sessions are returned by ListSessions
+type SessionFilter struct {
+	Days      int    // Filter to last N days (convenience; overridden by After if both set)
+	Role      string // Substring match on role_name
+	AccountID string // Exact match on account_id
+	After     string // Only sessions starting at or after this time (ISO8601/RFC3339)
+	Before    string // Only sessions starting before this time (ISO8601/RFC3339)
+}
+
+// ListSessions returns sessions, optionally filtered by email and additional filters
+func (s *Store) ListSessions(ctx context.Context, customerID, email string, filter SessionFilter) ([]models.SessionAggregated, error) {
 	var sessions []models.SessionAggregated
 	var lastKey map[string]types.AttributeValue
 
@@ -195,10 +204,39 @@ func (s *Store) ListSessions(ctx context.Context, customerID, email string, days
 			}
 		}
 
-		if days > 0 {
-			cutoff := time.Now().AddDate(0, 0, -days).Format(time.RFC3339)
-			input.FilterExpression = aws.String("start_time >= :cutoff")
-			input.ExpressionAttributeValues[":cutoff"] = &types.AttributeValueMemberS{Value: cutoff}
+		// Build filter expressions
+		var filters []string
+
+		// Time range: --after / --before take precedence over --days
+		afterVal := filter.After
+		if afterVal == "" && filter.Days > 0 {
+			afterVal = time.Now().AddDate(0, 0, -filter.Days).Format(time.RFC3339)
+		}
+		if afterVal != "" {
+			filters = append(filters, "start_time >= :after")
+			input.ExpressionAttributeValues[":after"] = &types.AttributeValueMemberS{Value: afterVal}
+		}
+		if filter.Before != "" {
+			filters = append(filters, "start_time < :before")
+			input.ExpressionAttributeValues[":before"] = &types.AttributeValueMemberS{Value: filter.Before}
+		}
+
+		if filter.AccountID != "" {
+			filters = append(filters, "account_id = :accountId")
+			input.ExpressionAttributeValues[":accountId"] = &types.AttributeValueMemberS{Value: filter.AccountID}
+		}
+
+		if filter.Role != "" {
+			filters = append(filters, "contains(role_name, :role)")
+			input.ExpressionAttributeValues[":role"] = &types.AttributeValueMemberS{Value: filter.Role}
+		}
+
+		if len(filters) > 0 {
+			expr := filters[0]
+			for _, f := range filters[1:] {
+				expr += " AND " + f
+			}
+			input.FilterExpression = aws.String(expr)
 		}
 
 		result, err := s.client.Query(ctx, input)
@@ -428,13 +466,13 @@ func (s *Store) GetService(ctx context.Context, customerID, eventSource string) 
 	return &service, nil
 }
 
-// GetSession fetches a session by start time
-func (s *Store) GetSession(ctx context.Context, customerID, startTime string) (*models.SessionAggregated, error) {
+// GetSession fetches a session by its composite sort key (startTime#sessionID)
+func (s *Store) GetSession(ctx context.Context, customerID, sessionStart string) (*models.SessionAggregated, error) {
 	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(SessionsTableName),
 		Key: map[string]types.AttributeValue{
 			"customerId":    &types.AttributeValueMemberS{Value: customerID},
-			"session_start": &types.AttributeValueMemberS{Value: startTime},
+			"session_start": &types.AttributeValueMemberS{Value: sessionStart},
 		},
 	})
 	if err != nil {

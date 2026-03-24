@@ -413,7 +413,7 @@ func processSessionEvent(sessions map[string]*types.DynamoDBSessionAggregated, p
 			CustomerID:              ns,
 			SessionID:               truncatedSessionID,
 			SessionType:             sessionType,
-			SessionStart:            sessionCreationTime,
+			SessionStart:            sessionCreationTime + "#" + truncatedSessionID,
 			StartTime:               sessionCreationTime,
 			PersonEmail:             email,
 			PersonDisplayName:       displayName,

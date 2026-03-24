@@ -7,12 +7,12 @@ import (
 	"github.com/engseclabs/trailtool/core/store"
 )
 
-// ListSessions returns sessions for a user, optionally filtered by days
-func ListSessions(ctx context.Context, s *store.Store, customerID, email string, days int) ([]models.SessionAggregated, error) {
-	return s.ListSessions(ctx, customerID, email, days)
+// ListSessions returns sessions for a user, optionally filtered
+func ListSessions(ctx context.Context, s *store.Store, customerID, email string, filter store.SessionFilter) ([]models.SessionAggregated, error) {
+	return s.ListSessions(ctx, customerID, email, filter)
 }
 
-// GetSession returns a single session by start time
-func GetSession(ctx context.Context, s *store.Store, customerID, startTime string) (*models.SessionAggregated, error) {
-	return s.GetSession(ctx, customerID, startTime)
+// GetSession returns a single session by its composite sort key (startTime#sessionID)
+func GetSession(ctx context.Context, s *store.Store, customerID, sessionStart string) (*models.SessionAggregated, error) {
+	return s.GetSession(ctx, customerID, sessionStart)
 }

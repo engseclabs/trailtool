@@ -20,6 +20,7 @@ type Person struct {
 type SessionAggregated struct {
 	SessionID         string           `json:"session_id" dynamodbav:"session_id"`
 	SessionType       string           `json:"session_type,omitempty" dynamodbav:"session_type"`
+	SessionStart      string           `json:"session_start" dynamodbav:"session_start"` // Composite sort key: "startTime#sessionID"
 	StartTime         string           `json:"start_time" dynamodbav:"start_time"`
 	EndTime           string           `json:"end_time" dynamodbav:"end_time"`
 	DurationMinutes   int              `json:"duration_minutes" dynamodbav:"duration_minutes"`

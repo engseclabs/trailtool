@@ -208,8 +208,8 @@ type DynamoDBSessionAggregated struct {
 	CustomerID        string           `dynamodbav:"customerId"`
 	SessionID         string           `dynamodbav:"session_id"`
 	SessionType       string           `dynamodbav:"session_type"`  // "web-console" or "cli-sdk"
-	SessionStart      string           `dynamodbav:"session_start"` // Range key - IAM session creation time
-	StartTime         string           `dynamodbav:"start_time"`    // Kept for compatibility - same as SessionStart
+	SessionStart      string           `dynamodbav:"session_start"` // Range key - composite: "startTime#sessionID"
+	StartTime         string           `dynamodbav:"start_time"`    // Pure timestamp for display/filtering
 	EndTime           string           `dynamodbav:"end_time"`
 	DurationMinutes   int              `dynamodbav:"duration_minutes"`
 	PersonEmail       string           `dynamodbav:"person_email"`
