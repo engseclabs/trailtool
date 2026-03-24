@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/engseclabs/trailtool/core/models"
 )
 
@@ -88,38 +89,41 @@ func SummarizeSession(ctx context.Context, session *models.SessionAggregated) (s
 	complexity := calculateComplexity(session)
 	maxTokens := getMaxTokensForComplexity(complexity)
 
-	modelID := "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+	modelID := "us.amazon.nova-lite-v1:0"
 
-	req := map[string]interface{}{
-		"anthropic_version": "bedrock-2023-05-31",
-		"max_tokens":        maxTokens,
-		"messages":          []map[string]string{{"role": "user", "content": userPrompt}},
-		"system":            systemPrompt,
-		"temperature":       0.3,
-	}
-	body, _ := json.Marshal(req)
-
-	out, err := client.InvokeModel(ctx, &bedrockruntime.InvokeModelInput{
-		ModelId:     aws.String(modelID),
-		ContentType: aws.String("application/json"),
-		Body:        body,
+	temp := float32(0.3)
+	out, err := client.Converse(ctx, &bedrockruntime.ConverseInput{
+		ModelId: aws.String(modelID),
+		Messages: []brtypes.Message{
+			{
+				Role:    brtypes.ConversationRoleUser,
+				Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberText{Value: userPrompt}},
+			},
+		},
+		System: []brtypes.SystemContentBlock{
+			&brtypes.SystemContentBlockMemberText{Value: systemPrompt},
+		},
+		InferenceConfig: &brtypes.InferenceConfiguration{
+			MaxTokens:   aws.Int32(int32(maxTokens)),
+			Temperature: &temp,
+		},
 	})
 	if err != nil {
 		return "", fmt.Errorf("bedrock invocation failed: %w", err)
 	}
 
-	var resp struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(out.Body, &resp); err != nil {
-		return "", fmt.Errorf("failed to parse bedrock response: %w", err)
-	}
-	if len(resp.Content) == 0 {
+	if out.Output == nil {
 		return "(no content)", nil
 	}
-	return resp.Content[0].Text, nil
+	msgOutput, ok := out.Output.(*brtypes.ConverseOutputMemberMessage)
+	if !ok || len(msgOutput.Value.Content) == 0 {
+		return "(no content)", nil
+	}
+	textBlock, ok := msgOutput.Value.Content[0].(*brtypes.ContentBlockMemberText)
+	if !ok {
+		return "(no content)", nil
+	}
+	return textBlock.Value, nil
 }
 
 func buildSessionPrompt(session *models.SessionAggregated) string {
