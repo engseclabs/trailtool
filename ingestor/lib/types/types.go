@@ -234,6 +234,20 @@ type DynamoDBSessionAggregated struct {
 	// ClickOps tracking - tracks console create/modify operations in this session
 	ClickOpsEventCount  int            `dynamodbav:"clickops_event_count,omitempty"`  // Total ClickOps events in this session
 	ClickOpsEventCounts map[string]int `dynamodbav:"clickops_event_counts,omitempty"` // Event name -> count for ClickOps operations
+	// Role chaining - tracks roles assumed during this session and events attributed via chaining
+	ChainedRoles      []string `dynamodbav:"chained_roles,omitempty"`       // Role ARNs assumed during this session
+	ChainedEventCount int      `dynamodbav:"chained_event_count,omitempty"` // Events attributed to this session via role chaining
+}
+
+// DynamoDBChainLink records a temporary credential issued via AssumeRole,
+// linking the issued access key back to the originating human session.
+type DynamoDBChainLink struct {
+	AccessKeyID          string `dynamodbav:"access_key_id"`           // PK — the issued temporary credential key
+	ParentSessionMapKey  string `dynamodbav:"parent_session_map_key"`  // e.g. alice@example.com:AROAID...:2024-01-15T10:00:00Z
+	ParentEmail          string `dynamodbav:"parent_email"`
+	ParentRoleARN        string `dynamodbav:"parent_role_arn"`
+	AssumedRoleARN       string `dynamodbav:"assumed_role_arn"`        // role that was assumed
+	TTL                  int64  `dynamodbav:"ttl"`                     // Unix timestamp — DynamoDB TTL
 }
 
 // DynamoDBAccount represents an aggregated account record
