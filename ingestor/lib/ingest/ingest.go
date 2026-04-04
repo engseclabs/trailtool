@@ -44,12 +44,13 @@ func GetEnvOrDefault(key, defaultValue string) string {
 // TablesFromEnv builds a Tables struct from standard environment variables.
 func TablesFromEnv(prefix string) aggregator.Tables {
 	return aggregator.Tables{
-		Roles:     GetEnvOrDefault("ROLES_AGGREGATED_TABLE", prefix+"-roles-aggregated"),
-		Services:  GetEnvOrDefault("SERVICES_AGGREGATED_TABLE", prefix+"-services-aggregated"),
-		Resources: GetEnvOrDefault("RESOURCES_AGGREGATED_TABLE", prefix+"-resources-aggregated"),
-		People:    GetEnvOrDefault("PEOPLE_AGGREGATED_TABLE", prefix+"-people-aggregated"),
-		Sessions:  GetEnvOrDefault("SESSIONS_AGGREGATED_TABLE", prefix+"-sessions-aggregated"),
-		Accounts:  GetEnvOrDefault("ACCOUNTS_AGGREGATED_TABLE", prefix+"-accounts-aggregated"),
+		Roles:      GetEnvOrDefault("ROLES_AGGREGATED_TABLE", prefix+"-roles-aggregated"),
+		Services:   GetEnvOrDefault("SERVICES_AGGREGATED_TABLE", prefix+"-services-aggregated"),
+		Resources:  GetEnvOrDefault("RESOURCES_AGGREGATED_TABLE", prefix+"-resources-aggregated"),
+		People:     GetEnvOrDefault("PEOPLE_AGGREGATED_TABLE", prefix+"-people-aggregated"),
+		Sessions:   GetEnvOrDefault("SESSIONS_AGGREGATED_TABLE", prefix+"-sessions-aggregated"),
+		Accounts:   GetEnvOrDefault("ACCOUNTS_AGGREGATED_TABLE", prefix+"-accounts-aggregated"),
+		ChainLinks: GetEnvOrDefault("CHAIN_LINKS_TABLE", prefix+"-chain-links"),
 	}
 }
 

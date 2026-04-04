@@ -18,14 +18,18 @@ import (
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
 
+// chainLinkTTLHours is the STS maximum credential lifetime used as the TTL for chain link records.
+const chainLinkTTLHours = 12
+
 // Tables holds the DynamoDB table names for each aggregated entity.
 type Tables struct {
-	Roles     string
-	Services  string
-	Resources string
-	People    string
-	Sessions  string
-	Accounts  string
+	Roles      string
+	Services   string
+	Resources  string
+	People     string
+	Sessions   string
+	Accounts   string
+	ChainLinks string
 }
 
 // Config controls the aggregation behaviour.
@@ -48,6 +52,13 @@ func (c Config) namespace() string {
 // DynamoDB. It is the single entry-point for both the open-source and SaaS
 // ingestors.
 func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events []types.CloudTrailRecord) error {
+	_, err := processInternal(ctx, ddbClient, cfg, events)
+	return err
+}
+
+// processInternal performs aggregation and DynamoDB writes, returning the
+// in-memory sessions map. Extracted for testability.
+func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events []types.CloudTrailRecord) (map[string]*types.DynamoDBSessionAggregated, error) {
 	ns := cfg.namespace()
 	log.Printf("=== Processing Noun-Based Aggregation ===")
 	log.Printf("Processing %d events for aggregation (namespace: %s)", len(events), ns)
@@ -82,7 +93,124 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 	sessionServices := make(map[string]map[string]bool)
 	sessionResources := make(map[string]map[string]bool)
 
-	// Aggregate all events
+	// === Pass 1: Discover AssumeRole events from known sessions ===
+	// Build a map of issued access key IDs → parent session map keys for this batch.
+	// Also write chain link records to DynamoDB so cross-file chains work in future batches.
+	newChainLinks := make(map[string]*types.DynamoDBChainLink) // issuedKeyID -> chain link
+
+	for _, event := range events {
+		if event.EventName != "AssumeRole" {
+			continue
+		}
+		if strings.Contains(event.UserIdentity.PrincipalID, "ConfigResourceCompositionSession") {
+			continue
+		}
+
+		email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
+		if email == "" {
+			continue // only attribute human-initiated AssumeRole
+		}
+
+		issuedKeyID := ExtractIssuedAccessKeyID(event)
+		if issuedKeyID == "" {
+			continue
+		}
+
+		assumedRoleARN := ExtractAssumedRoleARN(event)
+		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
+		roleARN := session.GetRoleARN(event)
+		if roleARN == "" {
+			roleARN = event.UserIdentity.ARN
+		}
+
+		// Build the parent session map key using the same logic as pass 2
+		var parentSessionMapKey string
+		if email != "" && roleID != "" {
+			normalizedUA := session.NormalizeUserAgent(event.UserAgent)
+			cliKey, _ := session.GenerateSessionKey(email, roleID, normalizedUA, event.EventTime)
+			if cliKey != "" {
+				parentSessionMapKey = cliKey
+			} else {
+				creationTime := session.GetSessionCreationTime(event)
+				if creationTime != "" {
+					parentSessionMapKey = fmt.Sprintf("%s:%s:%s", email, roleID, creationTime)
+				}
+			}
+		}
+		if parentSessionMapKey == "" {
+			continue
+		}
+
+		// Parse event time and compute TTL
+		eventT, err := time.Parse(time.RFC3339, event.EventTime)
+		if err != nil {
+			log.Printf("WARNING: chain link: could not parse event time %s: %v", event.EventTime, err)
+			continue
+		}
+		ttl := eventT.Add(chainLinkTTLHours * time.Hour).Unix()
+
+		link := &types.DynamoDBChainLink{
+			AccessKeyID:         issuedKeyID,
+			ParentSessionMapKey: parentSessionMapKey,
+			ParentEmail:         email,
+			ParentRoleARN:       roleARN,
+			AssumedRoleARN:      assumedRoleARN,
+			TTL:                 ttl,
+		}
+		newChainLinks[issuedKeyID] = link
+
+		if cfg.Tables.ChainLinks != "" {
+			if err := ddblib.WriteChainLinkToDynamoDB(ctx, ddbClient, cfg.Tables.ChainLinks, link); err != nil {
+				log.Printf("WARNING: failed to write chain link: %v", err)
+			}
+		}
+	}
+
+	// === Pre-pass 2: Batch-load chain links for events with no email ===
+	// Collect unique access key IDs from events that have no human identity.
+	var unkeyedAccessKeyIDs []string
+	seen := make(map[string]bool)
+	for _, event := range events {
+		if session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID) != "" {
+			continue // has email — will be handled normally
+		}
+		keyID := event.UserIdentity.AccessKeyID
+		if keyID == "" || seen[keyID] {
+			continue
+		}
+		if _, inBatch := newChainLinks[keyID]; inBatch {
+			continue // already resolved from this batch
+		}
+		seen[keyID] = true
+		unkeyedAccessKeyIDs = append(unkeyedAccessKeyIDs, keyID)
+	}
+
+	// Batch-fetch from DynamoDB (only if we have something to look up)
+	var ddbChainLinks map[string]*types.DynamoDBChainLink
+	if len(unkeyedAccessKeyIDs) > 0 && cfg.Tables.ChainLinks != "" {
+		var fetchErr error
+		ddbChainLinks, fetchErr = ddblib.BatchGetChainLinks(ctx, ddbClient, cfg.Tables.ChainLinks, unkeyedAccessKeyIDs)
+		if fetchErr != nil {
+			log.Printf("WARNING: batch get chain links failed: %v", fetchErr)
+			ddbChainLinks = make(map[string]*types.DynamoDBChainLink)
+		}
+	} else {
+		ddbChainLinks = make(map[string]*types.DynamoDBChainLink)
+	}
+
+	// resolveChainLink returns the chain link for a given access key ID, checking
+	// both the batch-local map and the DynamoDB-fetched map.
+	resolveChainLink := func(keyID string) *types.DynamoDBChainLink {
+		if link, ok := newChainLinks[keyID]; ok {
+			return link
+		}
+		if link, ok := ddbChainLinks[keyID]; ok {
+			return link
+		}
+		return nil
+	}
+
+	// === Pass 2: Aggregate all events ===
 	for _, event := range events {
 		eventTime := event.EventTime
 		eventDate := eventTime[:10] // YYYY-MM-DD
@@ -100,6 +228,18 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 		}
 
 		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
+
+		// Role chain attribution: if this event has no email but has an access key,
+		// check whether the key was issued by a known human session.
+		var chainedFromLink *types.DynamoDBChainLink
+		if email == "" && event.UserIdentity.AccessKeyID != "" {
+			chainedFromLink = resolveChainLink(event.UserIdentity.AccessKeyID)
+			if chainedFromLink != nil {
+				log.Printf("CHAIN_ATTR: access_key=%s -> parent_session=%s assumed_role=%s event=%s:%s",
+					event.UserIdentity.AccessKeyID, chainedFromLink.ParentSessionMapKey,
+					chainedFromLink.AssumedRoleARN, event.EventSource, event.EventName)
+			}
+		}
 
 		// Account ID fallback chain
 		accountID := session.ExtractAccountIDFromARN(roleARN)
@@ -128,6 +268,20 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 				}
 			}
 		}
+
+		// If this event is attributed to a parent session via role chaining, override
+		// the session map key and accumulate chained role/event counts on the parent.
+		isChained := false
+		var chainedAssumedRoleARN string
+		if chainedFromLink != nil && sessionMapKey == "" {
+			sessionMapKey = chainedFromLink.ParentSessionMapKey
+			email = chainedFromLink.ParentEmail
+			isChained = true
+			chainedAssumedRoleARN = chainedFromLink.AssumedRoleARN
+			// truncatedSessionID and sessionCreationTime remain empty;
+			// the parent session record already holds those values.
+		}
+
 		eventSource := event.EventSource
 
 		if event.ErrorCode != "" {
@@ -150,6 +304,23 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 			processSessionEvent(sessions, people, ns, sessionMapKey, truncatedSessionID, email, roleID, accountID, roleARN, session.ExtractRoleNameFromARN(roleARN),
 				sessionCreationTime, eventTime, event.SourceIPAddress, normalizedUserAgent, eventSource, event.EventName, event.ErrorCode, event.ErrorMessage, resourceList, eventDate)
 			addToSet(sessionServices, sessionMapKey, eventSource)
+
+			// If this event was attributed via chaining, record the chained role on the parent session.
+			if isChained && chainedAssumedRoleARN != "" {
+				if sess, exists := sessions[sessionMapKey]; exists {
+					sess.ChainedEventCount++
+					found := false
+					for _, r := range sess.ChainedRoles {
+						if r == chainedAssumedRoleARN {
+							found = true
+							break
+						}
+					}
+					if !found {
+						sess.ChainedRoles = append(sess.ChainedRoles, chainedAssumedRoleARN)
+					}
+				}
+			}
 		} else if sessionMapKey != "" {
 			log.Printf("SKIPPED_SESSION: email=%s roleID=%s accountID=%s roleARN=%s eventSource=%s eventName=%s",
 				email, roleID, accountID, roleARN, eventSource, event.EventName)
@@ -268,7 +439,11 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 		account.ResourcesCount = setLen(accountResources, aid)
 	}
 
-	// Write aggregated data to DynamoDB
+	// Write aggregated data to DynamoDB (skip when client is nil, e.g. in tests)
+	if ddbClient == nil {
+		return sessions, nil
+	}
+
 	for _, role := range roles {
 		role.CustomerID = ns
 		eventNames := make([]string, 0, len(role.TopEventNames))
@@ -357,7 +532,7 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 
 	log.Printf("Processed %d roles, %d services, %d resources, %d people, %d sessions, %d accounts",
 		len(roles), len(services), len(resourceMap), len(people), len(sessions), len(accounts))
-	return nil
+	return sessions, nil
 }
 
 // addToSet adds value to a nested set map. Skips empty values.

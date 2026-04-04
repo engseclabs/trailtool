@@ -551,6 +551,9 @@ func MergeSessionAggregated(existing *types.DynamoDBSessionAggregated, new *type
 		// CRITICAL FIX: Calculate counts from merged unique sets, not by adding
 		ServicesCount:  CountUniqueServices(mergedEventCounts),
 		ResourcesCount: len(mergedResourcesAccessed),
+		// Role chaining
+		ChainedRoles:      MergeUniqueStrings(existing.ChainedRoles, new.ChainedRoles),
+		ChainedEventCount: existing.ChainedEventCount + new.ChainedEventCount,
 	}
 
 	return merged
@@ -693,6 +696,73 @@ func MergeEventAccesses(a, b []types.EventAccess) []types.EventAccess {
 	}
 
 	return result
+}
+
+// WriteChainLinkToDynamoDB writes a chain link record to DynamoDB.
+// TTL is set to 12 hours from eventTime (STS max credential lifetime).
+func WriteChainLinkToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, link *types.DynamoDBChainLink) error {
+	item, err := attributevalue.MarshalMap(link)
+	if err != nil {
+		return fmt.Errorf("failed to marshal chain link: %w", err)
+	}
+
+	_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(tableName),
+		Item:      item,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to write chain link: %w", err)
+	}
+
+	log.Printf("CHAIN_LINK_WRITE: access_key_id=%s parent_session=%s assumed_role=%s",
+		link.AccessKeyID, link.ParentSessionMapKey, link.AssumedRoleARN)
+	return nil
+}
+
+// BatchGetChainLinks fetches chain link records for a set of access key IDs.
+// Returns a map of accessKeyID -> DynamoDBChainLink for found records.
+func BatchGetChainLinks(ctx context.Context, ddbClient *dynamodb.Client, tableName string, keyIDs []string) (map[string]*types.DynamoDBChainLink, error) {
+	result := make(map[string]*types.DynamoDBChainLink)
+	if len(keyIDs) == 0 {
+		return result, nil
+	}
+
+	// DynamoDB BatchGetItem limit is 100 keys per request
+	const batchSize = 100
+	for i := 0; i < len(keyIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(keyIDs) {
+			end = len(keyIDs)
+		}
+		batch := keyIDs[i:end]
+
+		keys := make([]map[string]ddbtypes.AttributeValue, 0, len(batch))
+		for _, keyID := range batch {
+			keys = append(keys, map[string]ddbtypes.AttributeValue{
+				"access_key_id": &ddbtypes.AttributeValueMemberS{Value: keyID},
+			})
+		}
+
+		out, err := ddbClient.BatchGetItem(ctx, &dynamodb.BatchGetItemInput{
+			RequestItems: map[string]ddbtypes.KeysAndAttributes{
+				tableName: {Keys: keys},
+			},
+		})
+		if err != nil {
+			return result, fmt.Errorf("batch get chain links failed: %w", err)
+		}
+
+		for _, item := range out.Responses[tableName] {
+			var link types.DynamoDBChainLink
+			if err := attributevalue.UnmarshalMap(item, &link); err != nil {
+				log.Printf("WARNING: failed to unmarshal chain link: %v", err)
+				continue
+			}
+			result[link.AccessKeyID] = &link
+		}
+	}
+
+	return result, nil
 }
 
 // WriteAccountToDynamoDB writes or updates an account in DynamoDB
