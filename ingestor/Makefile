@@ -38,7 +38,28 @@ deploy: build validate
 	@sam build
 	@sam deploy --no-confirm-changeset --no-fail-on-empty-changeset
 
+# Build and deploy sandbox stack (all-in-one: CloudTrail + S3 + Lambda + DynamoDB)
+# Unsets any ambient AWS credential env vars so the sandbox-admin profile is used.
+deploy-sandbox: build
+	@echo "Deploying sandbox ingestor stack..."
+	@env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+		AWS_PROFILE=sandbox-admin sam deploy \
+		--template-file template-sandbox.yaml \
+		--stack-name trailtool-ingestor \
+		--region us-east-1 \
+		--capabilities CAPABILITY_NAMED_IAM \
+		--no-confirm-changeset \
+		--no-fail-on-empty-changeset \
+		--resolve-s3 \
+		--parameter-overrides TrailName=trailtool-trail
+	@echo "Sandbox deploy complete!"
+
 # View logs
 logs:
 	@echo "Tailing logs for CloudTrail ingestor..."
 	@sam logs --tail
+
+# View sandbox Lambda logs
+logs-sandbox:
+	@echo "Tailing logs for sandbox CloudTrail ingestor..."
+	@sam logs --stack-name trailtool-ingestor --region us-east-1 --tail

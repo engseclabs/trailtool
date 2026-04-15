@@ -309,12 +309,27 @@ func GetRoleARN(event types.CloudTrailRecord) string {
 	return ""
 }
 
-// GetSessionCreationTime extracts session creation time
+// GetSessionCreationTime extracts session creation time, normalizing to RFC3339.
+// CloudTrail sometimes uses "2006-01-02 15:04:05.000" instead of "2006-01-02T15:04:05Z".
 func GetSessionCreationTime(event types.CloudTrailRecord) string {
-	if event.UserIdentity.SessionContext != nil {
-		return event.UserIdentity.SessionContext.Attributes.CreationDate
+	if event.UserIdentity.SessionContext == nil {
+		return ""
 	}
-	return ""
+	raw := event.UserIdentity.SessionContext.Attributes.CreationDate
+	if raw == "" {
+		return ""
+	}
+	// Already RFC3339
+	if strings.Contains(raw, "T") {
+		return raw
+	}
+	// Normalize "2006-01-02 15:04:05.000" or "2006-01-02 15:04:05" → RFC3339
+	for _, layout := range []string{"2006-01-02 15:04:05.000", "2006-01-02 15:04:05"} {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.UTC().Format(time.RFC3339)
+		}
+	}
+	return raw
 }
 
 // GenerateSessionKey creates a session key based on session type

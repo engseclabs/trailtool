@@ -466,7 +466,8 @@ func (s *Store) GetService(ctx context.Context, customerID, eventSource string) 
 	return &service, nil
 }
 
-// GetSession fetches a session by its composite sort key (startTime#sessionID)
+// GetSession fetches a session by its composite sort key (startTime#sessionID).
+// Used internally and by agents/scripts that have the exact key.
 func (s *Store) GetSession(ctx context.Context, customerID, sessionStart string) (*models.SessionAggregated, error) {
 	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(SessionsTableName),
@@ -487,4 +488,60 @@ func (s *Store) GetSession(ctx context.Context, customerID, sessionStart string)
 		return nil, fmt.Errorf("failed to unmarshal session: %w", err)
 	}
 	return &session, nil
+}
+
+// FindSession locates a session by approximate time prefix and optional user email.
+// prefix is a truncated ISO8601 string (e.g. "2026-04-15T17:08" or "2026-04-15").
+// If email is provided the person_email_index GSI is used to narrow results.
+// Returns the most recent matching session, or nil if none found.
+// If multiple sessions match the prefix, returns an error listing the candidates.
+func (s *Store) FindSession(ctx context.Context, customerID, prefix, email string) (*models.SessionAggregated, error) {
+	var input *dynamodb.QueryInput
+
+	if email != "" {
+		input = &dynamodb.QueryInput{
+			TableName:              aws.String(SessionsTableName),
+			IndexName:              aws.String("person_email_index"),
+			KeyConditionExpression: aws.String("customerId = :cid AND person_email = :email"),
+			FilterExpression:       aws.String("begins_with(session_start, :prefix)"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":cid":    &types.AttributeValueMemberS{Value: customerID},
+				":email":  &types.AttributeValueMemberS{Value: email},
+				":prefix": &types.AttributeValueMemberS{Value: prefix},
+			},
+		}
+	} else {
+		input = &dynamodb.QueryInput{
+			TableName:              aws.String(SessionsTableName),
+			KeyConditionExpression: aws.String("customerId = :cid AND begins_with(session_start, :prefix)"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":cid":    &types.AttributeValueMemberS{Value: customerID},
+				":prefix": &types.AttributeValueMemberS{Value: prefix},
+			},
+		}
+	}
+
+	result, err := s.client.Query(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find session: %w", err)
+	}
+	if len(result.Items) == 0 {
+		return nil, nil
+	}
+
+	var matches []models.SessionAggregated
+	if err := attributevalue.UnmarshalListOfMaps(result.Items, &matches); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal sessions: %w", err)
+	}
+
+	if len(matches) > 1 {
+		// Build a helpful error listing the candidates
+		msg := fmt.Sprintf("%d sessions match %q — be more specific (e.g. include minutes):\n", len(matches), prefix)
+		for _, m := range matches {
+			msg += fmt.Sprintf("  %s  %s  %s\n", m.StartTime, m.PersonEmail, m.RoleName)
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+
+	return &matches[0], nil
 }

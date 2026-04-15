@@ -9,6 +9,7 @@ TrailTool aggregates CloudTrail logs to simplify analysis for AI agents. It comb
 With TrailTool, you can:
 
 - Investigate and summarize web/CLI sessions clarifying access patterns
+- Track activity across role assumptions — see which human session assumed which roles and what they did
 - Generate least-privilege IAM policies from actual usage
 - Detect ClickOps resources created or modified via console instead of IaC
 
@@ -61,8 +62,10 @@ trailtool people list
 
 # Sessions
 trailtool sessions list --user alice@example.com --days 7
-trailtool sessions detail --start-time "2025-01-15T10:30:00Z"
-trailtool sessions summarize --start-time "2025-01-15T10:30:00Z"  # requires Bedrock
+trailtool sessions detail --at 2025-01-15T10:30
+trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
+trailtool sessions detail --at latest
+trailtool sessions summarize --at 2025-01-15T10:30  # requires Bedrock
 
 # Accounts
 trailtool accounts list
@@ -83,6 +86,36 @@ trailtool resources list --days 30
 trailtool resources list --clickops                    # ClickOps: console-created resources
 trailtool resources list --clickops --service iam      # ClickOps filtered by service
 trailtool resources list --service s3 --days 7
+```
+
+### Role Chaining
+
+TrailTool automatically correlates `AssumeRole` calls back to the originating human session, for both console switch-role and programmatic (`aws sts assume-role`) flows. This lets you answer "who actually did this?" even when the CloudTrail actor is an assumed role with no obvious human attribution.
+
+```
+$ trailtool sessions list --days 1
+
+WHEN        USER                  ROLE                            ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
+5 mins ago  alice@example.com     AWSReservedSSO_AdminAccess_...  123456789012   84      API      12m       → 2 role(s)
+5 mins ago  alice@example.com     DeployRole                      123456789012   31      API      8m        ↑ child
+5 mins ago  alice@example.com     AuditRole                       123456789012   12      API      3m        ↑ child
+```
+
+`→ N role(s)` means this human session assumed N roles. `↑ child` means this session was created via `AssumeRole` and is attributed back to its parent.
+
+```bash
+# See which roles a session assumed and how many events each generated
+trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
+
+# The detail view shows the full chain:
+# Assumed by: alice@example.com at 2025-01-15T10:30:00Z            (on child sessions)
+#   → trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
+#
+# Assumed Roles (2, 43 events):                                    (on parent sessions)
+#   2025-01-15T10:35:00Z  DeployRole  31 events  8m
+#     → trailtool sessions detail --at 2025-01-15T10:35 --user alice@example.com
+#   2025-01-15T10:36:00Z  AuditRole   12 events  3m
+#     → trailtool sessions detail --at 2025-01-15T10:36 --user alice@example.com
 ```
 
 All commands support `--format json` for machine-readable output.

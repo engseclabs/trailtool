@@ -234,6 +234,31 @@ type DynamoDBSessionAggregated struct {
 	// ClickOps tracking - tracks console create/modify operations in this session
 	ClickOpsEventCount  int            `dynamodbav:"clickops_event_count,omitempty"`  // Total ClickOps events in this session
 	ClickOpsEventCounts map[string]int `dynamodbav:"clickops_event_counts,omitempty"` // Event name -> count for ClickOps operations
+	// Role chaining — parent session fields (set on the originating human session)
+	ChainedRoles       []string `dynamodbav:"chained_roles,omitempty"`        // Role ARNs assumed during this session
+	ChainedEventCount  int      `dynamodbav:"chained_event_count,omitempty"`  // Events attributed via chaining (summary counter)
+	ChainedSessionKeys []string `dynamodbav:"chained_session_keys,omitempty"` // session_start keys of child sessions (startTime#accessKeyID)
+
+	// Role chaining — child session fields (set on sessions created for assumed roles)
+	ParentSessionKey string `dynamodbav:"parent_session_key,omitempty"` // session_start key of the parent human session
+	ParentEmail      string `dynamodbav:"parent_email,omitempty"`       // email of the human who initiated the chain
+}
+
+// DynamoDBChainLink records a temporary credential issued via AssumeRole,
+// linking the issued access key back to the originating human session.
+//
+// The PK (access_key_id) is used in two ways:
+//   - Programmatic sessions: the literal issued STS access key ID (ASIA...)
+//   - Console switch-role sessions: "roleID:creationTime" composite key, since the
+//     console issues a new short-lived credential per request rather than one
+//     stable session credential.
+type DynamoDBChainLink struct {
+	AccessKeyID         string `dynamodbav:"access_key_id"`          // PK — issued key or "roleID:creationTime" for console
+	ParentSessionMapKey string `dynamodbav:"parent_session_map_key"` // e.g. alice@example.com:AROAID...:2024-01-15T10:00:00Z
+	ParentEmail         string `dynamodbav:"parent_email"`
+	ParentRoleARN       string `dynamodbav:"parent_role_arn"`
+	AssumedRoleARN      string `dynamodbav:"assumed_role_arn"` // role that was assumed
+	TTL                 int64  `dynamodbav:"ttl"`              // Unix timestamp — DynamoDB TTL
 }
 
 // DynamoDBAccount represents an aggregated account record

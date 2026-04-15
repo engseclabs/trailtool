@@ -18,14 +18,18 @@ import (
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
 
+// chainLinkTTLHours is the STS maximum credential lifetime used as the TTL for chain link records.
+const chainLinkTTLHours = 12
+
 // Tables holds the DynamoDB table names for each aggregated entity.
 type Tables struct {
-	Roles     string
-	Services  string
-	Resources string
-	People    string
-	Sessions  string
-	Accounts  string
+	Roles      string
+	Services   string
+	Resources  string
+	People     string
+	Sessions   string
+	Accounts   string
+	ChainLinks string
 }
 
 // Config controls the aggregation behaviour.
@@ -48,6 +52,13 @@ func (c Config) namespace() string {
 // DynamoDB. It is the single entry-point for both the open-source and SaaS
 // ingestors.
 func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events []types.CloudTrailRecord) error {
+	_, err := processInternal(ctx, ddbClient, cfg, events)
+	return err
+}
+
+// processInternal performs aggregation and DynamoDB writes, returning the
+// in-memory sessions map. Extracted for testability.
+func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events []types.CloudTrailRecord) (map[string]*types.DynamoDBSessionAggregated, error) {
 	ns := cfg.namespace()
 	log.Printf("=== Processing Noun-Based Aggregation ===")
 	log.Printf("Processing %d events for aggregation (namespace: %s)", len(events), ns)
@@ -82,13 +93,185 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 	sessionServices := make(map[string]map[string]bool)
 	sessionResources := make(map[string]map[string]bool)
 
-	// Aggregate all events
+	// === Pass 1: Discover AssumeRole events from known sessions ===
+	// Build a map of issued access key IDs → parent session map keys for this batch.
+	// Also write chain link records to DynamoDB so cross-file chains work in future batches.
+	newChainLinks := make(map[string]*types.DynamoDBChainLink) // issuedKeyID -> chain link
+
+	// deferredParentUpdates holds chaining metadata for parent sessions that are NOT in the
+	// current in-memory sessions map (i.e. ingested in a prior Lambda invocation).
+	// We flush these to DynamoDB after writing all current-batch sessions so that a
+	// same-batch parent is fully written before we try to update it.
+	type parentUpdate struct {
+		parentSessionMapKey string
+		childSessionMapKey  string
+		childRoleARN        string
+	}
+	var deferredParentUpdates []parentUpdate
+
+	for _, event := range events {
+		if event.EventName != "AssumeRole" {
+			continue
+		}
+		if strings.Contains(event.UserIdentity.PrincipalID, "ConfigResourceCompositionSession") {
+			continue
+		}
+
+		email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
+		if email == "" {
+			continue // only attribute human-initiated AssumeRole
+		}
+
+		issuedKeyID := ExtractIssuedAccessKeyID(event)
+		if issuedKeyID == "" {
+			continue
+		}
+
+		assumedRoleARN := ExtractAssumedRoleARN(event)
+		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
+		roleARN := session.GetRoleARN(event)
+		if roleARN == "" {
+			roleARN = event.UserIdentity.ARN
+		}
+
+		// Build the parent session map key.
+		// For the AssumeRole event itself we always prefer the IAM session creation time
+		// from sessionContext — this matches how the parent session was keyed in Pass 2
+		// regardless of whether it was a console or CLI session.
+		// We only fall back to CLI 4-hour windowing when no creation time is available.
+		var parentSessionMapKey string
+		if email != "" && roleID != "" {
+			creationTime := session.GetSessionCreationTime(event)
+			if creationTime != "" {
+				parentSessionMapKey = fmt.Sprintf("%s:%s:%s", email, roleID, creationTime)
+			} else {
+				normalizedUA := session.NormalizeUserAgent(event.UserAgent)
+				cliKey, _ := session.GenerateSessionKey(email, roleID, normalizedUA, event.EventTime)
+				if cliKey != "" {
+					parentSessionMapKey = cliKey
+				}
+			}
+		}
+		if parentSessionMapKey == "" {
+			continue
+		}
+
+		// Parse event time and compute TTL
+		eventT, err := time.Parse(time.RFC3339, event.EventTime)
+		if err != nil {
+			log.Printf("WARNING: chain link: could not parse event time %s: %v", event.EventTime, err)
+			continue
+		}
+		ttl := eventT.Add(chainLinkTTLHours * time.Hour).Unix()
+
+		link := &types.DynamoDBChainLink{
+			AccessKeyID:         issuedKeyID,
+			ParentSessionMapKey: parentSessionMapKey,
+			ParentEmail:         email,
+			ParentRoleARN:       roleARN,
+			AssumedRoleARN:      assumedRoleARN,
+			TTL:                 ttl,
+		}
+		newChainLinks[issuedKeyID] = link
+
+		if cfg.Tables.ChainLinks != "" {
+			if err := ddblib.WriteChainLinkToDynamoDB(ctx, ddbClient, cfg.Tables.ChainLinks, link); err != nil {
+				log.Printf("WARNING: failed to write chain link: %v", err)
+			}
+		}
+
+		// For console switch-role, the assumed role's events use a fresh credential per
+		// request rather than a single stable session key. Write a second chain link keyed
+		// by "childRoleID:eventTime" so Pass 2 can match those events by role+creationTime.
+		childRoleID := ExtractAssumedRoleID(event)
+		if childRoleID != "" {
+			consoleKey := childRoleID + ":" + event.EventTime
+			consoleLink := &types.DynamoDBChainLink{
+				AccessKeyID:         consoleKey,
+				ParentSessionMapKey: parentSessionMapKey,
+				ParentEmail:         email,
+				ParentRoleARN:       roleARN,
+				AssumedRoleARN:      assumedRoleARN,
+				TTL:                 ttl,
+			}
+			newChainLinks[consoleKey] = consoleLink
+			if cfg.Tables.ChainLinks != "" {
+				if err := ddblib.WriteChainLinkToDynamoDB(ctx, ddbClient, cfg.Tables.ChainLinks, consoleLink); err != nil {
+					log.Printf("WARNING: failed to write console chain link: %v", err)
+				}
+			}
+		}
+	}
+
+	// === Pre-pass 2: Batch-load chain links from DynamoDB ===
+	// Collect lookup keys for events that may be chained:
+	//   - Access key ID (programmatic AssumeRole)
+	//   - "roleID:creationTime" composite key (console switch-role)
+	var unkeyedAccessKeyIDs []string
+	seen := make(map[string]bool)
+	for _, event := range events {
+		// Access key lookup (programmatic)
+		keyID := event.UserIdentity.AccessKeyID
+		if keyID != "" && !seen[keyID] {
+			if _, inBatch := newChainLinks[keyID]; !inBatch {
+				seen[keyID] = true
+				unkeyedAccessKeyIDs = append(unkeyedAccessKeyIDs, keyID)
+			}
+		}
+		// Console key lookup: roleID:creationTime
+		rID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
+		ct := session.GetSessionCreationTime(event)
+		if rID != "" && ct != "" {
+			consoleKey := rID + ":" + ct
+			if !seen[consoleKey] {
+				if _, inBatch := newChainLinks[consoleKey]; !inBatch {
+					seen[consoleKey] = true
+					unkeyedAccessKeyIDs = append(unkeyedAccessKeyIDs, consoleKey)
+				}
+			}
+		}
+	}
+
+	// Batch-fetch from DynamoDB (only if we have something to look up)
+	var ddbChainLinks map[string]*types.DynamoDBChainLink
+	if len(unkeyedAccessKeyIDs) > 0 && cfg.Tables.ChainLinks != "" {
+		var fetchErr error
+		ddbChainLinks, fetchErr = ddblib.BatchGetChainLinks(ctx, ddbClient, cfg.Tables.ChainLinks, unkeyedAccessKeyIDs)
+		if fetchErr != nil {
+			log.Printf("WARNING: batch get chain links failed: %v", fetchErr)
+			ddbChainLinks = make(map[string]*types.DynamoDBChainLink)
+		}
+	} else {
+		ddbChainLinks = make(map[string]*types.DynamoDBChainLink)
+	}
+
+	// resolveChainLink returns the chain link for a given access key ID, checking
+	// both the batch-local map and the DynamoDB-fetched map.
+	resolveChainLink := func(keyID string) *types.DynamoDBChainLink {
+		if link, ok := newChainLinks[keyID]; ok {
+			return link
+		}
+		if link, ok := ddbChainLinks[keyID]; ok {
+			return link
+		}
+		return nil
+	}
+
+	// === Pass 2: Aggregate all events ===
 	for _, event := range events {
 		eventTime := event.EventTime
 		eventDate := eventTime[:10] // YYYY-MM-DD
 
 		// Skip synthetic sessions that aren't real human activity
 		if strings.Contains(event.UserIdentity.PrincipalID, "ConfigResourceCompositionSession") {
+			continue
+		}
+
+		// Skip SwitchRole signin events — these are console bookkeeping generated when a
+		// user switches roles in the browser. They don't represent real API activity and
+		// lack sessionContext.creationDate, which would cause them to create a spurious
+		// unlinked session record instead of being attributed to the chained session.
+		if event.EventName == "SwitchRole" && event.EventSource == "signin.amazonaws.com" {
 			continue
 		}
 
@@ -100,6 +283,29 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 		}
 
 		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
+
+		// Role chain attribution: check whether this event belongs to a chained (assumed) session.
+		// Two lookup strategies:
+		//   1. Programmatic: match by access key ID (stable per AssumeRole call)
+		//   2. Console switch-role: match by "childRoleID:creationTime" since the console
+		//      issues a new short-lived credential per request, not a single session key.
+		var chainedFromLink *types.DynamoDBChainLink
+		if event.UserIdentity.AccessKeyID != "" {
+			chainedFromLink = resolveChainLink(event.UserIdentity.AccessKeyID)
+		}
+		if chainedFromLink == nil && roleID != "" {
+			// Try console key: roleID:creationTime
+			creationTime := session.GetSessionCreationTime(event)
+			if creationTime != "" {
+				consoleKey := roleID + ":" + creationTime
+				chainedFromLink = resolveChainLink(consoleKey)
+			}
+		}
+		if chainedFromLink != nil {
+			log.Printf("CHAIN_ATTR: access_key=%s role=%s -> parent_session=%s assumed_role=%s event=%s:%s",
+				event.UserIdentity.AccessKeyID, roleID, chainedFromLink.ParentSessionMapKey,
+				chainedFromLink.AssumedRoleARN, event.EventSource, event.EventName)
+		}
 
 		// Account ID fallback chain
 		accountID := session.ExtractAccountIDFromARN(roleARN)
@@ -128,7 +334,100 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 				}
 			}
 		}
+
 		eventSource := event.EventSource
+
+		// Role chain attribution: route chained events into a dedicated child session record.
+		// The child session is keyed by the issued access key ID.
+		// The parent session gets updated with summary counts and a reference to the child session key.
+		if chainedFromLink != nil {
+			// Child session key: always use a natural key.
+			// Console switch-role: sessionMapKey is already set (email:roleID:creationTime).
+			// Programmatic AssumeRole: no email in events, but we have roleID and eventTime.
+			var childSessionMapKey, childSessionID string
+			if sessionMapKey != "" {
+				// Console switch-role: use the natural session key.
+				childSessionMapKey = sessionMapKey
+				childSessionID = truncatedSessionID
+			} else {
+				// Programmatic AssumeRole: key by the issued access key ID — stable across all
+				// events in the session (unlike event time which changes per event).
+				childSessionMapKey = chainedFromLink.AccessKeyID
+				childSessionID = childSessionMapKey
+			}
+
+			// Child session's role identity comes from the chain link
+			childRoleARN := chainedFromLink.AssumedRoleARN
+			childRoleName := session.ExtractRoleNameFromARN(childRoleARN)
+			childAccountID := session.ExtractAccountIDFromARN(childRoleARN)
+			if childAccountID == "" {
+				childAccountID = accountID // fall back to event's account
+			}
+			childEmail := chainedFromLink.ParentEmail
+			parentSessionKey := chainedFromLink.ParentSessionMapKey
+
+			normalizedUA := session.NormalizeUserAgent(event.UserAgent)
+			resourceList := resources.ExtractResources(event)
+
+			// For console switch-role, use the real session creation time and type.
+			// For programmatic AssumeRole, use the event time as the start.
+			childStartTime := eventTime
+			childSessionType := "cli-sdk"
+			if sessionCreationTime != "" {
+				childStartTime = sessionCreationTime
+				childSessionType = session.ClassifySessionType(normalizedUA)
+				if childSessionType == "" {
+					childSessionType = "web-console"
+				}
+			}
+
+			// Process the event into the child session
+			processChainedSessionEvent(sessions, ns, childSessionMapKey, childSessionID,
+				childEmail, childRoleARN, childRoleName, childAccountID,
+				parentSessionKey, childStartTime, eventTime, event.SourceIPAddress, normalizedUA,
+				childSessionType, eventSource, event.EventName, event.ErrorCode, event.ErrorMessage, resourceList, eventDate)
+			addToSet(sessionServices, childSessionMapKey, eventSource)
+			addToSet(sessionResources, childSessionMapKey, childRoleARN)
+
+			// Update parent session: bump chained counters and register child session key.
+			// If the parent is in-memory (same batch), update directly.
+			// Otherwise, defer a DynamoDB UpdateItem so it gets applied after all sessions are written.
+			if parentSess, exists := sessions[parentSessionKey]; exists {
+				parentSess.ChainedEventCount++
+				// Track assumed role ARN
+				foundRole := false
+				for _, r := range parentSess.ChainedRoles {
+					if r == childRoleARN {
+						foundRole = true
+						break
+					}
+				}
+				if !foundRole {
+					parentSess.ChainedRoles = append(parentSess.ChainedRoles, childRoleARN)
+				}
+				// Track child session key (for UI linking)
+				foundKey := false
+				for _, k := range parentSess.ChainedSessionKeys {
+					if k == childSessionMapKey {
+						foundKey = true
+						break
+					}
+				}
+				if !foundKey {
+					parentSess.ChainedSessionKeys = append(parentSess.ChainedSessionKeys, childSessionMapKey)
+				}
+			} else {
+				// Parent was ingested in a prior batch — schedule a DDB update after writes.
+				deferredParentUpdates = append(deferredParentUpdates, parentUpdate{
+					parentSessionMapKey: parentSessionKey,
+					childSessionMapKey:  childSessionMapKey,
+					childRoleARN:        childRoleARN,
+				})
+			}
+
+			// Skip rest of normal processing for this event — it belongs to the child session
+			continue
+		}
 
 		if event.ErrorCode != "" {
 			log.Printf("EVENT_ERROR: event=%s:%s errorCode=%s email=%s", eventSource, event.EventName, event.ErrorCode, email)
@@ -268,7 +567,28 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 		account.ResourcesCount = setLen(accountResources, aid)
 	}
 
-	// Write aggregated data to DynamoDB
+	// Rewrite ChainedSessionKeys from map keys to full session_start values so the
+	// CLI can do direct lookups without guessing the start time.
+	for _, sess := range sessions {
+		if len(sess.ChainedSessionKeys) == 0 {
+			continue
+		}
+		resolved := make([]string, 0, len(sess.ChainedSessionKeys))
+		for _, mapKey := range sess.ChainedSessionKeys {
+			if child, ok := sessions[mapKey]; ok && child.SessionStart != "" {
+				resolved = append(resolved, child.SessionStart)
+			} else {
+				resolved = append(resolved, mapKey) // keep as-is if child not in this batch
+			}
+		}
+		sess.ChainedSessionKeys = resolved
+	}
+
+	// Write aggregated data to DynamoDB (skip when client is nil, e.g. in tests)
+	if ddbClient == nil {
+		return sessions, nil
+	}
+
 	for _, role := range roles {
 		role.CustomerID = ns
 		eventNames := make([]string, 0, len(role.TopEventNames))
@@ -348,6 +668,23 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 		}
 	}
 
+	// Flush deferred parent chaining updates (parent sessions ingested in prior batches).
+	if len(deferredParentUpdates) > 0 && cfg.Tables.Sessions != "" {
+		// Deduplicate: only send one update per (parent, child) pair.
+		seen := make(map[string]bool)
+		for _, u := range deferredParentUpdates {
+			key := u.parentSessionMapKey + "|" + u.childSessionMapKey
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if err := ddblib.UpdateParentSessionChaining(ctx, ddbClient, cfg.Tables.Sessions, ns,
+				u.parentSessionMapKey, u.childSessionMapKey, u.childRoleARN); err != nil {
+				log.Printf("ERROR: Failed to update parent session chaining: %v", err)
+			}
+		}
+	}
+
 	for _, account := range accounts {
 		account.CustomerID = ns
 		if err := ddblib.WriteAccountToDynamoDB(ctx, ddbClient, cfg.Tables.Accounts, account); err != nil {
@@ -357,7 +694,7 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 
 	log.Printf("Processed %d roles, %d services, %d resources, %d people, %d sessions, %d accounts",
 		len(roles), len(services), len(resourceMap), len(people), len(sessions), len(accounts))
-	return nil
+	return sessions, nil
 }
 
 // addToSet adds value to a nested set map. Skips empty values.
@@ -548,6 +885,153 @@ func processSessionEvent(sessions map[string]*types.DynamoDBSessionAggregated, p
 	}
 
 	// Add user agent if valid and not duplicate
+	if userAgent != "" && session.IsValidUserAgent(userAgent) {
+		found := false
+		for _, ua := range sess.UserAgents {
+			if ua == userAgent {
+				found = true
+				break
+			}
+		}
+		if !found {
+			sess.UserAgents = append(sess.UserAgents, userAgent)
+		}
+	}
+}
+
+// processChainedSessionEvent accumulates events into a child (chained role) session record.
+// The child session is keyed by childSessionMapKey (stable per access key ID) and stores
+// a back-reference to the parent human session via ParentSessionKey.
+func processChainedSessionEvent(
+	sessions map[string]*types.DynamoDBSessionAggregated,
+	ns, childSessionMapKey, childSessionID,
+	parentEmail, roleARN, roleName, accountID,
+	parentSessionKey, startTime, eventTime, sourceIP, userAgent,
+	sessionType, eventSource, eventName, errorCode, errorMessage string,
+	resourceList []string,
+	eventDate string,
+) {
+	sess, exists := sessions[childSessionMapKey]
+	if !exists {
+		sess = &types.DynamoDBSessionAggregated{
+			CustomerID:              ns,
+			SessionID:               childSessionID,
+			SessionType:             sessionType,
+			SessionStart:            startTime + "#" + childSessionID,
+			StartTime:               startTime,
+			PersonEmail:             parentEmail, // shows whose session originated this
+			AccountID:               accountID,
+			RoleARN:                 roleARN,
+			RoleName:                roleName,
+			ParentSessionKey:        parentSessionKey,
+			ParentEmail:             parentEmail,
+			SourceIPs:               []string{},
+			UserAgents:              []string{},
+			EventCounts:             make(map[string]int),
+			ResourcesAccessed:       make(map[string]int),
+			ResourceAccesses:        []types.ResourceAccess{},
+			DeniedEventCounts:       make(map[string]int),
+			DeniedResourcesAccessed: make(map[string]int),
+			DeniedResourceAccesses:  []types.ResourceAccess{},
+			DeniedEventAccesses:     []types.EventAccess{},
+		}
+		sessions[childSessionMapKey] = sess
+	}
+
+	sess.EndTime = eventTime
+	isAccessDenied := session.IsAccessDeniedError(errorCode)
+	eventKey := fmt.Sprintf("%s:%s", eventSource, eventName)
+
+	if isAccessDenied {
+		policyInfo := session.ExtractPolicyInfo(errorMessage)
+		sess.DeniedEventCount++
+		sess.DeniedEventCounts[eventKey]++
+		if len(resourceList) > 0 {
+			for _, resource := range resourceList {
+				sess.DeniedResourcesAccessed[resource]++
+				found := false
+				for i := range sess.DeniedResourceAccesses {
+					if sess.DeniedResourceAccesses[i].Resource == resource &&
+						sess.DeniedResourceAccesses[i].Service == eventSource &&
+						sess.DeniedResourceAccesses[i].EventName == eventName {
+						sess.DeniedResourceAccesses[i].Count++
+						found = true
+						break
+					}
+				}
+				if !found {
+					sess.DeniedResourceAccesses = append(sess.DeniedResourceAccesses, types.ResourceAccess{
+						Resource:     resource,
+						Service:      eventSource,
+						EventName:    eventName,
+						Count:        1,
+						PolicyARN:    policyInfo.PolicyARN,
+						PolicyType:   policyInfo.PolicyType,
+						ErrorMessage: errorMessage,
+					})
+				}
+			}
+		} else {
+			found := false
+			for i := range sess.DeniedEventAccesses {
+				if sess.DeniedEventAccesses[i].Service == eventSource &&
+					sess.DeniedEventAccesses[i].EventName == eventName &&
+					sess.DeniedEventAccesses[i].PolicyARN == policyInfo.PolicyARN {
+					sess.DeniedEventAccesses[i].Count++
+					found = true
+					break
+				}
+			}
+			if !found {
+				sess.DeniedEventAccesses = append(sess.DeniedEventAccesses, types.EventAccess{
+					Service:      eventSource,
+					EventName:    eventName,
+					Count:        1,
+					PolicyARN:    policyInfo.PolicyARN,
+					PolicyType:   policyInfo.PolicyType,
+					ErrorMessage: errorMessage,
+				})
+			}
+		}
+	} else {
+		sess.EventsCount++
+		sess.EventCounts[eventKey]++
+		for _, resource := range resourceList {
+			sess.ResourcesAccessed[resource]++
+			found := false
+			for i := range sess.ResourceAccesses {
+				if sess.ResourceAccesses[i].Resource == resource &&
+					sess.ResourceAccesses[i].Service == eventSource &&
+					sess.ResourceAccesses[i].EventName == eventName {
+					sess.ResourceAccesses[i].Count++
+					found = true
+					break
+				}
+			}
+			if !found {
+				sess.ResourceAccesses = append(sess.ResourceAccesses, types.ResourceAccess{
+					Resource:  resource,
+					Service:   eventSource,
+					EventName: eventName,
+					Count:     1,
+				})
+			}
+		}
+	}
+
+	if sourceIP != "" && session.IsValidSourceIP(sourceIP) {
+		found := false
+		for _, ip := range sess.SourceIPs {
+			if ip == sourceIP {
+				found = true
+				break
+			}
+		}
+		if !found {
+			sess.SourceIPs = append(sess.SourceIPs, sourceIP)
+		}
+	}
+
 	if userAgent != "" && session.IsValidUserAgent(userAgent) {
 		found := false
 		for _, ua := range sess.UserAgents {

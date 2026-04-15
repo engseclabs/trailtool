@@ -32,6 +32,39 @@ func init() {
 
 var format string
 
+// relativeTime returns a human-friendly string like "2h ago", "3 days ago", "just now".
+func relativeTime(ts string) string {
+	if ts == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return ts
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		mins := int(d.Minutes())
+		if mins == 1 {
+			return "1 min ago"
+		}
+		return fmt.Sprintf("%d mins ago", mins)
+	case d < 24*time.Hour:
+		hrs := int(d.Hours())
+		if hrs == 1 {
+			return "1 hr ago"
+		}
+		return fmt.Sprintf("%d hrs ago", hrs)
+	case d < 48*time.Hour:
+		return "yesterday"
+	default:
+		days := int(d.Hours() / 24)
+		return fmt.Sprintf("%d days ago", days)
+	}
+}
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "trailtool",
@@ -219,13 +252,19 @@ func sessionsListCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "SESSION KEY\tUSER\tROLE\tACCOUNT\tEVENTS\tTYPE\tDURATION")
+			fmt.Fprintln(w, "WHEN\tUSER\tROLE\tACCOUNT\tEVENTS\tTYPE\tDURATION\tCHAINED")
 			for _, sess := range sessions {
 				sessionType := sess.DetectSessionType()
 				duration := fmt.Sprintf("%dm", sess.DurationMinutes)
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
-					sess.SessionStart, sess.PersonEmail, sess.RoleName, sess.AccountID,
-					sess.EventsCount, sessionType, duration)
+				chained := ""
+				if sess.ParentSessionKey != "" {
+					chained = "↑ child"
+				} else if len(sess.ChainedRoles) > 0 {
+					chained = fmt.Sprintf("→ %d role(s)", len(sess.ChainedRoles))
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+					relativeTime(sess.StartTime), sess.PersonEmail, sess.RoleName, sess.AccountID,
+					sess.EventsCount, sessionType, duration, chained)
 			}
 			return w.Flush()
 		},
@@ -241,15 +280,62 @@ func sessionsListCmd() *cobra.Command {
 	return cmd
 }
 
+// parentSessionTime extracts the RFC3339 start time from a parentSessionKey
+// which has format "email:roleID:creationTime".
+func parentSessionTime(key string) string {
+	if key == "" {
+		return ""
+	}
+	// Last colon-delimited segment is the timestamp
+	for i := len(key) - 1; i >= 0; i-- {
+		if key[i] == ':' {
+			return key[i+1:]
+		}
+	}
+	return key
+}
+
+// resolveSession finds a session by --at prefix or "latest", with optional --user.
+func resolveSession(ctx context.Context, s *store.Store, at, user string) (*models.SessionAggregated, error) {
+	if at == "latest" {
+		filter := store.SessionFilter{Days: 90}
+		sessions, err := session.ListSessions(ctx, s, customerID, user, filter)
+		if err != nil {
+			return nil, err
+		}
+		if len(sessions) == 0 {
+			return nil, fmt.Errorf("no sessions found")
+		}
+		latest := sessions[len(sessions)-1]
+		return &latest, nil
+	}
+	sess, err := s.FindSession(ctx, customerID, at, user)
+	if err != nil {
+		return nil, err
+	}
+	if sess == nil {
+		return nil, fmt.Errorf("no session found matching %q (try a longer prefix or add --user)", at)
+	}
+	return sess, nil
+}
+
 func sessionsDetailCmd() *cobra.Command {
-	var sessionKey string
+	var at string
+	var user string
 
 	cmd := &cobra.Command{
 		Use:   "detail",
 		Short: "Show session details",
+		Long: `Show details for a session identified by approximate start time.
+
+Examples:
+  trailtool sessions detail --at 2026-04-15T17:08
+  trailtool sessions detail --at 2026-04-15T17:08 --user alice@example.com
+  trailtool sessions detail --at latest
+  trailtool sessions detail --at latest --user alice@example.com`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if sessionKey == "" {
-				return fatal("--session-key is required")
+			if at == "" {
+				return fatal("--at is required (e.g. --at 2026-04-15T17:08 or --at latest)")
 			}
 
 			ctx := context.Background()
@@ -258,33 +344,31 @@ func sessionsDetailCmd() *cobra.Command {
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			sess, err := s.GetSession(ctx, customerID, sessionKey)
+			sess, err := resolveSession(ctx, s, at, user)
 			if err != nil {
 				return fatal("%v", err)
-			}
-			if sess == nil {
-				return fatal("session not found")
 			}
 
 			if format == "json" {
 				return printJSON(sess)
 			}
 
-			fmt.Printf("Session: %s\n", sess.SessionID)
 			fmt.Printf("User: %s\n", sess.PersonEmail)
 			fmt.Printf("Role: %s (%s)\n", sess.RoleName, sess.RoleARN)
 			fmt.Printf("Account: %s\n", sess.AccountID)
 			fmt.Printf("Type: %s\n", sess.DetectSessionType())
-			fmt.Printf("Time: %s -> %s (%dm)\n", sess.StartTime, sess.EndTime, sess.DurationMinutes)
+			fmt.Printf("Time: %s -> %s (%dm) [%s]\n", sess.StartTime, sess.EndTime, sess.DurationMinutes, relativeTime(sess.StartTime))
 			fmt.Printf("Events: %d across %d services\n", sess.EventsCount, sess.ServicesCount)
 
 			if sess.DeniedEventCount > 0 {
 				fmt.Printf("Denied Events: %d\n", sess.DeniedEventCount)
 			}
 
-			fmt.Println("\nTop Events:")
-			for event, count := range sess.EventCounts {
-				fmt.Printf("  %s: %d\n", event, count)
+			if len(sess.EventCounts) > 0 {
+				fmt.Println("\nTop Events:")
+				for event, count := range sess.EventCounts {
+					fmt.Printf("  %s: %d\n", event, count)
+				}
 			}
 
 			if len(sess.ResourcesAccessed) > 0 {
@@ -294,24 +378,71 @@ func sessionsDetailCmd() *cobra.Command {
 				}
 			}
 
+			// Chaining: child view — show parent with navigable time
+			if sess.ParentSessionKey != "" {
+				parentTime := parentSessionTime(sess.ParentSessionKey)
+				fmt.Printf("\nAssumed by: %s at %s [%s]\n",
+					sess.ParentEmail, parentTime, relativeTime(parentTime))
+				fmt.Printf("  → trailtool sessions detail --at %s --user %s\n",
+					parentTime[:min(len(parentTime), 19)], sess.ParentEmail)
+			}
+
+			// Chaining: parent view — show each child session with navigable time
+			if len(sess.ChainedRoles) > 0 {
+				fmt.Printf("\nAssumed Roles (%d, %d events):\n", len(sess.ChainedRoles), sess.ChainedEventCount)
+				for i, childRoleARN := range sess.ChainedRoles {
+					var childSess *models.SessionAggregated
+					if i < len(sess.ChainedSessionKeys) {
+						// ChainedSessionKeys[i] is the full session_start key: "startTime#sessionID"
+						childSess, _ = s.GetSession(ctx, customerID, sess.ChainedSessionKeys[i])
+					}
+					if childSess != nil {
+						childAt := childSess.StartTime[:min(len(childSess.StartTime), 19)]
+						fmt.Printf("  %s  %-25s  %d events  %dm  [%s]\n",
+							childSess.StartTime, childSess.RoleName,
+							childSess.EventsCount, childSess.DurationMinutes,
+							relativeTime(childSess.StartTime))
+						fmt.Printf("    → trailtool sessions detail --at %s --user %s\n",
+							childAt, sess.PersonEmail)
+					} else {
+						fmt.Printf("  %s\n", childRoleARN)
+					}
+				}
+			}
+
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&sessionKey, "session-key", "", "Session key from 'sessions list' output (startTime#sessionID)")
+	cmd.Flags().StringVar(&at, "at", "", "Session start time prefix, e.g. 2026-04-15T17:08 or \"latest\"")
+	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (helps disambiguate)")
 
 	return cmd
 }
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func sessionsSummarizeCmd() *cobra.Command {
-	var sessionKey string
+	var at string
+	var user string
 
 	cmd := &cobra.Command{
 		Use:   "summarize",
 		Short: "Generate AI summary of a session via Bedrock",
+		Long: `Generate an AI summary of a session identified by approximate start time.
+
+Examples:
+  trailtool sessions summarize --at 2026-04-15T17:08
+  trailtool sessions summarize --at 2026-04-15T17:08 --user alice@example.com
+  trailtool sessions summarize --at latest`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if sessionKey == "" {
-				return fatal("--session-key is required")
+			if at == "" {
+				return fatal("--at is required (e.g. --at 2026-04-15T17:08 or --at latest)")
 			}
 
 			ctx := context.Background()
@@ -320,12 +451,9 @@ func sessionsSummarizeCmd() *cobra.Command {
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			sess, err := s.GetSession(ctx, customerID, sessionKey)
+			sess, err := resolveSession(ctx, s, at, user)
 			if err != nil {
 				return fatal("%v", err)
-			}
-			if sess == nil {
-				return fatal("session not found")
 			}
 
 			// Check for cached summary
@@ -358,7 +486,8 @@ func sessionsSummarizeCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&sessionKey, "session-key", "", "Session key from 'sessions list' output (startTime#sessionID)")
+	cmd.Flags().StringVar(&at, "at", "", "Session start time prefix, e.g. 2026-04-15T17:08 or \"latest\"")
+	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (helps disambiguate)")
 
 	return cmd
 }
