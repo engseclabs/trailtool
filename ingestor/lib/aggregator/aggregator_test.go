@@ -103,13 +103,14 @@ func TestTwoPassChainAttributionCounts(t *testing.T) {
 	if len(parentSess.ChainedRoles) != 1 || parentSess.ChainedRoles[0] != assumedRoleARN {
 		t.Errorf("parent ChainedRoles = %v, want [%s]", parentSess.ChainedRoles, assumedRoleARN)
 	}
-	// Parent should know the child session key
-	if len(parentSess.ChainedSessionKeys) != 1 {
-		t.Errorf("parent ChainedSessionKeys = %v, want 1 entry", parentSess.ChainedSessionKeys)
+	// Parent should know the child session key (full session_start: "startTime#sessionID")
+	expectedChildSessionStart := "2024-02-01T08:10:00Z#" + issuedKey
+	if len(parentSess.ChainedSessionKeys) != 1 || parentSess.ChainedSessionKeys[0] != expectedChildSessionStart {
+		t.Errorf("parent ChainedSessionKeys = %v, want [%s]", parentSess.ChainedSessionKeys, expectedChildSessionStart)
 	}
 
-	// Find the child session — keyed by "chained:<accessKeyID>"
-	childSessionID := "chained:" + issuedKey
+	// Find the child session — keyed by the issued access key ID (stable across all events)
+	childSessionID := issuedKey
 	childSess, ok := sessions[childSessionID]
 	if !ok {
 		t.Fatalf("child session %q not found; keys: %v", childSessionID, sessionKeys(sessions))

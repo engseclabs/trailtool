@@ -341,18 +341,19 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		// The child session is keyed by the issued access key ID.
 		// The parent session gets updated with summary counts and a reference to the child session key.
 		if chainedFromLink != nil {
-			// Child session key: use the real sessionMapKey if already computed (console sessions
-			// have email+roleID+creationTime, giving a clean human-readable key). Fall back to
-			// the chain link key only for programmatic sessions with no email.
+			// Child session key: always use a natural key.
+			// Console switch-role: sessionMapKey is already set (email:roleID:creationTime).
+			// Programmatic AssumeRole: no email in events, but we have roleID and eventTime.
 			var childSessionMapKey, childSessionID string
 			if sessionMapKey != "" {
-				// Console switch-role: events have a real identity, use the natural session key.
+				// Console switch-role: use the natural session key.
 				childSessionMapKey = sessionMapKey
 				childSessionID = truncatedSessionID
 			} else {
-				// Programmatic AssumeRole: no email in events, key by access key ID.
-				childSessionID = "chained:" + chainedFromLink.AccessKeyID
-				childSessionMapKey = childSessionID
+				// Programmatic AssumeRole: key by the issued access key ID — stable across all
+				// events in the session (unlike event time which changes per event).
+				childSessionMapKey = chainedFromLink.AccessKeyID
+				childSessionID = childSessionMapKey
 			}
 
 			// Child session's role identity comes from the chain link
@@ -564,6 +565,23 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		account.RolesCount = setLen(accountRoles, aid)
 		account.ServicesCount = setLen(accountServices, aid)
 		account.ResourcesCount = setLen(accountResources, aid)
+	}
+
+	// Rewrite ChainedSessionKeys from map keys to full session_start values so the
+	// CLI can do direct lookups without guessing the start time.
+	for _, sess := range sessions {
+		if len(sess.ChainedSessionKeys) == 0 {
+			continue
+		}
+		resolved := make([]string, 0, len(sess.ChainedSessionKeys))
+		for _, mapKey := range sess.ChainedSessionKeys {
+			if child, ok := sessions[mapKey]; ok && child.SessionStart != "" {
+				resolved = append(resolved, child.SessionStart)
+			} else {
+				resolved = append(resolved, mapKey) // keep as-is if child not in this batch
+			}
+		}
+		sess.ChainedSessionKeys = resolved
 	}
 
 	// Write aggregated data to DynamoDB (skip when client is nil, e.g. in tests)
