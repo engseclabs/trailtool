@@ -57,6 +57,14 @@ type SessionAggregated struct {
 	// ClickOps tracking
 	ClickOpsEventCount  int            `json:"clickops_event_count,omitempty" dynamodbav:"clickops_event_count"`
 	ClickOpsEventCounts map[string]int `json:"clickops_event_counts,omitempty" dynamodbav:"clickops_event_counts"`
+
+	// Role chaining — parent session fields
+	ChainedRoles       []string `json:"chained_roles,omitempty" dynamodbav:"chained_roles"`
+	ChainedEventCount  int      `json:"chained_event_count,omitempty" dynamodbav:"chained_event_count"`
+	ChainedSessionKeys []string `json:"chained_session_keys,omitempty" dynamodbav:"chained_session_keys"`
+	// Role chaining — child session fields
+	ParentSessionKey string `json:"parent_session_key,omitempty" dynamodbav:"parent_session_key"`
+	ParentEmail      string `json:"parent_email,omitempty" dynamodbav:"parent_email"`
 }
 
 // DetectSessionType determines the session type from user agents

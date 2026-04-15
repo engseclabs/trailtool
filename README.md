@@ -9,6 +9,7 @@ TrailTool aggregates CloudTrail logs to simplify analysis for AI agents. It comb
 With TrailTool, you can:
 
 - Investigate and summarize web/CLI sessions clarifying access patterns
+- Track activity across role assumptions — see which human session assumed which roles and what they did
 - Generate least-privilege IAM policies from actual usage
 - Detect ClickOps resources created or modified via console instead of IaC
 
@@ -83,6 +84,32 @@ trailtool resources list --days 30
 trailtool resources list --clickops                    # ClickOps: console-created resources
 trailtool resources list --clickops --service iam      # ClickOps filtered by service
 trailtool resources list --service s3 --days 7
+```
+
+### Role Chaining
+
+TrailTool automatically correlates `AssumeRole` calls back to the originating human session, for both console switch-role and programmatic (`aws sts assume-role`) flows. This lets you answer "who actually did this?" even when the CloudTrail actor is an assumed role with no obvious human attribution.
+
+```
+$ trailtool sessions list --days 1
+
+WHEN        USER                  ROLE                            ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
+5 mins ago  alice@example.com     AWSReservedSSO_AdminAccess_...  123456789012   84      API      12m       → 2 role(s)
+5 mins ago  alice@example.com     DeployRole                      123456789012   31      API      8m        ↑ child
+5 mins ago  alice@example.com     AuditRole                       123456789012   12      API      3m        ↑ child
+```
+
+`→ N role(s)` means this human session assumed N roles. `↑ child` means this session was created via `AssumeRole` and is attributed back to its parent.
+
+```bash
+# See which roles a session assumed and how many events each generated
+trailtool sessions detail --session-key "2025-01-15T10:30:00Z#alice@example.com:AROAID..."
+
+# The detail view shows the full chain:
+# Chained From: alice@example.com:AROAID...:2025-01-15T10:30:00Z   (on child sessions)
+# Role Sessions (2 chained, 43 events):                            (on parent sessions)
+#   arn:aws:iam::123456789012:role/DeployRole
+#   arn:aws:iam::123456789012:role/AuditRole
 ```
 
 All commands support `--format json` for machine-readable output.

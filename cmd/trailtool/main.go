@@ -32,6 +32,39 @@ func init() {
 
 var format string
 
+// relativeTime returns a human-friendly string like "2h ago", "3 days ago", "just now".
+func relativeTime(ts string) string {
+	if ts == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return ts
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		mins := int(d.Minutes())
+		if mins == 1 {
+			return "1 min ago"
+		}
+		return fmt.Sprintf("%d mins ago", mins)
+	case d < 24*time.Hour:
+		hrs := int(d.Hours())
+		if hrs == 1 {
+			return "1 hr ago"
+		}
+		return fmt.Sprintf("%d hrs ago", hrs)
+	case d < 48*time.Hour:
+		return "yesterday"
+	default:
+		days := int(d.Hours() / 24)
+		return fmt.Sprintf("%d days ago", days)
+	}
+}
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "trailtool",
@@ -219,13 +252,19 @@ func sessionsListCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "SESSION KEY\tUSER\tROLE\tACCOUNT\tEVENTS\tTYPE\tDURATION")
+			fmt.Fprintln(w, "WHEN\tUSER\tROLE\tACCOUNT\tEVENTS\tTYPE\tDURATION\tCHAINED")
 			for _, sess := range sessions {
 				sessionType := sess.DetectSessionType()
 				duration := fmt.Sprintf("%dm", sess.DurationMinutes)
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
-					sess.SessionStart, sess.PersonEmail, sess.RoleName, sess.AccountID,
-					sess.EventsCount, sessionType, duration)
+				chained := ""
+				if sess.ParentSessionKey != "" {
+					chained = "↑ child"
+				} else if len(sess.ChainedRoles) > 0 {
+					chained = fmt.Sprintf("→ %d role(s)", len(sess.ChainedRoles))
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+					relativeTime(sess.StartTime), sess.PersonEmail, sess.RoleName, sess.AccountID,
+					sess.EventsCount, sessionType, duration, chained)
 			}
 			return w.Flush()
 		},
@@ -275,7 +314,7 @@ func sessionsDetailCmd() *cobra.Command {
 			fmt.Printf("Role: %s (%s)\n", sess.RoleName, sess.RoleARN)
 			fmt.Printf("Account: %s\n", sess.AccountID)
 			fmt.Printf("Type: %s\n", sess.DetectSessionType())
-			fmt.Printf("Time: %s -> %s (%dm)\n", sess.StartTime, sess.EndTime, sess.DurationMinutes)
+			fmt.Printf("Time: %s -> %s (%dm) [%s]\n", sess.StartTime, sess.EndTime, sess.DurationMinutes, relativeTime(sess.StartTime))
 			fmt.Printf("Events: %d across %d services\n", sess.EventsCount, sess.ServicesCount)
 
 			if sess.DeniedEventCount > 0 {
@@ -291,6 +330,17 @@ func sessionsDetailCmd() *cobra.Command {
 				fmt.Println("\nResources Accessed:")
 				for resource, count := range sess.ResourcesAccessed {
 					fmt.Printf("  %s: %d\n", resource, count)
+				}
+			}
+
+			if sess.ParentSessionKey != "" {
+				fmt.Printf("\nChained From: %s\n", sess.ParentSessionKey)
+			}
+
+			if len(sess.ChainedRoles) > 0 {
+				fmt.Printf("\nRole Sessions (%d chained, %d events):\n", len(sess.ChainedSessionKeys), sess.ChainedEventCount)
+				for _, roleARN := range sess.ChainedRoles {
+					fmt.Printf("  %s\n", roleARN)
 				}
 			}
 

@@ -60,3 +60,38 @@ func ExtractAssumedRoleARN(event types.CloudTrailRecord) string {
 	roleArn, _ := params["roleArn"].(string)
 	return roleArn
 }
+
+// ExtractAssumedRoleID extracts the role ID (AROAID...) of the assumed role from an
+// AssumeRole response. CloudTrail structure: responseElements.assumedRoleUser.assumedRoleId
+// which has format "AROAID...:sessionName". Returns just the role ID portion.
+func ExtractAssumedRoleID(event types.CloudTrailRecord) string {
+	if event.EventName != "AssumeRole" || event.ResponseElements == nil {
+		return ""
+	}
+
+	b, err := json.Marshal(event.ResponseElements)
+	if err != nil {
+		return ""
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(b, &resp); err != nil {
+		return ""
+	}
+
+	aru, ok := resp["assumedRoleUser"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+
+	assumedRoleID, _ := aru["assumedRoleId"].(string)
+	// Format is "AROAID...:sessionName" — extract just the role ID part
+	if idx := len(assumedRoleID); idx > 0 {
+		for i, c := range assumedRoleID {
+			if c == ':' {
+				return assumedRoleID[:i]
+			}
+		}
+	}
+	return assumedRoleID
+}

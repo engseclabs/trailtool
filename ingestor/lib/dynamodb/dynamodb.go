@@ -551,12 +551,26 @@ func MergeSessionAggregated(existing *types.DynamoDBSessionAggregated, new *type
 		// CRITICAL FIX: Calculate counts from merged unique sets, not by adding
 		ServicesCount:  CountUniqueServices(mergedEventCounts),
 		ResourcesCount: len(mergedResourcesAccessed),
-		// Role chaining
-		ChainedRoles:      MergeUniqueStrings(existing.ChainedRoles, new.ChainedRoles),
-		ChainedEventCount: existing.ChainedEventCount + new.ChainedEventCount,
+		// Role chaining — parent fields
+		ChainedRoles:       MergeUniqueStrings(existing.ChainedRoles, new.ChainedRoles),
+		ChainedEventCount:  existing.ChainedEventCount + new.ChainedEventCount,
+		ChainedSessionKeys: MergeUniqueStrings(existing.ChainedSessionKeys, new.ChainedSessionKeys),
+		// Role chaining — child fields (preserve from whichever has them)
+		ParentSessionKey: firstNonEmpty(existing.ParentSessionKey, new.ParentSessionKey),
+		ParentEmail:      firstNonEmpty(existing.ParentEmail, new.ParentEmail),
 	}
 
 	return merged
+}
+
+// firstNonEmpty returns the first non-empty string from the arguments.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // MergeUniqueStrings merges two string slices, removing duplicates
@@ -763,6 +777,66 @@ func BatchGetChainLinks(ctx context.Context, ddbClient *dynamodb.Client, tableNa
 	}
 
 	return result, nil
+}
+
+// UpdateParentSessionChaining updates an existing parent session in DynamoDB with chaining
+// metadata from a child (assumed role) session. This is used when the parent session was
+// ingested in a prior Lambda invocation and is not in the current in-memory sessions map.
+//
+// parentSessionMapKey format: "email:roleID:creationTime"
+// DynamoDB sort key format:   "creationTime#email:roleID"
+func UpdateParentSessionChaining(ctx context.Context, ddbClient *dynamodb.Client, tableName, customerID, parentSessionMapKey, childSessionMapKey, childRoleARN string) error {
+	// Convert parentSessionMapKey (email:roleID:creationTime) → DynamoDB session_start (creationTime#email:roleID).
+	// The creationTime is the last colon-delimited token (RFC3339: "2006-01-02T15:04:05Z").
+	lastColon := strings.LastIndex(parentSessionMapKey, ":")
+	if lastColon < 0 {
+		return fmt.Errorf("invalid parentSessionMapKey format: %s", parentSessionMapKey)
+	}
+	creationTime := parentSessionMapKey[lastColon+1:]
+	sessionID := parentSessionMapKey[:lastColon]
+	sessionStart := creationTime + "#" + sessionID
+
+	// Fetch the existing parent session.
+	getOut, err := ddbClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(tableName),
+		Key: map[string]ddbtypes.AttributeValue{
+			"customerId":    &ddbtypes.AttributeValueMemberS{Value: customerID},
+			"session_start": &ddbtypes.AttributeValueMemberS{Value: sessionStart},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get parent session %s: %w", sessionStart, err)
+	}
+	if getOut.Item == nil {
+		// Parent not yet in DDB — will be handled by the in-memory path on the next ingest.
+		log.Printf("CHAIN_PARENT_UPDATE: parent session not yet in DDB, skipping update for %s", sessionStart)
+		return nil
+	}
+
+	var existing types.DynamoDBSessionAggregated
+	if err := attributevalue.UnmarshalMap(getOut.Item, &existing); err != nil {
+		return fmt.Errorf("failed to unmarshal parent session %s: %w", sessionStart, err)
+	}
+
+	// Apply chaining updates (deduplicated).
+	existing.ChainedEventCount++
+	existing.ChainedRoles = MergeUniqueStrings(existing.ChainedRoles, []string{childRoleARN})
+	existing.ChainedSessionKeys = MergeUniqueStrings(existing.ChainedSessionKeys, []string{childSessionMapKey})
+
+	// Write back.
+	item, err := attributevalue.MarshalMap(&existing)
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated parent session %s: %w", sessionStart, err)
+	}
+	if _, err := ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(tableName),
+		Item:      item,
+	}); err != nil {
+		return fmt.Errorf("failed to write updated parent session %s: %w", sessionStart, err)
+	}
+
+	log.Printf("CHAIN_PARENT_UPDATE: updated parent=%s with child=%s role=%s", sessionStart, childSessionMapKey, childRoleARN)
+	return nil
 }
 
 // WriteAccountToDynamoDB writes or updates an account in DynamoDB

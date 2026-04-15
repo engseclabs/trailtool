@@ -187,6 +187,21 @@ Resources:
         - AttributeName: account_id
           KeyType: RANGE
 
+  ChainLinksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: trailtool-chain-links
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: access_key_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: access_key_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
   # IAM Role for Lambda
   TrailToolIngestorRole:
     Type: AWS::IAM::Role
@@ -212,6 +227,7 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:UpdateItem
                   - dynamodb:Query
+                  - dynamodb:BatchGetItem
                 Resource:
                   - !GetAtt RolesAggregatedTable.Arn
                   - !GetAtt ServicesAggregatedTable.Arn
@@ -220,6 +236,7 @@ Resources:
                   - !GetAtt SessionsAggregatedTable.Arn
                   - !Sub "${SessionsAggregatedTable.Arn}/index/*"
                   - !GetAtt AccountsAggregatedTable.Arn
+                  - !GetAtt ChainLinksTable.Arn
         - PolicyName: S3ReadPolicy
           PolicyDocument:
             Version: '2012-10-17'
@@ -245,6 +262,7 @@ Resources:
           PEOPLE_AGGREGATED_TABLE: !Ref PeopleAggregatedTable
           SESSIONS_AGGREGATED_TABLE: !Ref SessionsAggregatedTable
           ACCOUNTS_AGGREGATED_TABLE: !Ref AccountsAggregatedTable
+          CHAIN_LINKS_TABLE: !Ref ChainLinksTable
       Description: Processes CloudTrail logs from S3 and writes aggregated data to DynamoDB
 
   # EventBridge Rule to trigger on S3 object creation
