@@ -428,14 +428,21 @@ func min(a, b int) int {
 }
 
 func sessionsSummarizeCmd() *cobra.Command {
-	var sessionKey string
+	var at string
+	var user string
 
 	cmd := &cobra.Command{
 		Use:   "summarize",
 		Short: "Generate AI summary of a session via Bedrock",
+		Long: `Generate an AI summary of a session identified by approximate start time.
+
+Examples:
+  trailtool sessions summarize --at 2026-04-15T17:08
+  trailtool sessions summarize --at 2026-04-15T17:08 --user alice@example.com
+  trailtool sessions summarize --at latest`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if sessionKey == "" {
-				return fatal("--session-key is required")
+			if at == "" {
+				return fatal("--at is required (e.g. --at 2026-04-15T17:08 or --at latest)")
 			}
 
 			ctx := context.Background()
@@ -444,12 +451,9 @@ func sessionsSummarizeCmd() *cobra.Command {
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			sess, err := s.GetSession(ctx, customerID, sessionKey)
+			sess, err := resolveSession(ctx, s, at, user)
 			if err != nil {
 				return fatal("%v", err)
-			}
-			if sess == nil {
-				return fatal("session not found")
 			}
 
 			// Check for cached summary
@@ -482,7 +486,8 @@ func sessionsSummarizeCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&sessionKey, "session-key", "", "Session key from 'sessions list' output (startTime#sessionID)")
+	cmd.Flags().StringVar(&at, "at", "", "Session start time prefix, e.g. 2026-04-15T17:08 or \"latest\"")
+	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (helps disambiguate)")
 
 	return cmd
 }

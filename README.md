@@ -62,8 +62,10 @@ trailtool people list
 
 # Sessions
 trailtool sessions list --user alice@example.com --days 7
-trailtool sessions detail --start-time "2025-01-15T10:30:00Z"
-trailtool sessions summarize --start-time "2025-01-15T10:30:00Z"  # requires Bedrock
+trailtool sessions detail --at 2025-01-15T10:30
+trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
+trailtool sessions detail --at latest
+trailtool sessions summarize --at 2025-01-15T10:30  # requires Bedrock
 
 # Accounts
 trailtool accounts list
@@ -103,13 +105,17 @@ WHEN        USER                  ROLE                            ACCOUNT       
 
 ```bash
 # See which roles a session assumed and how many events each generated
-trailtool sessions detail --session-key "2025-01-15T10:30:00Z#alice@example.com:AROAID..."
+trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
 
 # The detail view shows the full chain:
-# Chained From: alice@example.com:AROAID...:2025-01-15T10:30:00Z   (on child sessions)
-# Role Sessions (2 chained, 43 events):                            (on parent sessions)
-#   arn:aws:iam::123456789012:role/DeployRole
-#   arn:aws:iam::123456789012:role/AuditRole
+# Assumed by: alice@example.com at 2025-01-15T10:30:00Z            (on child sessions)
+#   → trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
+#
+# Assumed Roles (2, 43 events):                                    (on parent sessions)
+#   2025-01-15T10:35:00Z  DeployRole  31 events  8m
+#     → trailtool sessions detail --at 2025-01-15T10:35 --user alice@example.com
+#   2025-01-15T10:36:00Z  AuditRole   12 events  3m
+#     → trailtool sessions detail --at 2025-01-15T10:36 --user alice@example.com
 ```
 
 All commands support `--format json` for machine-readable output.
