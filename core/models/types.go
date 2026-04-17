@@ -1,6 +1,5 @@
 package models
 
-import "strings"
 
 // Person represents an aggregated person record from the people-aggregated table
 type Person struct {
@@ -65,21 +64,24 @@ type SessionAggregated struct {
 	// Role chaining — child session fields
 	ParentSessionKey string `json:"parent_session_key,omitempty" dynamodbav:"parent_session_key"`
 	ParentEmail      string `json:"parent_email,omitempty" dynamodbav:"parent_email"`
+
+	// aws login attribution — set on the child session vended via CreateOAuth2Token
+	LoginGrantedBySessionKey string `json:"login_granted_by_session_key,omitempty" dynamodbav:"login_granted_by_session_key"`
+	LoginGrantedByEmail      string `json:"login_granted_by_email,omitempty" dynamodbav:"login_granted_by_email"`
 }
 
-// DetectSessionType determines the session type from user agents
+// DetectSessionType returns a display label for the session type.
 func (s *SessionAggregated) DetectSessionType() string {
-	if len(s.UserAgents) == 0 {
+	switch s.SessionType {
+	case "login":
+		return "LOGIN"
+	case "web-console":
+		return "WEB"
+	case "cli-sdk":
+		return "CLI/SDK"
+	default:
 		return "API"
 	}
-	ua := strings.ToLower(s.UserAgents[0])
-	if strings.Contains(ua, "console.aws.amazon.com") {
-		return "Console"
-	}
-	if strings.Contains(ua, "aws-cli") || strings.Contains(ua, "boto3") || strings.Contains(ua, "terraform") {
-		return "CLI/SDK"
-	}
-	return "API"
 }
 
 // Role represents an aggregated role record from the roles-aggregated table

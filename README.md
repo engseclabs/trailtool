@@ -118,6 +118,27 @@ trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
 #     → trailtool sessions detail --at 2025-01-15T10:36 --user alice@example.com
 ```
 
+### `aws login` Session Detection
+
+When a developer runs `aws login` to vend credentials to an AI agent (Claude Code, VS Code Copilot, etc.), TrailTool detects the `CreateOAuth2Token` event on `signin.amazonaws.com` and correlates it back to the agent session that received those credentials. The agent session is tagged as `LOGIN` type and includes attribution back to the authorizing human session.
+
+```
+$ trailtool sessions list --days 1
+
+WHEN        USER                  ROLE                            ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
+5 mins ago  alice@example.com     AWSReservedSSO_AdminAccess_...  123456789012   3       LOGIN    8m        ← login
+8 mins ago  alice@example.com     AWSReservedSSO_AdminAccess_...  123456789012   84      API      12m
+```
+
+`← login` means the session's credentials were vended via `aws login` by a human in another session. The detail view shows the attribution:
+
+```
+Credentials granted via aws login by: alice@example.com at 2025-01-15T10:30:00Z (8 minutes ago)
+  → trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
+```
+
+This distinguishes agent-driven activity (credentials vended by a human developer via `aws login`) from background automation or long-running CLI sessions.
+
 All commands support `--format json` for machine-readable output.
 
 ## Using TrailTool with AI Coding Agents

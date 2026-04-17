@@ -523,11 +523,19 @@ func MergeSessionAggregated(existing *types.DynamoDBSessionAggregated, new *type
 	mergedDeniedResourceAccesses := MergeResourceAccesses(existing.DeniedResourceAccesses, new.DeniedResourceAccesses)
 	mergedDeniedEventAccesses := MergeEventAccesses(existing.DeniedEventAccesses, new.DeniedEventAccesses)
 
+	// Session type: "login" is the most specific — prefer it if either side has it.
+	// Otherwise keep the existing type (both sides should agree since they share the same
+	// IAM session creation time).
+	sessionType := existing.SessionType
+	if new.SessionType == "login" {
+		sessionType = "login"
+	}
+
 	merged := &types.DynamoDBSessionAggregated{
 		CustomerID:        new.CustomerID,
 		SessionID:         existing.SessionID,
-		SessionType:       existing.SessionType, // Both sessions have same IAM creation time, so same type
-		SessionStart:      existing.SessionStart,  // Preserve composite range key
+		SessionType:       sessionType,
+		SessionStart:      existing.SessionStart, // Preserve composite range key
 		StartTime:         startTime,             // Pure timestamp
 		EndTime:           endTime,
 		DurationMinutes:   durationMinutes,
@@ -558,6 +566,9 @@ func MergeSessionAggregated(existing *types.DynamoDBSessionAggregated, new *type
 		// Role chaining — child fields (preserve from whichever has them)
 		ParentSessionKey: firstNonEmpty(existing.ParentSessionKey, new.ParentSessionKey),
 		ParentEmail:      firstNonEmpty(existing.ParentEmail, new.ParentEmail),
+		// aws login attribution (preserve from whichever has them)
+		LoginGrantedBySessionKey: firstNonEmpty(existing.LoginGrantedBySessionKey, new.LoginGrantedBySessionKey),
+		LoginGrantedByEmail:      firstNonEmpty(existing.LoginGrantedByEmail, new.LoginGrantedByEmail),
 	}
 
 	return merged

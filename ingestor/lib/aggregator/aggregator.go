@@ -93,6 +93,72 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	sessionServices := make(map[string]map[string]bool)
 	sessionResources := make(map[string]map[string]bool)
 
+	// === Login pre-pass: Detect aws login (PKCE OAuth2) credential grant events ===
+	// CreateOAuth2Token on signin.amazonaws.com indicates a developer ran `aws login`.
+	// Unlike `aws sso login`, no GetRoleCredentials event fires — credentials are vended
+	// directly inside the CreateOAuth2Token response.
+	//
+	// Correlation key: "login:roleID:startTime" — roleID and startTime are both present on
+	// the CreateOAuth2Token event (via principalId and sessionContext.creationDate) and on
+	// every subsequent agent event (same principalId, same sessionContext.creationDate).
+	// This mirrors the console switch-role key shape ("console_switch_role:roleID:startTime").
+	//
+	// loginGrant holds the metadata needed to annotate the child (agent) session.
+	type loginGrant struct {
+		parentSessionMapKey string // session map key of the human session that ran aws login
+		parentEmail         string
+	}
+	// Index by "login:roleID:startTime" for O(1) lookup in Pass 2.
+	loginGrants := make(map[string]*loginGrant)
+
+	for _, event := range events {
+		if event.EventSource != "signin.amazonaws.com" || event.EventName != "CreateOAuth2Token" {
+			continue
+		}
+
+		email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
+		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
+		startTime := session.GetSessionCreationTime(event)
+		if email == "" || roleID == "" || startTime == "" {
+			continue
+		}
+
+		roleARN := session.GetRoleARN(event)
+		if roleARN == "" {
+			roleARN = event.UserIdentity.ARN
+		}
+
+		parentSessionMapKey := fmt.Sprintf("%s:%s:%s", email, roleID, startTime)
+		loginKey := "login:" + roleID + ":" + startTime
+
+		loginGrants[loginKey] = &loginGrant{
+			parentSessionMapKey: parentSessionMapKey,
+			parentEmail:         email,
+		}
+		log.Printf("LOGIN_GRANT: email=%s roleID=%s startTime=%s loginKey=%s parentKey=%s",
+			email, roleID, startTime, loginKey, parentSessionMapKey)
+
+		// Persist to DynamoDB so the grant survives cross-batch delivery
+		// (CreateOAuth2Token and agent events often land in different S3 files).
+		if cfg.Tables.ChainLinks != "" {
+			eventT, err := time.Parse(time.RFC3339, event.EventTime)
+			if err != nil {
+				log.Printf("WARNING: login pre-pass: could not parse event time %s: %v", event.EventTime, err)
+				continue
+			}
+			grantLink := &types.DynamoDBChainLink{
+				AccessKeyID:         loginKey,
+				ParentSessionMapKey: parentSessionMapKey,
+				ParentEmail:         email,
+				ParentRoleARN:       roleARN,
+				TTL:                 eventT.Add(chainLinkTTLHours * time.Hour).Unix(),
+			}
+			if err := ddblib.WriteChainLinkToDynamoDB(ctx, ddbClient, cfg.Tables.ChainLinks, grantLink); err != nil {
+				log.Printf("WARNING: failed to write login grant to DynamoDB: %v", err)
+			}
+		}
+	}
+
 	// === Pass 1: Discover AssumeRole events from known sessions ===
 	// Build a map of issued access key IDs → parent session map keys for this batch.
 	// Also write chain link records to DynamoDB so cross-file chains work in future batches.
@@ -164,15 +230,18 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		}
 		ttl := eventT.Add(chainLinkTTLHours * time.Hour).Unix()
 
+		// Programmatic CLI/SDK AssumeRole: key by "cli_switch_role:accessKeyID".
+		// The issued access key is stable across all events in the child session.
+		cliSwitchKey := "cli_switch_role:" + issuedKeyID
 		link := &types.DynamoDBChainLink{
-			AccessKeyID:         issuedKeyID,
+			AccessKeyID:         cliSwitchKey,
 			ParentSessionMapKey: parentSessionMapKey,
 			ParentEmail:         email,
 			ParentRoleARN:       roleARN,
 			AssumedRoleARN:      assumedRoleARN,
 			TTL:                 ttl,
 		}
-		newChainLinks[issuedKeyID] = link
+		newChainLinks[cliSwitchKey] = link
 
 		if cfg.Tables.ChainLinks != "" {
 			if err := ddblib.WriteChainLinkToDynamoDB(ctx, ddbClient, cfg.Tables.ChainLinks, link); err != nil {
@@ -180,24 +249,24 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			}
 		}
 
-		// For console switch-role, the assumed role's events use a fresh credential per
-		// request rather than a single stable session key. Write a second chain link keyed
-		// by "childRoleID:eventTime" so Pass 2 can match those events by role+creationTime.
+		// Console switch-role: the assumed role's events use a fresh credential per
+		// request rather than a single stable access key. Key by
+		// "console_switch_role:roleID:startTime" so Pass 2 can match by role+startTime.
 		childRoleID := ExtractAssumedRoleID(event)
 		if childRoleID != "" {
-			consoleKey := childRoleID + ":" + event.EventTime
+			consoleSwitchKey := "console_switch_role:" + childRoleID + ":" + event.EventTime
 			consoleLink := &types.DynamoDBChainLink{
-				AccessKeyID:         consoleKey,
+				AccessKeyID:         consoleSwitchKey,
 				ParentSessionMapKey: parentSessionMapKey,
 				ParentEmail:         email,
 				ParentRoleARN:       roleARN,
 				AssumedRoleARN:      assumedRoleARN,
 				TTL:                 ttl,
 			}
-			newChainLinks[consoleKey] = consoleLink
+			newChainLinks[consoleSwitchKey] = consoleLink
 			if cfg.Tables.ChainLinks != "" {
 				if err := ddblib.WriteChainLinkToDynamoDB(ctx, ddbClient, cfg.Tables.ChainLinks, consoleLink); err != nil {
-					log.Printf("WARNING: failed to write console chain link: %v", err)
+					log.Printf("WARNING: failed to write console switch-role chain link: %v", err)
 				}
 			}
 		}
@@ -205,28 +274,40 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 	// === Pre-pass 2: Batch-load chain links from DynamoDB ===
 	// Collect lookup keys for events that may be chained:
-	//   - Access key ID (programmatic AssumeRole)
-	//   - "roleID:creationTime" composite key (console switch-role)
+	//   - "cli_switch_role:accessKeyID"       (programmatic AssumeRole)
+	//   - "console_switch_role:roleID:startTime" (console switch-role)
+	//   - "login:roleID:startTime"             (aws login PKCE grant)
 	var unkeyedAccessKeyIDs []string
 	seen := make(map[string]bool)
 	for _, event := range events {
-		// Access key lookup (programmatic)
+		// CLI/SDK switch-role lookup: cli_switch_role:accessKeyID
 		keyID := event.UserIdentity.AccessKeyID
-		if keyID != "" && !seen[keyID] {
-			if _, inBatch := newChainLinks[keyID]; !inBatch {
-				seen[keyID] = true
-				unkeyedAccessKeyIDs = append(unkeyedAccessKeyIDs, keyID)
+		if keyID != "" {
+			cliSwitchKey := "cli_switch_role:" + keyID
+			if !seen[cliSwitchKey] {
+				if _, inBatch := newChainLinks[cliSwitchKey]; !inBatch {
+					seen[cliSwitchKey] = true
+					unkeyedAccessKeyIDs = append(unkeyedAccessKeyIDs, cliSwitchKey)
+				}
 			}
 		}
-		// Console key lookup: roleID:creationTime
 		rID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
-		ct := session.GetSessionCreationTime(event)
-		if rID != "" && ct != "" {
-			consoleKey := rID + ":" + ct
-			if !seen[consoleKey] {
-				if _, inBatch := newChainLinks[consoleKey]; !inBatch {
-					seen[consoleKey] = true
-					unkeyedAccessKeyIDs = append(unkeyedAccessKeyIDs, consoleKey)
+		st := session.GetSessionCreationTime(event)
+		if rID != "" && st != "" {
+			// Console switch-role lookup: console_switch_role:roleID:startTime
+			consoleSwitchKey := "console_switch_role:" + rID + ":" + st
+			if !seen[consoleSwitchKey] {
+				if _, inBatch := newChainLinks[consoleSwitchKey]; !inBatch {
+					seen[consoleSwitchKey] = true
+					unkeyedAccessKeyIDs = append(unkeyedAccessKeyIDs, consoleSwitchKey)
+				}
+			}
+			// Login grant lookup: login:roleID:startTime
+			loginKey := "login:" + rID + ":" + st
+			if !seen[loginKey] {
+				if _, inBatch := newChainLinks[loginKey]; !inBatch {
+					seen[loginKey] = true
+					unkeyedAccessKeyIDs = append(unkeyedAccessKeyIDs, loginKey)
 				}
 			}
 		}
@@ -275,6 +356,13 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			continue
 		}
 
+		// Skip CreateOAuth2Token events — these were already handled in the login pre-pass
+		// to detect aws login sessions. Processing them here would inflate EventsCount and
+		// could mistakenly trigger login attribution via the authorizing session's creationDate.
+		if event.EventName == "CreateOAuth2Token" && event.EventSource == "signin.amazonaws.com" {
+			continue
+		}
+
 		// Extract core identifiers
 		email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
 		roleARN := session.GetRoleARN(event)
@@ -286,19 +374,17 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 		// Role chain attribution: check whether this event belongs to a chained (assumed) session.
 		// Two lookup strategies:
-		//   1. Programmatic: match by access key ID (stable per AssumeRole call)
-		//   2. Console switch-role: match by "childRoleID:creationTime" since the console
-		//      issues a new short-lived credential per request, not a single session key.
+		//   1. CLI/SDK: match by "cli_switch_role:accessKeyID" (stable per AssumeRole call)
+		//   2. Console switch-role: match by "console_switch_role:roleID:startTime" since the
+		//      console issues a new short-lived credential per request, not a single session key.
 		var chainedFromLink *types.DynamoDBChainLink
 		if event.UserIdentity.AccessKeyID != "" {
-			chainedFromLink = resolveChainLink(event.UserIdentity.AccessKeyID)
+			chainedFromLink = resolveChainLink("cli_switch_role:" + event.UserIdentity.AccessKeyID)
 		}
 		if chainedFromLink == nil && roleID != "" {
-			// Try console key: roleID:creationTime
-			creationTime := session.GetSessionCreationTime(event)
-			if creationTime != "" {
-				consoleKey := roleID + ":" + creationTime
-				chainedFromLink = resolveChainLink(consoleKey)
+			startTime := session.GetSessionCreationTime(event)
+			if startTime != "" {
+				chainedFromLink = resolveChainLink("console_switch_role:" + roleID + ":" + startTime)
 			}
 		}
 		if chainedFromLink != nil {
@@ -317,6 +403,10 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		}
 
 		// Build session keys
+		// rawSessionCreationTime is the actual sessionContext.creationDate (startTime) from
+		// the event. For CLI sessions, sessionCreationTime is windowed to a 4-hour boundary;
+		// rawSessionCreationTime is the unwindowed value used for login grant key lookup.
+		rawSessionCreationTime := session.GetSessionCreationTime(event)
 		var sessionMapKey, truncatedSessionID, sessionCreationTime string
 		if email != "" && roleID != "" {
 			normalizedUserAgent := session.NormalizeUserAgent(event.UserAgent)
@@ -327,7 +417,7 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 				sessionCreationTime = cliStartTime
 				truncatedSessionID = fmt.Sprintf("%s:%s", email, roleID)
 			} else {
-				sessionCreationTime = session.GetSessionCreationTime(event)
+				sessionCreationTime = rawSessionCreationTime
 				if sessionCreationTime != "" {
 					truncatedSessionID = fmt.Sprintf("%s:%s", email, roleID)
 					sessionMapKey = fmt.Sprintf("%s:%s:%s", email, roleID, sessionCreationTime)
@@ -449,6 +539,31 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			processSessionEvent(sessions, people, ns, sessionMapKey, truncatedSessionID, email, roleID, accountID, roleARN, session.ExtractRoleNameFromARN(roleARN),
 				sessionCreationTime, eventTime, event.SourceIPAddress, normalizedUserAgent, eventSource, event.EventName, event.ErrorCode, event.ErrorMessage, resourceList, eventDate)
 			addToSet(sessionServices, sessionMapKey, eventSource)
+
+			// Login grant attribution: look up "login:roleID:startTime" in the in-memory
+			// grants (same batch) or the DynamoDB-fetched chain links (cross-batch).
+			// The key is exact — no fuzzy time matching needed.
+			if roleID != "" && rawSessionCreationTime != "" {
+				loginKey := "login:" + roleID + ":" + rawSessionCreationTime
+				var grant *loginGrant
+				if g, ok := loginGrants[loginKey]; ok {
+					grant = g
+				} else if link := resolveChainLink(loginKey); link != nil {
+					grant = &loginGrant{
+						parentSessionMapKey: link.ParentSessionMapKey,
+						parentEmail:         link.ParentEmail,
+					}
+				}
+				if grant != nil {
+					if sess, exists := sessions[sessionMapKey]; exists && sess.LoginGrantedBySessionKey == "" {
+						sess.SessionType = "login"
+						sess.LoginGrantedBySessionKey = grant.parentSessionMapKey
+						sess.LoginGrantedByEmail = grant.parentEmail
+						log.Printf("LOGIN_ATTR: session=%s loginKey=%s grantedBy=%s",
+							sessionMapKey, loginKey, grant.parentSessionMapKey)
+					}
+				}
+			}
 		} else if sessionMapKey != "" {
 			log.Printf("SKIPPED_SESSION: email=%s roleID=%s accountID=%s roleARN=%s eventSource=%s eventName=%s",
 				email, roleID, accountID, roleARN, eventSource, event.EventName)
