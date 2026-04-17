@@ -257,7 +257,9 @@ func sessionsListCmd() *cobra.Command {
 				sessionType := sess.DetectSessionType()
 				duration := fmt.Sprintf("%dm", sess.DurationMinutes)
 				chained := ""
-				if sess.ParentSessionKey != "" {
+				if sess.LoginGrantedBySessionKey != "" {
+					chained = "← login"
+				} else if sess.ParentSessionKey != "" {
 					chained = "↑ child"
 				} else if len(sess.ChainedRoles) > 0 {
 					chained = fmt.Sprintf("→ %d role(s)", len(sess.ChainedRoles))
@@ -282,14 +284,19 @@ func sessionsListCmd() *cobra.Command {
 
 // parentSessionTime extracts the RFC3339 start time from a parentSessionKey
 // which has format "email:roleID:creationTime".
+// We skip past the first two colon-separated fields (email, roleID) to get
+// the timestamp, which itself contains colons (e.g. 2026-04-16T17:43:08Z).
 func parentSessionTime(key string) string {
 	if key == "" {
 		return ""
 	}
-	// Last colon-delimited segment is the timestamp
-	for i := len(key) - 1; i >= 0; i-- {
-		if key[i] == ':' {
-			return key[i+1:]
+	colons := 0
+	for i, c := range key {
+		if c == ':' {
+			colons++
+			if colons == 2 {
+				return key[i+1:]
+			}
 		}
 	}
 	return key
@@ -376,6 +383,15 @@ Examples:
 				for resource, count := range sess.ResourcesAccessed {
 					fmt.Printf("  %s: %d\n", resource, count)
 				}
+			}
+
+			// Login grant: show the human session that ran aws login to create these credentials
+			if sess.LoginGrantedBySessionKey != "" {
+				grantTime := parentSessionTime(sess.LoginGrantedBySessionKey)
+				fmt.Printf("\nCredentials granted via aws login by: %s at %s [%s]\n",
+					sess.LoginGrantedByEmail, grantTime, relativeTime(grantTime))
+				fmt.Printf("  → trailtool sessions detail --at %s --user %s\n",
+					grantTime[:min(len(grantTime), 19)], sess.LoginGrantedByEmail)
 			}
 
 			// Chaining: child view — show parent with navigable time

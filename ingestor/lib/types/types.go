@@ -242,6 +242,12 @@ type DynamoDBSessionAggregated struct {
 	// Role chaining — child session fields (set on sessions created for assumed roles)
 	ParentSessionKey string `dynamodbav:"parent_session_key,omitempty"` // session_start key of the parent human session
 	ParentEmail      string `dynamodbav:"parent_email,omitempty"`       // email of the human who initiated the chain
+
+	// aws login attribution — set on the child session vended via CreateOAuth2Token.
+	// The parent is the existing human session that authorized the aws login browser flow.
+	// Correlation is by roleARN + sourceIP + creationDate within ±60s of CreateOAuth2Token.
+	LoginGrantedBySessionKey string `dynamodbav:"login_granted_by_session_key,omitempty"` // session_start key of the authorizing session
+	LoginGrantedByEmail      string `dynamodbav:"login_granted_by_email,omitempty"`       // email of the human who ran aws login
 }
 
 // DynamoDBChainLink records a temporary credential issued via AssumeRole,

@@ -45,6 +45,13 @@ trailtool sessions summarize --at latest --user alice@example.com
 
 **Session detail tips:** `--at` accepts an ISO8601 prefix (e.g. `2026-04-15T17`) that is matched against session start times — no need for an exact timestamp. Use `--at latest` to get the most recent session. Add `--user` to disambiguate when multiple users have sessions near the same time. The detail view shows role chaining: if a session assumed another role, it prints the parent session with a navigable `--at` command, and vice versa for child sessions.
 
+**Session types in the CHAINED column:**
+- `→ N role(s)` — this human session assumed N roles via `AssumeRole`
+- `↑ child` — this session was created via `AssumeRole` and is attributed to a parent human session
+- `← login` — this session's credentials were vended via `aws login` (PKCE OAuth2) by a human in another session
+
+**`aws login` attribution:** When a developer runs `aws login` to grant credentials to an AI agent (Claude Code, VS Code, etc.), the agent session is tagged as `LOGIN` type and the `CHAINED` column shows `← login`. The detail view shows who authorized the credential grant and when, with a command to inspect the authorizing session.
+
 ### Accounts
 ```bash
 trailtool accounts list                        # List all tracked AWS accounts
@@ -117,7 +124,19 @@ When a tightened IAM policy blocks legitimate access, use the denied event data 
 
 **Context:** This closes the feedback loop on least-privilege. Rather than the user filing a ticket saying "I can't do X," the agent can detect the denial, draft the fix, and open a PR. A human should still review permission changes before merge.
 
-### 4. Validate break-glass session justifications
+### 4. Inspect your own `aws login` session
+
+If you are an AI agent with credentials vended via `aws login`, you can look up your own session and the human session that authorized it.
+
+**Steps:**
+1. `trailtool sessions list --days 1 --format json` — find sessions with `"session_type": "login"` or `"chained": "← login"` in the output
+2. `trailtool sessions detail --session-key <key> --format json` — get your session detail; look for `login_granted_by_session_key` and `login_granted_by_email`
+3. Use the printed command to inspect the authorizing human session:
+   `trailtool sessions detail --at <time> --user <email>`
+
+**Context:** This is useful for self-audit — understanding what credentials you are using, who authorized them, and what the authorizing session has done. It also lets you show a human reviewer the audit trail for a sensitive operation.
+
+### 5. Validate break-glass session justifications
 
 When someone uses emergency/break-glass access, compare what they said they would do (the justification) with what they actually did (the session).
 
