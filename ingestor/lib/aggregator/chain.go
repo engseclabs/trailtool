@@ -61,6 +61,33 @@ func ExtractAssumedRoleARN(event types.CloudTrailRecord) string {
 	return roleArn
 }
 
+// ExtractSessionTags extracts the session tags map from an AssumeRole requestParameters.
+// Returns nil if the event is not an AssumeRole or has no tags.
+// CloudTrail shape: requestParameters.tags = [{key: "AgentName", value: "claude-code"}, ...]
+func ExtractSessionTags(event types.CloudTrailRecord) map[string]string {
+	if event.EventName != "AssumeRole" || event.RequestParameters == nil {
+		return nil
+	}
+	b, err := json.Marshal(event.RequestParameters)
+	if err != nil {
+		return nil
+	}
+	var params struct {
+		Tags []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"tags"`
+	}
+	if err := json.Unmarshal(b, &params); err != nil || len(params.Tags) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(params.Tags))
+	for _, t := range params.Tags {
+		result[t.Key] = t.Value
+	}
+	return result
+}
+
 // ExtractAssumedRoleID extracts the role ID (AROAID...) of the assumed role from an
 // AssumeRole response. CloudTrail structure: responseElements.assumedRoleUser.assumedRoleId
 // which has format "AROAID...:sessionName". Returns just the role ID portion.

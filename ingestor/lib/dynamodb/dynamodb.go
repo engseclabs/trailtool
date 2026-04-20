@@ -527,7 +527,7 @@ func MergeSessionAggregated(existing *types.DynamoDBSessionAggregated, new *type
 	// Otherwise keep the existing type (both sides should agree since they share the same
 	// IAM session creation time).
 	sessionType := existing.SessionType
-	if new.SessionType == "login" {
+	if new.SessionType == "login" || existing.SessionType == "login" {
 		sessionType = "login"
 	}
 
@@ -569,9 +569,20 @@ func MergeSessionAggregated(existing *types.DynamoDBSessionAggregated, new *type
 		// aws login attribution (preserve from whichever has them)
 		LoginGrantedBySessionKey: firstNonEmpty(existing.LoginGrantedBySessionKey, new.LoginGrantedBySessionKey),
 		LoginGrantedByEmail:      firstNonEmpty(existing.LoginGrantedByEmail, new.LoginGrantedByEmail),
+		// Session tags (preserve from whichever has them; existing wins)
+		SessionTags: mergeSessionTags(existing.SessionTags, new.SessionTags),
 	}
 
 	return merged
+}
+
+// mergeSessionTags returns the non-nil session tags map, preferring existing over new.
+// If both are non-nil, existing wins (the first write has the authoritative tags).
+func mergeSessionTags(existing, new map[string]string) map[string]string {
+	if existing != nil {
+		return existing
+	}
+	return new
 }
 
 // firstNonEmpty returns the first non-empty string from the arguments.

@@ -184,6 +184,15 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		}
 
 		email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
+		tags := ExtractSessionTags(event)
+
+		// Email may be absent from principalId when AssumeRole is called from a non-SSO
+		// context (e.g. elhaz-vended agent credentials). Fall back to the HumanSession
+		// session tag if it looks like an email address.
+		if email == "" && tags != nil && strings.Contains(tags["HumanSession"], "@") {
+			email = tags["HumanSession"]
+		}
+
 		if email == "" {
 			continue // only attribute human-initiated AssumeRole
 		}
@@ -240,6 +249,9 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			ParentRoleARN:       roleARN,
 			AssumedRoleARN:      assumedRoleARN,
 			TTL:                 ttl,
+		}
+		if len(tags) > 0 {
+			link.SessionTags = tags
 		}
 		newChainLinks[cliSwitchKey] = link
 
@@ -475,7 +487,8 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			processChainedSessionEvent(sessions, ns, childSessionMapKey, childSessionID,
 				childEmail, childRoleARN, childRoleName, childAccountID,
 				parentSessionKey, childStartTime, eventTime, event.SourceIPAddress, normalizedUA,
-				childSessionType, eventSource, event.EventName, event.ErrorCode, event.ErrorMessage, resourceList, eventDate)
+				childSessionType, eventSource, event.EventName, event.ErrorCode, event.ErrorMessage, resourceList, eventDate,
+				chainedFromLink.SessionTags)
 			addToSet(sessionServices, childSessionMapKey, eventSource)
 			addToSet(sessionResources, childSessionMapKey, childRoleARN)
 
@@ -1025,6 +1038,7 @@ func processChainedSessionEvent(
 	sessionType, eventSource, eventName, errorCode, errorMessage string,
 	resourceList []string,
 	eventDate string,
+	sessionTags map[string]string,
 ) {
 	sess, exists := sessions[childSessionMapKey]
 	if !exists {
@@ -1040,6 +1054,7 @@ func processChainedSessionEvent(
 			RoleName:                roleName,
 			ParentSessionKey:        parentSessionKey,
 			ParentEmail:             parentEmail,
+			SessionTags:             sessionTags,
 			SourceIPs:               []string{},
 			UserAgents:              []string{},
 			EventCounts:             make(map[string]int),

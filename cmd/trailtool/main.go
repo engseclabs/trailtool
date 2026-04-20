@@ -5,15 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	awsiam "github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/spf13/cobra"
 
+	iamlib "github.com/engseclabs/trailtool/core/iam"
 	"github.com/engseclabs/trailtool/core/models"
 	"github.com/engseclabs/trailtool/core/policy"
 	"github.com/engseclabs/trailtool/core/session"
@@ -223,6 +226,7 @@ func sessionsListCmd() *cobra.Command {
 	var account string
 	var after string
 	var before string
+	var tags []string
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -247,6 +251,21 @@ func sessionsListCmd() *cobra.Command {
 				return fatal("%v", err)
 			}
 
+			// Apply --tag KEY=VALUE filters (all must match — AND semantics)
+			if len(tags) > 0 {
+				tagFilters, parseErr := parseTagFilters(tags)
+				if parseErr != nil {
+					return fatal("%v", parseErr)
+				}
+				filtered := sessions[:0]
+				for _, sess := range sessions {
+					if sessionMatchesTags(sess.SessionTags, tagFilters) {
+						filtered = append(filtered, sess)
+					}
+				}
+				sessions = filtered
+			}
+
 			if format == "json" {
 				return printJSON(sessions)
 			}
@@ -254,7 +273,7 @@ func sessionsListCmd() *cobra.Command {
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "WHEN\tUSER\tROLE\tACCOUNT\tEVENTS\tTYPE\tDURATION\tCHAINED")
 			for _, sess := range sessions {
-				sessionType := sess.DetectSessionType()
+				st := sess.DetectSessionType()
 				duration := fmt.Sprintf("%dm", sess.DurationMinutes)
 				chained := ""
 				if sess.LoginGrantedBySessionKey != "" {
@@ -266,7 +285,7 @@ func sessionsListCmd() *cobra.Command {
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 					relativeTime(sess.StartTime), sess.PersonEmail, sess.RoleName, sess.AccountID,
-					sess.EventsCount, sessionType, duration, chained)
+					sess.EventsCount, st, duration, chained)
 			}
 			return w.Flush()
 		},
@@ -278,8 +297,32 @@ func sessionsListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&account, "account", "", "Filter by AWS account ID")
 	cmd.Flags().StringVar(&after, "after", "", "Only sessions starting at or after this time (ISO8601)")
 	cmd.Flags().StringVar(&before, "before", "", "Only sessions starting before this time (ISO8601)")
+	cmd.Flags().StringArrayVar(&tags, "tag", nil, "Filter by session tag KEY=VALUE (repeatable, AND semantics)")
 
 	return cmd
+}
+
+// parseTagFilters parses a slice of "KEY=VALUE" strings into a map.
+func parseTagFilters(raw []string) (map[string]string, error) {
+	result := make(map[string]string, len(raw))
+	for _, kv := range raw {
+		idx := strings.IndexByte(kv, '=')
+		if idx <= 0 {
+			return nil, fmt.Errorf("invalid --tag %q: expected KEY=VALUE", kv)
+		}
+		result[kv[:idx]] = kv[idx+1:]
+	}
+	return result, nil
+}
+
+// sessionMatchesTags returns true when all filters are present and match in the session tags.
+func sessionMatchesTags(sessionTags map[string]string, filters map[string]string) bool {
+	for k, v := range filters {
+		if sessionTags[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // parentSessionTime extracts the RFC3339 start time from a parentSessionKey
@@ -329,6 +372,7 @@ func resolveSession(ctx context.Context, s *store.Store, at, user string) (*mode
 func sessionsDetailCmd() *cobra.Command {
 	var at string
 	var user string
+	var showBoundary bool
 
 	cmd := &cobra.Command{
 		Use:   "detail",
@@ -339,7 +383,8 @@ Examples:
   trailtool sessions detail --at 2026-04-15T17:08
   trailtool sessions detail --at 2026-04-15T17:08 --user alice@example.com
   trailtool sessions detail --at latest
-  trailtool sessions detail --at latest --user alice@example.com`,
+  trailtool sessions detail --at latest --user alice@example.com
+  trailtool sessions detail --at latest --boundary`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if at == "" {
 				return fatal("--at is required (e.g. --at 2026-04-15T17:08 or --at latest)")
@@ -366,6 +411,13 @@ Examples:
 			fmt.Printf("Type: %s\n", sess.DetectSessionType())
 			fmt.Printf("Time: %s -> %s (%dm) [%s]\n", sess.StartTime, sess.EndTime, sess.DurationMinutes, relativeTime(sess.StartTime))
 			fmt.Printf("Events: %d across %d services\n", sess.EventsCount, sess.ServicesCount)
+
+			if len(sess.SessionTags) > 0 {
+				fmt.Println("\nSession Tags:")
+				for k, v := range sess.SessionTags {
+					fmt.Printf("  %s: %s\n", k, v)
+				}
+			}
 
 			if sess.DeniedEventCount > 0 {
 				fmt.Printf("Denied Events: %d\n", sess.DeniedEventCount)
@@ -426,12 +478,31 @@ Examples:
 				}
 			}
 
+			// Permission boundary: fetch from IAM when --boundary is set and session has a role.
+			if showBoundary && sess.RoleARN != "" {
+				cfg, cfgErr := config.LoadDefaultConfig(ctx)
+				if cfgErr != nil {
+					fmt.Printf("\nPermission Boundary: (could not load AWS config: %v)\n", cfgErr)
+				} else {
+					iamClient := awsiam.NewFromConfig(cfg)
+					boundary, bErr := iamlib.FetchPermissionBoundary(ctx, iamClient, sess.RoleARN)
+					if bErr != nil {
+						fmt.Printf("\nPermission Boundary: (could not fetch: %v)\n", bErr)
+					} else if boundary == nil {
+						fmt.Printf("\nPermission Boundary: none attached\n")
+					} else {
+						fmt.Printf("\nPermission Boundary: %s\n", boundary.BoundaryARN)
+					}
+				}
+			}
+
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&at, "at", "", "Session start time prefix, e.g. 2026-04-15T17:08 or \"latest\"")
 	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (helps disambiguate)")
+	cmd.Flags().BoolVar(&showBoundary, "boundary", false, "Fetch and display the permission boundary on the session's role (requires iam:GetRole)")
 
 	return cmd
 }

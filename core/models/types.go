@@ -68,6 +68,10 @@ type SessionAggregated struct {
 	// aws login attribution — set on the child session vended via CreateOAuth2Token
 	LoginGrantedBySessionKey string `json:"login_granted_by_session_key,omitempty" dynamodbav:"login_granted_by_session_key"`
 	LoginGrantedByEmail      string `json:"login_granted_by_email,omitempty" dynamodbav:"login_granted_by_email"`
+
+	// SessionTags holds the session tags from the AssumeRole requestParameters.tags
+	// that created this child session. Non-nil only on chained sessions.
+	SessionTags map[string]string `json:"session_tags,omitempty" dynamodbav:"session_tags,omitempty"`
 }
 
 // DetectSessionType returns a display label for the session type.
