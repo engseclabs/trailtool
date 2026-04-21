@@ -12,11 +12,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
-	awsiam "github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/spf13/cobra"
 
-	iamlib "github.com/engseclabs/trailtool/core/iam"
 	"github.com/engseclabs/trailtool/core/models"
 	"github.com/engseclabs/trailtool/core/policy"
 	"github.com/engseclabs/trailtool/core/session"
@@ -372,7 +370,6 @@ func resolveSession(ctx context.Context, s *store.Store, at, user string) (*mode
 func sessionsDetailCmd() *cobra.Command {
 	var at string
 	var user string
-	var showBoundary bool
 
 	cmd := &cobra.Command{
 		Use:   "detail",
@@ -383,8 +380,7 @@ Examples:
   trailtool sessions detail --at 2026-04-15T17:08
   trailtool sessions detail --at 2026-04-15T17:08 --user alice@example.com
   trailtool sessions detail --at latest
-  trailtool sessions detail --at latest --user alice@example.com
-  trailtool sessions detail --at latest --boundary`,
+  trailtool sessions detail --at latest --user alice@example.com`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if at == "" {
 				return fatal("--at is required (e.g. --at 2026-04-15T17:08 or --at latest)")
@@ -478,20 +474,14 @@ Examples:
 				}
 			}
 
-			// Permission boundary: fetch from IAM when --boundary is set and session has a role.
-			if showBoundary && sess.RoleARN != "" {
-				cfg, cfgErr := config.LoadDefaultConfig(ctx)
-				if cfgErr != nil {
-					fmt.Printf("\nPermission Boundary: (could not load AWS config: %v)\n", cfgErr)
+			if sess.SessionPolicy != "" {
+				fmt.Println("\nSession Policy:")
+				prettyPolicy, ppErr := prettyJSON(sess.SessionPolicy)
+				if ppErr != nil {
+					fmt.Printf("  %s\n", sess.SessionPolicy)
 				} else {
-					iamClient := awsiam.NewFromConfig(cfg)
-					boundary, bErr := iamlib.FetchPermissionBoundary(ctx, iamClient, sess.RoleARN)
-					if bErr != nil {
-						fmt.Printf("\nPermission Boundary: (could not fetch: %v)\n", bErr)
-					} else if boundary == nil {
-						fmt.Printf("\nPermission Boundary: none attached\n")
-					} else {
-						fmt.Printf("\nPermission Boundary: %s\n", boundary.BoundaryARN)
+					for _, line := range strings.Split(prettyPolicy, "\n") {
+						fmt.Printf("  %s\n", line)
 					}
 				}
 			}
@@ -502,7 +492,6 @@ Examples:
 
 	cmd.Flags().StringVar(&at, "at", "", "Session start time prefix, e.g. 2026-04-15T17:08 or \"latest\"")
 	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (helps disambiguate)")
-	cmd.Flags().BoolVar(&showBoundary, "boundary", false, "Fetch and display the permission boundary on the session's role (requires iam:GetRole)")
 
 	return cmd
 }
@@ -512,6 +501,19 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// prettyJSON re-indents a JSON string. Returns an error if input is not valid JSON.
+func prettyJSON(raw string) (string, error) {
+	var v interface{}
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return "", err
+	}
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 func sessionsSummarizeCmd() *cobra.Command {

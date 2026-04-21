@@ -571,6 +571,8 @@ func MergeSessionAggregated(existing *types.DynamoDBSessionAggregated, new *type
 		LoginGrantedByEmail:      firstNonEmpty(existing.LoginGrantedByEmail, new.LoginGrantedByEmail),
 		// Session tags (preserve from whichever has them; existing wins)
 		SessionTags: mergeSessionTags(existing.SessionTags, new.SessionTags),
+		// Session policy (first non-empty wins)
+		SessionPolicy: firstNonEmpty(existing.SessionPolicy, new.SessionPolicy),
 	}
 
 	return merged

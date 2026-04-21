@@ -248,6 +248,10 @@ type DynamoDBSessionAggregated struct {
 	// carried session tags (e.g. elhaz-vended agent credentials).
 	SessionTags map[string]string `dynamodbav:"session_tags,omitempty"`
 
+	// SessionPolicy is the raw inline IAM policy from requestParameters.policy in the
+	// AssumeRole event. Stored as a JSON string exactly as captured by CloudTrail.
+	SessionPolicy string `dynamodbav:"session_policy,omitempty"`
+
 	// aws login attribution — set on the child session vended via CreateOAuth2Token.
 	// The parent is the existing human session that authorized the aws login browser flow.
 	// Correlation is by roleARN + sourceIP + creationDate within ±60s of CreateOAuth2Token.
@@ -274,6 +278,10 @@ type DynamoDBChainLink struct {
 	// SessionTags holds the session tags from the AssumeRole requestParameters.tags.
 	// Propagated to the child session record so tag-based filtering works in later batches.
 	SessionTags map[string]string `dynamodbav:"session_tags,omitempty"`
+
+	// SessionPolicy is the raw inline IAM policy from requestParameters.policy.
+	// Propagated to the child session record.
+	SessionPolicy string `dynamodbav:"session_policy,omitempty"`
 }
 
 // DynamoDBAccount represents an aggregated account record

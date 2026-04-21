@@ -88,6 +88,25 @@ func ExtractSessionTags(event types.CloudTrailRecord) map[string]string {
 	return result
 }
 
+// ExtractSessionPolicy extracts the inline session policy from an AssumeRole requestParameters.policy.
+// Returns empty string if not an AssumeRole event or no policy was provided.
+func ExtractSessionPolicy(event types.CloudTrailRecord) string {
+	if event.EventName != "AssumeRole" || event.RequestParameters == nil {
+		return ""
+	}
+	b, err := json.Marshal(event.RequestParameters)
+	if err != nil {
+		return ""
+	}
+	var params struct {
+		Policy string `json:"policy"`
+	}
+	if err := json.Unmarshal(b, &params); err != nil {
+		return ""
+	}
+	return params.Policy
+}
+
 // ExtractAssumedRoleID extracts the role ID (AROAID...) of the assumed role from an
 // AssumeRole response. CloudTrail structure: responseElements.assumedRoleUser.assumedRoleId
 // which has format "AROAID...:sessionName". Returns just the role ID portion.

@@ -186,13 +186,6 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
 		tags := ExtractSessionTags(event)
 
-		// Email may be absent from principalId when AssumeRole is called from a non-SSO
-		// context (e.g. elhaz-vended agent credentials). Fall back to the HumanSession
-		// session tag if it looks like an email address.
-		if email == "" && tags != nil && strings.Contains(tags["HumanSession"], "@") {
-			email = tags["HumanSession"]
-		}
-
 		if email == "" {
 			continue // only attribute human-initiated AssumeRole
 		}
@@ -252,6 +245,9 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		}
 		if len(tags) > 0 {
 			link.SessionTags = tags
+		}
+		if policy := ExtractSessionPolicy(event); policy != "" {
+			link.SessionPolicy = policy
 		}
 		newChainLinks[cliSwitchKey] = link
 
@@ -488,7 +484,7 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 				childEmail, childRoleARN, childRoleName, childAccountID,
 				parentSessionKey, childStartTime, eventTime, event.SourceIPAddress, normalizedUA,
 				childSessionType, eventSource, event.EventName, event.ErrorCode, event.ErrorMessage, resourceList, eventDate,
-				chainedFromLink.SessionTags)
+				chainedFromLink.SessionTags, chainedFromLink.SessionPolicy)
 			addToSet(sessionServices, childSessionMapKey, eventSource)
 			addToSet(sessionResources, childSessionMapKey, childRoleARN)
 
@@ -1039,6 +1035,7 @@ func processChainedSessionEvent(
 	resourceList []string,
 	eventDate string,
 	sessionTags map[string]string,
+	sessionPolicy string,
 ) {
 	sess, exists := sessions[childSessionMapKey]
 	if !exists {
@@ -1055,6 +1052,7 @@ func processChainedSessionEvent(
 			ParentSessionKey:        parentSessionKey,
 			ParentEmail:             parentEmail,
 			SessionTags:             sessionTags,
+			SessionPolicy:           sessionPolicy,
 			SourceIPs:               []string{},
 			UserAgents:              []string{},
 			EventCounts:             make(map[string]int),

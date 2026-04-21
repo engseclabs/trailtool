@@ -72,6 +72,10 @@ type SessionAggregated struct {
 	// SessionTags holds the session tags from the AssumeRole requestParameters.tags
 	// that created this child session. Non-nil only on chained sessions.
 	SessionTags map[string]string `json:"session_tags,omitempty" dynamodbav:"session_tags,omitempty"`
+
+	// SessionPolicy is the raw inline IAM policy from requestParameters.policy in the
+	// AssumeRole event that created this child session. Stored as a JSON string.
+	SessionPolicy string `json:"session_policy,omitempty" dynamodbav:"session_policy,omitempty"`
 }
 
 // DetectSessionType returns a display label for the session type.
