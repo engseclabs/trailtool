@@ -184,6 +184,8 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		}
 
 		email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
+		tags := ExtractSessionTags(event)
+
 		if email == "" {
 			continue // only attribute human-initiated AssumeRole
 		}
@@ -240,6 +242,12 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			ParentRoleARN:       roleARN,
 			AssumedRoleARN:      assumedRoleARN,
 			TTL:                 ttl,
+		}
+		if len(tags) > 0 {
+			link.SessionTags = tags
+		}
+		if policy := ExtractSessionPolicy(event); policy != "" {
+			link.SessionPolicy = policy
 		}
 		newChainLinks[cliSwitchKey] = link
 
@@ -475,7 +483,8 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			processChainedSessionEvent(sessions, ns, childSessionMapKey, childSessionID,
 				childEmail, childRoleARN, childRoleName, childAccountID,
 				parentSessionKey, childStartTime, eventTime, event.SourceIPAddress, normalizedUA,
-				childSessionType, eventSource, event.EventName, event.ErrorCode, event.ErrorMessage, resourceList, eventDate)
+				childSessionType, eventSource, event.EventName, event.ErrorCode, event.ErrorMessage, resourceList, eventDate,
+				chainedFromLink.SessionTags, chainedFromLink.SessionPolicy)
 			addToSet(sessionServices, childSessionMapKey, eventSource)
 			addToSet(sessionResources, childSessionMapKey, childRoleARN)
 
@@ -1025,6 +1034,8 @@ func processChainedSessionEvent(
 	sessionType, eventSource, eventName, errorCode, errorMessage string,
 	resourceList []string,
 	eventDate string,
+	sessionTags map[string]string,
+	sessionPolicy string,
 ) {
 	sess, exists := sessions[childSessionMapKey]
 	if !exists {
@@ -1040,6 +1051,8 @@ func processChainedSessionEvent(
 			RoleName:                roleName,
 			ParentSessionKey:        parentSessionKey,
 			ParentEmail:             parentEmail,
+			SessionTags:             sessionTags,
+			SessionPolicy:           sessionPolicy,
 			SourceIPs:               []string{},
 			UserAgents:              []string{},
 			EventCounts:             make(map[string]int),

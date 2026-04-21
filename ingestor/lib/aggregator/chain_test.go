@@ -1,6 +1,7 @@
 package aggregator
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
@@ -136,3 +137,84 @@ func TestExtractAssumedRoleARN(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractSessionTags(t *testing.T) {
+	tests := []struct {
+		name  string
+		event types.CloudTrailRecord
+		want  map[string]string
+	}{
+		{
+			name: "agent AssumeRole with tags",
+			event: types.CloudTrailRecord{
+				EventName: "AssumeRole",
+				RequestParameters: map[string]interface{}{
+					"roleArn": "arn:aws:iam::123456789012:role/claude-code-agent",
+					"tags": []interface{}{
+						map[string]interface{}{"key": "AgentName", "value": "claude-code"},
+						map[string]interface{}{"key": "Task", "value": "deploy-lambda"},
+						map[string]interface{}{"key": "HumanSession", "value": "alex@example.com"},
+					},
+				},
+			},
+			want: map[string]string{
+				"AgentName":    "claude-code",
+				"Task":         "deploy-lambda",
+				"HumanSession": "alex@example.com",
+			},
+		},
+		{
+			name: "AssumeRole without tags",
+			event: types.CloudTrailRecord{
+				EventName: "AssumeRole",
+				RequestParameters: map[string]interface{}{
+					"roleArn":         "arn:aws:iam::123456789012:role/my-role",
+					"roleSessionName": "my-session",
+				},
+			},
+			want: nil,
+		},
+		{
+			name: "non-AssumeRole event",
+			event: types.CloudTrailRecord{
+				EventName: "GetCallerIdentity",
+				RequestParameters: map[string]interface{}{
+					"tags": []interface{}{
+						map[string]interface{}{"key": "AgentName", "value": "claude-code"},
+					},
+				},
+			},
+			want: nil,
+		},
+		{
+			name: "nil RequestParameters",
+			event: types.CloudTrailRecord{
+				EventName:         "AssumeRole",
+				RequestParameters: nil,
+			},
+			want: nil,
+		},
+		{
+			name: "empty tags slice",
+			event: types.CloudTrailRecord{
+				EventName: "AssumeRole",
+				RequestParameters: map[string]interface{}{
+					"roleArn": "arn:aws:iam::123456789012:role/my-role",
+					"tags":    []interface{}{},
+				},
+			},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractSessionTags(tt.event)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ExtractSessionTags() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+

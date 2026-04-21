@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -223,6 +224,7 @@ func sessionsListCmd() *cobra.Command {
 	var account string
 	var after string
 	var before string
+	var tags []string
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -247,6 +249,21 @@ func sessionsListCmd() *cobra.Command {
 				return fatal("%v", err)
 			}
 
+			// Apply --tag KEY=VALUE filters (all must match — AND semantics)
+			if len(tags) > 0 {
+				tagFilters, parseErr := parseTagFilters(tags)
+				if parseErr != nil {
+					return fatal("%v", parseErr)
+				}
+				filtered := sessions[:0]
+				for _, sess := range sessions {
+					if sessionMatchesTags(sess.SessionTags, tagFilters) {
+						filtered = append(filtered, sess)
+					}
+				}
+				sessions = filtered
+			}
+
 			if format == "json" {
 				return printJSON(sessions)
 			}
@@ -254,7 +271,7 @@ func sessionsListCmd() *cobra.Command {
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "WHEN\tUSER\tROLE\tACCOUNT\tEVENTS\tTYPE\tDURATION\tCHAINED")
 			for _, sess := range sessions {
-				sessionType := sess.DetectSessionType()
+				st := sess.DetectSessionType()
 				duration := fmt.Sprintf("%dm", sess.DurationMinutes)
 				chained := ""
 				if sess.LoginGrantedBySessionKey != "" {
@@ -266,7 +283,7 @@ func sessionsListCmd() *cobra.Command {
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 					relativeTime(sess.StartTime), sess.PersonEmail, sess.RoleName, sess.AccountID,
-					sess.EventsCount, sessionType, duration, chained)
+					sess.EventsCount, st, duration, chained)
 			}
 			return w.Flush()
 		},
@@ -278,8 +295,32 @@ func sessionsListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&account, "account", "", "Filter by AWS account ID")
 	cmd.Flags().StringVar(&after, "after", "", "Only sessions starting at or after this time (ISO8601)")
 	cmd.Flags().StringVar(&before, "before", "", "Only sessions starting before this time (ISO8601)")
+	cmd.Flags().StringArrayVar(&tags, "tag", nil, "Filter by session tag KEY=VALUE (repeatable, AND semantics)")
 
 	return cmd
+}
+
+// parseTagFilters parses a slice of "KEY=VALUE" strings into a map.
+func parseTagFilters(raw []string) (map[string]string, error) {
+	result := make(map[string]string, len(raw))
+	for _, kv := range raw {
+		idx := strings.IndexByte(kv, '=')
+		if idx <= 0 {
+			return nil, fmt.Errorf("invalid --tag %q: expected KEY=VALUE", kv)
+		}
+		result[kv[:idx]] = kv[idx+1:]
+	}
+	return result, nil
+}
+
+// sessionMatchesTags returns true when all filters are present and match in the session tags.
+func sessionMatchesTags(sessionTags map[string]string, filters map[string]string) bool {
+	for k, v := range filters {
+		if sessionTags[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // parentSessionTime extracts the RFC3339 start time from a parentSessionKey
@@ -367,6 +408,13 @@ Examples:
 			fmt.Printf("Time: %s -> %s (%dm) [%s]\n", sess.StartTime, sess.EndTime, sess.DurationMinutes, relativeTime(sess.StartTime))
 			fmt.Printf("Events: %d across %d services\n", sess.EventsCount, sess.ServicesCount)
 
+			if len(sess.SessionTags) > 0 {
+				fmt.Println("\nSession Tags:")
+				for k, v := range sess.SessionTags {
+					fmt.Printf("  %s: %s\n", k, v)
+				}
+			}
+
 			if sess.DeniedEventCount > 0 {
 				fmt.Printf("Denied Events: %d\n", sess.DeniedEventCount)
 			}
@@ -426,6 +474,18 @@ Examples:
 				}
 			}
 
+			if sess.SessionPolicy != "" {
+				fmt.Println("\nSession Policy:")
+				prettyPolicy, ppErr := prettyJSON(sess.SessionPolicy)
+				if ppErr != nil {
+					fmt.Printf("  %s\n", sess.SessionPolicy)
+				} else {
+					for _, line := range strings.Split(prettyPolicy, "\n") {
+						fmt.Printf("  %s\n", line)
+					}
+				}
+			}
+
 			return nil
 		},
 	}
@@ -441,6 +501,19 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// prettyJSON re-indents a JSON string. Returns an error if input is not valid JSON.
+func prettyJSON(raw string) (string, error) {
+	var v interface{}
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return "", err
+	}
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 func sessionsSummarizeCmd() *cobra.Command {
