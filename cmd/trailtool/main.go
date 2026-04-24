@@ -214,6 +214,7 @@ func sessionsCmd() *cobra.Command {
 	cmd.AddCommand(sessionsListCmd())
 	cmd.AddCommand(sessionsDetailCmd())
 	cmd.AddCommand(sessionsSummarizeCmd())
+	cmd.AddCommand(sessionsPolicyCmd())
 	return cmd
 }
 
@@ -577,6 +578,72 @@ Examples:
 
 	cmd.Flags().StringVar(&at, "at", "", "Session start time prefix, e.g. 2026-04-15T17:08 or \"latest\"")
 	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (helps disambiguate)")
+
+	return cmd
+}
+
+func sessionsPolicyCmd() *cobra.Command {
+	var at string
+	var user string
+	var includeDenied bool
+	var explain bool
+
+	cmd := &cobra.Command{
+		Use:   "policy",
+		Short: "Generate least-privilege IAM policy for a session",
+		Long: `Generate a least-privilege IAM policy scoped to a specific session.
+
+Examples:
+  trailtool sessions policy --at 2026-04-15T17:08
+  trailtool sessions policy --at latest --user alice@example.com
+  trailtool sessions policy --at 2026-04-15T17:08 --include-denied --explain`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if at == "" {
+				return fatal("--at is required (e.g. --at 2026-04-15T17:08 or --at latest)")
+			}
+
+			ctx := context.Background()
+			s, err := store.NewStore(ctx)
+			if err != nil {
+				return fatal("failed to connect to AWS: %v", err)
+			}
+
+			sess, err := resolveSession(ctx, s, at, user)
+			if err != nil {
+				return fatal("%v", err)
+			}
+
+			result, err := policy.GeneratePolicyFromSession(sess, includeDenied)
+			if err != nil {
+				return fatal("%v", err)
+			}
+
+			if format == "json" {
+				return printJSON(result)
+			}
+
+			fmt.Println(result.PolicyJSON)
+
+			if explain {
+				fmt.Fprintf(os.Stderr, "\n--- Policy Summary ---\n")
+				fmt.Fprintf(os.Stderr, "Session: %s\n", result.SessionID)
+				fmt.Fprintf(os.Stderr, "Role: %s (%s)\n", result.RoleName, result.RoleARN)
+				fmt.Fprintf(os.Stderr, "Total unique IAM actions: %d\n", result.TotalActionsUsed)
+				if len(result.UnmappedEvents) > 0 {
+					fmt.Fprintf(os.Stderr, "Unmapped CloudTrail events: %d\n", len(result.UnmappedEvents))
+					for _, e := range result.UnmappedEvents {
+						fmt.Fprintf(os.Stderr, "  - %s\n", e)
+					}
+				}
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&at, "at", "", "Session start time prefix, e.g. 2026-04-15T17:08 or \"latest\"")
+	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (helps disambiguate)")
+	cmd.Flags().BoolVar(&includeDenied, "include-denied", false, "Include denied events in policy")
+	cmd.Flags().BoolVar(&explain, "explain", false, "Show policy explanation on stderr")
 
 	return cmd
 }

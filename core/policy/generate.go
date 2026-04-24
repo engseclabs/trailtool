@@ -41,10 +41,45 @@ type GenerateResult struct {
 	RoleARN          string           `json:"role_arn"`
 	RoleName         string           `json:"role_name"`
 	AccountID        string           `json:"account_id"`
+	SessionID        string           `json:"session_id,omitempty"`
 	TotalActionsUsed int              `json:"total_actions_used"`
 	Actions          []IAMActionUsage `json:"actions"`
 	UnmappedEvents   []string         `json:"unmapped_events,omitempty"`
 	PolicyJSON       string           `json:"policy_json"`
+}
+
+// GeneratePolicyFromSession generates a least-privilege IAM policy for a specific session.
+func GeneratePolicyFromSession(sess *models.SessionAggregated, includeDenied bool) (*GenerateResult, error) {
+	// Convert session ResourceAccess slices to the ResourceAccessItem shape used by the core engine.
+	toItems := func(accesses []models.ResourceAccess) []models.ResourceAccessItem {
+		items := make([]models.ResourceAccessItem, len(accesses))
+		for i, a := range accesses {
+			items[i] = models.ResourceAccessItem{
+				Resource:  a.Resource,
+				Service:   a.Service,
+				EventName: a.EventName,
+				Count:     a.Count,
+			}
+		}
+		return items
+	}
+
+	syntheticRole := &models.Role{
+		ARN:              sess.RoleARN,
+		Name:             sess.RoleName,
+		AccountID:        sess.AccountID,
+		ResourceAccesses: toItems(sess.ResourceAccesses),
+	}
+	if includeDenied {
+		syntheticRole.DeniedResourceAccesses = toItems(sess.DeniedResourceAccesses)
+	}
+
+	result, err := GeneratePolicy(syntheticRole, includeDenied)
+	if err != nil {
+		return nil, err
+	}
+	result.SessionID = sess.SessionID
+	return result, nil
 }
 
 // GeneratePolicy generates a least-privilege IAM policy for a role
