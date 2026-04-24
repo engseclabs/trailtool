@@ -39,6 +39,8 @@ trailtool sessions detail --at latest                     # Most recent session
 trailtool sessions detail --at latest --user alice@example.com
 trailtool sessions summarize --at 2026-04-15T17:08        # AI-generated session summary (requires Bedrock)
 trailtool sessions summarize --at latest --user alice@example.com
+trailtool sessions policy --at 2026-04-15T17:08           # Least-privilege policy for this session only
+trailtool sessions policy --at latest --user alice@example.com --include-denied --explain
 ```
 
 **Filtering tips:** Combine flags to narrow results. `--role` does substring matching (e.g. `--role BreakGlass` matches `AWSReservedSSO_BreakGlassEmergency_...`). `--after`/`--before` take ISO8601 timestamps and override `--days` if both are set.
@@ -100,17 +102,25 @@ Resources created or modified through the AWS console ("ClickOps") bypass change
 
 Tighten IAM roles by generating policies based on actual usage observed in CloudTrail, rather than guessing what permissions to remove.
 
-**Steps:**
+**Role-scoped (lifetime of the role):**
 1. `trailtool roles list --format json` — identify roles to tighten
-2. `trailtool roles policy <RoleName> --format json` — generate least-privilege policy from actual usage
+2. `trailtool roles policy <RoleName> --format json` — generate least-privilege policy from all observed usage
 3. Compare the generated policy with the current Terraform `aws_iam_role_policy` or `aws_iam_policy` resource
 4. Propose a PR that narrows permissions to actual usage
 
-**Options:**
-- Use `--include-denied` to include permissions for actions that were attempted but denied (useful if the current policy is already too tight)
-- Use `--explain` to get a summary of action counts and any unmapped CloudTrail events
+**Session-scoped (a specific recording window):**
+1. Run the workflow you want to capture (deploy, migration, agent run, etc.)
+2. `trailtool sessions list --user <email> --days 1` — find the session
+3. `trailtool sessions policy --at <start-time-prefix> --format json` — generate a policy covering only that session's API calls
+4. Use this as the tightest possible baseline for the specific task
 
-**Context:** This is best run as a recurring workflow. Permissions are dynamic — what's unused today may be needed next quarter. Generate, review, deploy, repeat. The generated policy uses IAM action mappings from CloudTrail event names, but some events may not map cleanly; the `--explain` flag surfaces these.
+**Options (both variants):**
+- `--include-denied` — include permissions for actions that were attempted but denied
+- `--explain` — print a summary of action counts and unmapped CloudTrail events to stderr
+
+**When to use each:** Role-scoped gives a policy that covers everything the role has ever done and is best for long-lived roles. Session-scoped is tighter and is best when you want to scope a policy to a specific workflow (a deploy pipeline, a one-off migration, an agent task).
+
+**Context:** The generated policy uses IAM action mappings from CloudTrail event names; some events may not map cleanly. The `--explain` flag surfaces unmapped events so you can handle them manually.
 
 ### 3. Respond to AccessDenied errors
 
