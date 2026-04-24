@@ -77,6 +77,10 @@ trailtool roles detail MyRole
 trailtool roles policy MyRole
 trailtool roles policy MyRole --include-denied --explain
 
+# Session-scoped policy (tighter: only what this session actually did)
+trailtool sessions policy --at latest
+trailtool sessions policy --at 2025-01-15T10:35 --user alice@example.com --explain
+
 # Services
 trailtool services list
 trailtool services detail s3.amazonaws.com
