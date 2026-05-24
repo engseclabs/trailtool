@@ -33,10 +33,12 @@ trailtool sessions list --user <email> --days 7  # Filter by user and recency
 trailtool sessions list --role <name> --user <email>  # Filter by role name (substring match)
 trailtool sessions list --account <id>         # Filter by AWS account ID
 trailtool sessions list --after 2026-01-01T00:00:00Z --before 2026-01-02T00:00:00Z  # Time range
+trailtool sessions list --long                 # Show full role names (SSO roles shortened by default)
 trailtool sessions detail --at 2026-04-15T17:08           # Session detail by approximate start time
 trailtool sessions detail --at 2026-04-15T17:08 --user alice@example.com  # Disambiguate by user
 trailtool sessions detail --at latest                     # Most recent session
 trailtool sessions detail --at latest --user alice@example.com
+trailtool sessions detail --index 1 --user alice@example.com --days 7  # Detail by list position (1-based)
 trailtool sessions summarize --at 2026-04-15T17:08        # AI-generated session summary (requires Bedrock)
 trailtool sessions summarize --at latest --user alice@example.com
 trailtool sessions policy --at 2026-04-15T17:08           # Least-privilege policy for this session only
@@ -45,7 +47,9 @@ trailtool sessions policy --at latest --user alice@example.com --include-denied 
 
 **Filtering tips:** Combine flags to narrow results. `--role` does substring matching (e.g. `--role BreakGlass` matches `AWSReservedSSO_BreakGlassEmergency_...`). `--after`/`--before` take ISO8601 timestamps and override `--days` if both are set.
 
-**Session detail tips:** `--at` accepts an ISO8601 prefix (e.g. `2026-04-15T17`) that is matched against session start times — no need for an exact timestamp. Use `--at latest` to get the most recent session. Add `--user` to disambiguate when multiple users have sessions near the same time. The detail view shows role chaining: if a session assumed another role, it prints the parent session with a navigable `--at` command, and vice versa for child sessions.
+**Session detail tips:** `--at` accepts an ISO8601 prefix (e.g. `2026-04-15T17`) that is matched against session start times — no need for an exact timestamp. Use `--at latest` to get the most recent session. Add `--user` to disambiguate when multiple users have sessions near the same time. Alternatively, use `--index N` (1-based) to pick by position from the same filtered list that `sessions list` returns — accepts the same `--user`, `--days`, `--role`, `--account`, `--after`, `--before` flags. `--at` and `--index` are mutually exclusive. The detail view shows role chaining: if a session assumed another role, it prints the parent session with a navigable `--at` command, and vice versa for child sessions.
+
+**SSO role names:** The ROLE column in `sessions list` displays the short permission-set name (e.g. `AdministratorAccess`) rather than the full SSO path. Use `--long` to show the full role name. The full path and ARN are always shown in `sessions detail`.
 
 **Session types in the CHAINED column:**
 - `→ N role(s)` — this human session assumed N roles via `AssumeRole`
