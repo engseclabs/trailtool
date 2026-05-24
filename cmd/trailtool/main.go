@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -226,6 +227,7 @@ func sessionsListCmd() *cobra.Command {
 	var after string
 	var before string
 	var tags []string
+	var long bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -282,8 +284,12 @@ func sessionsListCmd() *cobra.Command {
 				} else if len(sess.ChainedRoles) > 0 {
 					chained = fmt.Sprintf("→ %d role(s)", len(sess.ChainedRoles))
 				}
+				displayRole := sess.RoleName
+				if !long {
+					displayRole = shortRoleName(sess.RoleName)
+				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
-					relativeTime(sess.StartTime), sess.PersonEmail, sess.RoleName, sess.AccountID,
+					relativeTime(sess.StartTime), sess.PersonEmail, displayRole, sess.AccountID,
 					sess.EventsCount, st, duration, chained)
 			}
 			return w.Flush()
@@ -297,8 +303,20 @@ func sessionsListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&after, "after", "", "Only sessions starting at or after this time (ISO8601)")
 	cmd.Flags().StringVar(&before, "before", "", "Only sessions starting before this time (ISO8601)")
 	cmd.Flags().StringArrayVar(&tags, "tag", nil, "Filter by session tag KEY=VALUE (repeatable, AND semantics)")
+	cmd.Flags().BoolVar(&long, "long", false, "Show full role names instead of shortened SSO permission-set names")
 
 	return cmd
+}
+
+var ssoRoleRe = regexp.MustCompile(`^aws-reserved/sso\.amazonaws\.com/[^/]+/AWSReservedSSO_([^_]+)_[0-9a-f]+$`)
+
+// shortRoleName returns a shortened display name for SSO-managed roles.
+// For aws-reserved/sso.amazonaws.com/.../AWSReservedSSO_<Name>_<hash>, it returns <Name>.
+func shortRoleName(name string) string {
+	if m := ssoRoleRe.FindStringSubmatch(name); m != nil {
+		return m[1]
+	}
+	return name
 }
 
 // parseTagFilters parses a slice of "KEY=VALUE" strings into a map.
@@ -371,20 +389,29 @@ func resolveSession(ctx context.Context, s *store.Store, at, user string) (*mode
 func sessionsDetailCmd() *cobra.Command {
 	var at string
 	var user string
+	var index int
+	var days int
+	var role string
+	var account string
+	var after string
+	var before string
 
 	cmd := &cobra.Command{
 		Use:   "detail",
 		Short: "Show session details",
-		Long: `Show details for a session identified by approximate start time.
+		Long: `Show details for a session identified by approximate start time or list index.
 
 Examples:
   trailtool sessions detail --at 2026-04-15T17:08
   trailtool sessions detail --at 2026-04-15T17:08 --user alice@example.com
   trailtool sessions detail --at latest
-  trailtool sessions detail --at latest --user alice@example.com`,
+  trailtool sessions detail --index 1 --user alice@example.com --days 7`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if at == "" {
-				return fatal("--at is required (e.g. --at 2026-04-15T17:08 or --at latest)")
+			if at != "" && index != 0 {
+				return fatal("--at and --index are mutually exclusive")
+			}
+			if at == "" && index == 0 {
+				return fatal("--at or --index is required")
 			}
 
 			ctx := context.Background()
@@ -393,9 +420,29 @@ Examples:
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			sess, err := resolveSession(ctx, s, at, user)
-			if err != nil {
-				return fatal("%v", err)
+			var sess *models.SessionAggregated
+			if index != 0 {
+				filter := store.SessionFilter{
+					Days:      days,
+					Role:      role,
+					AccountID: account,
+					After:     after,
+					Before:    before,
+				}
+				sessions, listErr := session.ListSessions(ctx, s, customerID, user, filter)
+				if listErr != nil {
+					return fatal("%v", listErr)
+				}
+				if index < 1 || index > len(sessions) {
+					return fatal("--index %d out of range (1-%d)", index, len(sessions))
+				}
+				tmp := sessions[index-1]
+				sess = &tmp
+			} else {
+				sess, err = resolveSession(ctx, s, at, user)
+				if err != nil {
+					return fatal("%v", err)
+				}
 			}
 
 			if format == "json" {
@@ -492,7 +539,13 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&at, "at", "", "Session start time prefix, e.g. 2026-04-15T17:08 or \"latest\"")
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (helps disambiguate)")
+	cmd.Flags().IntVar(&index, "index", 0, "1-based index into the session list (alternative to --at)")
+	cmd.Flags().StringVar(&user, "user", "", "Filter by user email")
+	cmd.Flags().IntVar(&days, "days", 0, "Filter to last N days (used with --index)")
+	cmd.Flags().StringVar(&role, "role", "", "Filter by role name (used with --index)")
+	cmd.Flags().StringVar(&account, "account", "", "Filter by AWS account ID (used with --index)")
+	cmd.Flags().StringVar(&after, "after", "", "Only sessions starting at or after this time (used with --index)")
+	cmd.Flags().StringVar(&before, "before", "", "Only sessions starting before this time (used with --index)")
 
 	return cmd
 }

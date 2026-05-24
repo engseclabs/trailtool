@@ -62,7 +62,9 @@ trailtool people list
 
 # Sessions
 trailtool sessions list --user alice@example.com --days 7
+trailtool sessions list --user alice@example.com --days 7 --long  # show full role names
 trailtool sessions detail --at 2025-01-15T10:30
+trailtool sessions detail --index 1 --user alice@example.com --days 7  # by list position
 trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
 trailtool sessions detail --at latest
 trailtool sessions summarize --at 2025-01-15T10:30  # requires Bedrock
@@ -99,10 +101,10 @@ TrailTool automatically correlates `AssumeRole` calls back to the originating hu
 ```
 $ trailtool sessions list --days 1
 
-WHEN        USER                  ROLE                            ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
-5 mins ago  alice@example.com     AWSReservedSSO_AdminAccess_...  123456789012   84      API      12m       → 2 role(s)
-5 mins ago  alice@example.com     DeployRole                      123456789012   31      API      8m        ↑ child
-5 mins ago  alice@example.com     AuditRole                       123456789012   12      API      3m        ↑ child
+WHEN        USER                  ROLE         ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
+5 mins ago  alice@example.com     AdminAccess  123456789012   84      API      12m       → 2 role(s)
+5 mins ago  alice@example.com     DeployRole   123456789012   31      API      8m        ↑ child
+5 mins ago  alice@example.com     AuditRole    123456789012   12      API      3m        ↑ child
 ```
 
 `→ N role(s)` means this human session assumed N roles. `↑ child` means this session was created via `AssumeRole` and is attributed back to its parent.
@@ -129,9 +131,9 @@ When a developer runs `aws login` to vend credentials to an AI agent (Claude Cod
 ```
 $ trailtool sessions list --days 1
 
-WHEN        USER                  ROLE                            ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
-5 mins ago  alice@example.com     AWSReservedSSO_AdminAccess_...  123456789012   3       LOGIN    8m        ← login
-8 mins ago  alice@example.com     AWSReservedSSO_AdminAccess_...  123456789012   84      API      12m
+WHEN        USER                  ROLE         ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
+5 mins ago  alice@example.com     AdminAccess  123456789012   3       LOGIN    8m        ← login
+8 mins ago  alice@example.com     AdminAccess  123456789012   84      API      12m
 ```
 
 `← login` means the session's credentials were vended via `aws login` by a human in another session. The detail view shows the attribution:
