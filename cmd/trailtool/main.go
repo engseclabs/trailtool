@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -272,8 +273,8 @@ func sessionsListCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "WHEN\tUSER\tROLE\tACCOUNT\tEVENTS\tTYPE\tDURATION\tCHAINED")
-			for _, sess := range sessions {
+			fmt.Fprintln(w, "#\tWHEN\tUSER\tROLE\tACCOUNT\tEVENTS\tTYPE\tDURATION\tCHAINED")
+			for i, sess := range sessions {
 				st := sess.DetectSessionType()
 				duration := fmt.Sprintf("%dm", sess.DurationMinutes)
 				chained := ""
@@ -288,8 +289,8 @@ func sessionsListCmd() *cobra.Command {
 				if !long {
 					displayRole = shortRoleName(sess.RoleName)
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
-					relativeTime(sess.StartTime), sess.PersonEmail, displayRole, sess.AccountID,
+				fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+					i+1, relativeTime(sess.StartTime), sess.PersonEmail, displayRole, sess.AccountID,
 					sess.EventsCount, st, duration, chained)
 			}
 			return w.Flush()
@@ -469,15 +470,25 @@ Examples:
 
 			if len(sess.EventCounts) > 0 {
 				fmt.Println("\nTop Events:")
-				for event, count := range sess.EventCounts {
-					fmt.Printf("  %s: %d\n", event, count)
+				eventKeys := make([]string, 0, len(sess.EventCounts))
+				for k := range sess.EventCounts {
+					eventKeys = append(eventKeys, k)
+				}
+				sort.Strings(eventKeys)
+				for _, event := range eventKeys {
+					fmt.Printf("  %s: %d\n", event, sess.EventCounts[event])
 				}
 			}
 
 			if len(sess.ResourcesAccessed) > 0 {
 				fmt.Println("\nResources Accessed:")
-				for resource, count := range sess.ResourcesAccessed {
-					fmt.Printf("  %s: %d\n", resource, count)
+				resourceKeys := make([]string, 0, len(sess.ResourcesAccessed))
+				for k := range sess.ResourcesAccessed {
+					resourceKeys = append(resourceKeys, k)
+				}
+				sort.Strings(resourceKeys)
+				for _, resource := range resourceKeys {
+					fmt.Printf("  %s: %d\n", resource, sess.ResourcesAccessed[resource])
 				}
 			}
 
@@ -882,8 +893,13 @@ func rolesDetailCmd() *cobra.Command {
 
 			if len(role.TopEventNames) > 0 {
 				fmt.Println("\nTop Events:")
-				for event, count := range role.TopEventNames {
-					fmt.Printf("  %s: %d\n", event, count)
+				roleEventKeys := make([]string, 0, len(role.TopEventNames))
+				for k := range role.TopEventNames {
+					roleEventKeys = append(roleEventKeys, k)
+				}
+				sort.Strings(roleEventKeys)
+				for _, event := range roleEventKeys {
+					fmt.Printf("  %s: %d\n", event, role.TopEventNames[event])
 				}
 			}
 
@@ -1043,8 +1059,13 @@ func servicesDetailCmd() *cobra.Command {
 
 			if len(svc.TopEventNames) > 0 {
 				fmt.Println("\nTop Events:")
-				for event, count := range svc.TopEventNames {
-					fmt.Printf("  %s: %d\n", event, count)
+				svcEventKeys := make([]string, 0, len(svc.TopEventNames))
+				for k := range svc.TopEventNames {
+					svcEventKeys = append(svcEventKeys, k)
+				}
+				sort.Strings(svcEventKeys)
+				for _, event := range svcEventKeys {
+					fmt.Printf("  %s: %d\n", event, svc.TopEventNames[event])
 				}
 			}
 
