@@ -28,7 +28,7 @@ trailtool people list                          # List all tracked identities
 
 ### Sessions
 ```bash
-trailtool sessions list                        # List all sessions
+trailtool sessions list                        # List all sessions (# column shows index)
 trailtool sessions list --user <email> --days 7  # Filter by user and recency
 trailtool sessions list --role <name> --user <email>  # Filter by role name (substring match)
 trailtool sessions list --account <id>         # Filter by AWS account ID
@@ -60,22 +60,25 @@ trailtool sessions policy --at latest --user alice@example.com --include-denied 
 
 ### Accounts
 ```bash
-trailtool accounts list                        # List all tracked AWS accounts
+trailtool accounts list                        # List all tracked AWS accounts (# column shows index)
 trailtool accounts detail <account-id>         # Account detail: people, roles, services, resources
+trailtool accounts detail --index <n>          # Same, by list position
 ```
 
 ### Roles
 ```bash
-trailtool roles list                           # List all tracked IAM roles
+trailtool roles list                           # List all tracked IAM roles (# column shows index)
 trailtool roles detail <role-name-or-arn>      # Role detail: services used, top events, denied events
+trailtool roles detail --index <n>             # Same, by list position
 trailtool roles policy <role-name-or-arn>      # Generate least-privilege IAM policy from actual usage
 trailtool roles policy <role> --include-denied --explain  # Include denied events, show explanation
 ```
 
 ### Services
 ```bash
-trailtool services list                        # List all tracked AWS services
+trailtool services list                        # List all tracked AWS services (# column shows index)
 trailtool services detail <event-source>       # e.g. s3.amazonaws.com — top events, roles, resources
+trailtool services detail --index <n>          # Same, by list position
 ```
 
 ### Resources

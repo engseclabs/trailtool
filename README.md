@@ -72,10 +72,12 @@ trailtool sessions summarize --at 2025-01-15T10:30  # requires Bedrock
 # Accounts
 trailtool accounts list
 trailtool accounts detail 123456789012
+trailtool accounts detail --index 1      # by list position
 
 # Roles
 trailtool roles list
 trailtool roles detail MyRole
+trailtool roles detail --index 2         # by list position
 trailtool roles policy MyRole
 trailtool roles policy MyRole --include-denied --explain
 
@@ -86,6 +88,7 @@ trailtool sessions policy --at 2025-01-15T10:35 --user alice@example.com --expla
 # Services
 trailtool services list
 trailtool services detail s3.amazonaws.com
+trailtool services detail --index 3      # by list position
 
 # Resources
 trailtool resources list --days 30
@@ -101,10 +104,10 @@ TrailTool automatically correlates `AssumeRole` calls back to the originating hu
 ```
 $ trailtool sessions list --days 1
 
-WHEN        USER                  ROLE         ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
-5 mins ago  alice@example.com     AdminAccess  123456789012   84      API      12m       → 2 role(s)
-5 mins ago  alice@example.com     DeployRole   123456789012   31      API      8m        ↑ child
-5 mins ago  alice@example.com     AuditRole    123456789012   12      API      3m        ↑ child
+#  WHEN        USER                  ROLE         ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
+1  5 mins ago  alice@example.com     AdminAccess  123456789012   84      API      12m       → 2 role(s)
+2  5 mins ago  alice@example.com     DeployRole   123456789012   31      API      8m        ↑ child
+3  5 mins ago  alice@example.com     AuditRole    123456789012   12      API      3m        ↑ child
 ```
 
 `→ N role(s)` means this human session assumed N roles. `↑ child` means this session was created via `AssumeRole` and is attributed back to its parent.
