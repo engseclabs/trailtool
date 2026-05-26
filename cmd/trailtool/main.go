@@ -459,8 +459,13 @@ Examples:
 
 			if len(sess.SessionTags) > 0 {
 				fmt.Println("\nSession Tags:")
-				for k, v := range sess.SessionTags {
-					fmt.Printf("  %s: %s\n", k, v)
+				tagKeys := make([]string, 0, len(sess.SessionTags))
+				for k := range sess.SessionTags {
+					tagKeys = append(tagKeys, k)
+				}
+				sort.Strings(tagKeys)
+				for _, k := range tagKeys {
+					fmt.Printf("  %s: %s\n", k, sess.SessionTags[k])
 				}
 			}
 
