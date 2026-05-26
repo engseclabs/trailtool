@@ -196,10 +196,10 @@ func peopleListCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "EMAIL\tDISPLAY NAME\tSESSIONS\tROLES\tACCOUNTS\tLAST SEEN")
-			for _, p := range people {
-				fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%s\n",
-					p.Email, p.DisplayName, p.SessionsCount, p.RolesCount, p.AccountsCount, p.LastSeen)
+			fmt.Fprintln(w, "#\tEMAIL\tDISPLAY NAME\tSESSIONS\tROLES\tACCOUNTS\tLAST SEEN")
+			for i, p := range people {
+				fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%d\t%d\t%s\n",
+					i+1, p.Email, p.DisplayName, p.SessionsCount, p.RolesCount, p.AccountsCount, p.LastSeen)
 			}
 			return w.Flush()
 		},
@@ -750,10 +750,10 @@ func accountsListCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "ACCOUNT ID\tNAME\tPEOPLE\tSESSIONS\tROLES\tSERVICES\tRESOURCES\tLAST SEEN")
-			for _, a := range accounts {
-				fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n",
-					a.AccountID, a.AccountName, a.PeopleCount, a.SessionsCount,
+			fmt.Fprintln(w, "#\tACCOUNT ID\tNAME\tPEOPLE\tSESSIONS\tROLES\tSERVICES\tRESOURCES\tLAST SEEN")
+			for i, a := range accounts {
+				fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n",
+					i+1, a.AccountID, a.AccountName, a.PeopleCount, a.SessionsCount,
 					a.RolesCount, a.ServicesCount, a.ResourcesCount, a.LastSeen)
 			}
 			return w.Flush()
@@ -762,23 +762,46 @@ func accountsListCmd() *cobra.Command {
 }
 
 func accountsDetailCmd() *cobra.Command {
+	var index int
+
 	cmd := &cobra.Command{
 		Use:   "detail [account-id]",
 		Short: "Show account details",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && index == 0 {
+				return fatal("account-id argument or --index is required")
+			}
+			if len(args) > 0 && index != 0 {
+				return fatal("account-id argument and --index are mutually exclusive")
+			}
+
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			account, err := s.GetAccount(ctx, customerID, args[0])
+			var accountID string
+			if index != 0 {
+				accounts, listErr := s.ListAccounts(ctx, customerID)
+				if listErr != nil {
+					return fatal("%v", listErr)
+				}
+				if index < 1 || index > len(accounts) {
+					return fatal("--index %d out of range (1-%d)", index, len(accounts))
+				}
+				accountID = accounts[index-1].AccountID
+			} else {
+				accountID = args[0]
+			}
+
+			account, err := s.GetAccount(ctx, customerID, accountID)
 			if err != nil {
 				return fatal("%v", err)
 			}
 			if account == nil {
-				return fatal("account not found: %s", args[0])
+				return fatal("account not found: %s", accountID)
 			}
 
 			if format == "json" {
@@ -801,6 +824,8 @@ func accountsDetailCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().IntVar(&index, "index", 0, "Select account by list index (from 'accounts list')")
 
 	return cmd
 }
@@ -839,10 +864,10 @@ func rolesListCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tACCOUNT\tEVENTS\tPEOPLE\tSESSIONS\tDENIED\tLAST SEEN")
-			for _, r := range roles {
-				fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
-					r.Name, r.AccountID, r.TotalEvents, r.PeopleCount,
+			fmt.Fprintln(w, "#\tNAME\tACCOUNT\tEVENTS\tPEOPLE\tSESSIONS\tDENIED\tLAST SEEN")
+			for i, r := range roles {
+				fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
+					i+1, r.Name, r.AccountID, r.TotalEvents, r.PeopleCount,
 					r.SessionsCount, r.TotalDeniedEvents, r.LastSeen)
 			}
 			return w.Flush()
@@ -852,24 +877,44 @@ func rolesListCmd() *cobra.Command {
 
 func rolesDetailCmd() *cobra.Command {
 	var accountID string
+	var index int
 
 	cmd := &cobra.Command{
 		Use:   "detail [role-name-or-arn]",
 		Short: "Show role details",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && index == 0 {
+				return fatal("role-name-or-arn argument or --index is required")
+			}
+			if len(args) > 0 && index != 0 {
+				return fatal("role-name-or-arn argument and --index are mutually exclusive")
+			}
+
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			role, err := lookupRole(ctx, s, args[0], accountID)
+			var role *models.Role
+			if index != 0 {
+				roles, listErr := s.ListRoles(ctx, customerID)
+				if listErr != nil {
+					return fatal("%v", listErr)
+				}
+				if index < 1 || index > len(roles) {
+					return fatal("--index %d out of range (1-%d)", index, len(roles))
+				}
+				role, err = lookupRole(ctx, s, roles[index-1].ARN, accountID)
+			} else {
+				role, err = lookupRole(ctx, s, args[0], accountID)
+			}
 			if err != nil {
 				return fatal("%v", err)
 			}
 			if role == nil {
-				return fatal("role not found: %s", args[0])
+				return fatal("role not found")
 			}
 
 			if format == "json" {
@@ -891,7 +936,10 @@ func rolesDetailCmd() *cobra.Command {
 
 			if len(role.ServicesUsed) > 0 {
 				fmt.Println("\nServices Used:")
-				for _, svc := range role.ServicesUsed {
+				sortedSvcs := make([]string, len(role.ServicesUsed))
+				copy(sortedSvcs, role.ServicesUsed)
+				sort.Strings(sortedSvcs)
+				for _, svc := range sortedSvcs {
 					fmt.Printf("  %s\n", svc)
 				}
 			}
@@ -913,6 +961,7 @@ func rolesDetailCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&accountID, "account", "", "Filter by AWS account ID (disambiguates roles with the same name)")
+	cmd.Flags().IntVar(&index, "index", 0, "Select role by list index (from 'roles list')")
 
 	return cmd
 }
@@ -1007,10 +1056,10 @@ func servicesListCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "SERVICE\tDISPLAY NAME\tEVENTS\tROLES\tRESOURCES\tPEOPLE\tLAST SEEN")
-			for _, svc := range services {
-				fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
-					svc.EventSource, svc.DisplayName, svc.TotalEvents,
+			fmt.Fprintln(w, "#\tSERVICE\tDISPLAY NAME\tEVENTS\tROLES\tRESOURCES\tPEOPLE\tLAST SEEN")
+			for i, svc := range services {
+				fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
+					i+1, svc.EventSource, svc.DisplayName, svc.TotalEvents,
 					svc.RolesCount, svc.ResourcesCount, svc.PeopleCount, svc.LastSeen)
 			}
 			return w.Flush()
@@ -1019,23 +1068,46 @@ func servicesListCmd() *cobra.Command {
 }
 
 func servicesDetailCmd() *cobra.Command {
+	var index int
+
 	cmd := &cobra.Command{
 		Use:   "detail [event-source]",
 		Short: "Show service details",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && index == 0 {
+				return fatal("event-source argument or --index is required")
+			}
+			if len(args) > 0 && index != 0 {
+				return fatal("event-source argument and --index are mutually exclusive")
+			}
+
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			svc, err := s.GetService(ctx, customerID, args[0])
+			var eventSource string
+			if index != 0 {
+				services, listErr := s.ListServices(ctx, customerID)
+				if listErr != nil {
+					return fatal("%v", listErr)
+				}
+				if index < 1 || index > len(services) {
+					return fatal("--index %d out of range (1-%d)", index, len(services))
+				}
+				eventSource = services[index-1].EventSource
+			} else {
+				eventSource = args[0]
+			}
+
+			svc, err := s.GetService(ctx, customerID, eventSource)
 			if err != nil {
 				return fatal("%v", err)
 			}
 			if svc == nil {
-				return fatal("service not found: %s", args[0])
+				return fatal("service not found: %s", eventSource)
 			}
 
 			if format == "json" {
@@ -1077,6 +1149,8 @@ func servicesDetailCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().IntVar(&index, "index", 0, "Select service by list index (from 'services list')")
 
 	return cmd
 }
@@ -1138,10 +1212,10 @@ func resourcesListCmd() *cobra.Command {
 				fmt.Printf("Found %d resources created/modified via web console:\n\n", len(resources))
 
 				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-				fmt.Fprintln(w, "RESOURCE\tTYPE\tACCOUNT\tCLICKOPS EVENTS\tLAST SEEN")
-				for _, r := range resources {
-					fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n",
-						r.Name, r.Type, r.AccountID, r.ClickOpsCount, r.LastSeen)
+				fmt.Fprintln(w, "#\tRESOURCE\tTYPE\tACCOUNT\tCLICKOPS EVENTS\tLAST SEEN")
+				for i, r := range resources {
+					fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%d\t%s\n",
+						i+1, r.Name, r.Type, r.AccountID, r.ClickOpsCount, r.LastSeen)
 				}
 				w.Flush()
 
@@ -1159,10 +1233,10 @@ func resourcesListCmd() *cobra.Command {
 				}
 			} else {
 				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-				fmt.Fprintln(w, "RESOURCE\tTYPE\tACCOUNT\tEVENTS\tCLICKOPS\tLAST SEEN")
-				for _, r := range resources {
-					fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%s\n",
-						r.Name, r.Type, r.AccountID, r.TotalEvents, r.ClickOpsCount, r.LastSeen)
+				fmt.Fprintln(w, "#\tRESOURCE\tTYPE\tACCOUNT\tEVENTS\tCLICKOPS\tLAST SEEN")
+				for i, r := range resources {
+					fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%d\t%d\t%s\n",
+						i+1, r.Name, r.Type, r.AccountID, r.TotalEvents, r.ClickOpsCount, r.LastSeen)
 				}
 				w.Flush()
 			}
