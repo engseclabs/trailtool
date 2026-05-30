@@ -229,6 +229,7 @@ func sessionsListCmd() *cobra.Command {
 	var before string
 	var tags []string
 	var long bool
+	var reverse bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -268,6 +269,12 @@ func sessionsListCmd() *cobra.Command {
 				sessions = filtered
 			}
 
+			if reverse {
+				for i, j := 0, len(sessions)-1; i < j; i, j = i+1, j-1 {
+					sessions[i], sessions[j] = sessions[j], sessions[i]
+				}
+			}
+
 			if format == "json" {
 				return printJSON(sessions)
 			}
@@ -305,6 +312,7 @@ func sessionsListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&before, "before", "", "Only sessions starting before this time (ISO8601)")
 	cmd.Flags().StringArrayVar(&tags, "tag", nil, "Filter by session tag KEY=VALUE (repeatable, AND semantics)")
 	cmd.Flags().BoolVar(&long, "long", false, "Show full role names instead of shortened SSO permission-set names")
+	cmd.Flags().BoolVar(&reverse, "reverse", false, "Show newest sessions first (default is oldest first)")
 
 	return cmd
 }

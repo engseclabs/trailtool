@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -255,6 +256,10 @@ func (s *Store) ListSessions(ctx context.Context, customerID, email string, filt
 		}
 		lastKey = result.LastEvaluatedKey
 	}
+
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].StartTime < sessions[j].StartTime
+	})
 
 	return sessions, nil
 }
