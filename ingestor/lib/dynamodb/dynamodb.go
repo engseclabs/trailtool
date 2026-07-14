@@ -523,12 +523,16 @@ func MergeSessionAggregated(existing *types.DynamoDBSessionAggregated, new *type
 	mergedDeniedResourceAccesses := MergeResourceAccesses(existing.DeniedResourceAccesses, new.DeniedResourceAccesses)
 	mergedDeniedEventAccesses := MergeEventAccesses(existing.DeniedEventAccesses, new.DeniedEventAccesses)
 
-	// Session type: "login" is the most specific — prefer it if either side has it.
+	// Session type specificity: "agent" (AWS MCP Server OAuth traffic) is the most specific,
+	// then "login" (aws login). Prefer the more specific type if either side carries it.
 	// Otherwise keep the existing type (both sides should agree since they share the same
 	// IAM session creation time).
 	sessionType := existing.SessionType
 	if new.SessionType == "login" || existing.SessionType == "login" {
 		sessionType = "login"
+	}
+	if new.SessionType == "agent" || existing.SessionType == "agent" {
+		sessionType = "agent"
 	}
 
 	merged := &types.DynamoDBSessionAggregated{
@@ -569,6 +573,11 @@ func MergeSessionAggregated(existing *types.DynamoDBSessionAggregated, new *type
 		// aws login attribution (preserve from whichever has them)
 		LoginGrantedBySessionKey: firstNonEmpty(existing.LoginGrantedBySessionKey, new.LoginGrantedBySessionKey),
 		LoginGrantedByEmail:      firstNonEmpty(existing.LoginGrantedByEmail, new.LoginGrantedByEmail),
+		// AWS MCP Server OAuth attribution (preserve from whichever has them)
+		SignInSessionArn:         firstNonEmpty(existing.SignInSessionArn, new.SignInSessionArn),
+		MCPResource:              firstNonEmpty(existing.MCPResource, new.MCPResource),
+		AgentAuthorizedBySession: firstNonEmpty(existing.AgentAuthorizedBySession, new.AgentAuthorizedBySession),
+		AgentAuthorizedByEmail:   firstNonEmpty(existing.AgentAuthorizedByEmail, new.AgentAuthorizedByEmail),
 		// Session tags (preserve from whichever has them; existing wins)
 		SessionTags: mergeSessionTags(existing.SessionTags, new.SessionTags),
 		// Session policy (first non-empty wins)

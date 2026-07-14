@@ -1,0 +1,161 @@
+{
+  "_comment": "CloudTrail events for an AWS MCP Server OAuth session (agent traffic), modeled on the AWS Security Blog 'Introducing OAuth support for AWS MCP Server' (09 JUL 2026).",
+  "_notes": [
+    "An agent connects to the AWS MCP Server. AuthorizeOAuth2Access records the browser authorization; CreateOAuth2Token mints the OAuth access token.",
+    "The distinguishing marker for MCP agent traffic is requestParameters.resource pointing at the AWS MCP Server (aws-mcp.<region>.api.aws/mcp or aws-mcp.amazonaws.com).",
+    "CreateOAuth2Token carries additionalEventData.signInSessionArn (and grant_type). This signInSessionArn is the correlation key.",
+    "Per the release, every subsequent AWS API call made with the OAuth access token carries the same aws:SignInSessionArn context (sessionContext.signInSessionArn). trailtool tags those sessions as SessionType 'agent'.",
+    "This is distinct from aws login (see aws_login_session.json), which correlates by roleID + creationDate and produces SessionType 'login'."
+  ],
+  "Records": [
+    {
+      "_comment": "Step 1: Browser authorization. The human approves the agent's OAuth request in AWS Sign-In. userAgent is a browser; resource is the AWS MCP Server; client_id is a DCR external client.",
+      "eventVersion": "1.11",
+      "eventTime": "2026-06-09T05:09:00Z",
+      "eventName": "AuthorizeOAuth2Access",
+      "eventSource": "signin.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "awsRegion": "us-west-2",
+      "sourceIPAddress": "192.0.2.2",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROATJHQDX737YZPEXMPL:testuser@example.com",
+        "arn": "arn:aws:sts::111111111111:assumed-role/Admin/testuser@example.com",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2026-06-09T05:06:39Z",
+            "mfaAuthenticated": "false"
+          },
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROA2IRT4N5U4RDHM2LG4",
+            "arn": "arn:aws:iam::111111111111:role/Admin",
+            "accountId": "111111111111",
+            "userName": "Admin"
+          }
+        }
+      },
+      "requestParameters": {
+        "resource": "https://aws-mcp.us-west-2.api.aws/mcp",
+        "redirect_uri": "http://127.0.0.1:60432/oauth/callback",
+        "code_challenge_method": "S256",
+        "client_id": "arn:aws:signin:us-west-2::external-client/dcr/609544da-aasa-49a4-ab11-c2r457fa999"
+      },
+      "responseElements": null,
+      "additionalEventData": {
+        "success": "true"
+      }
+    },
+    {
+      "_comment": "Step 2: CLI/agent completes the token exchange. resource is the AWS MCP Server; additionalEventData.signInSessionArn is the correlation key for all subsequent OAuth-token API calls.",
+      "eventVersion": "1.11",
+      "eventTime": "2026-06-09T05:10:04Z",
+      "eventName": "CreateOAuth2Token",
+      "eventSource": "signin.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "awsRegion": "us-west-2",
+      "sourceIPAddress": "192.0.2.2",
+      "userAgent": "curl/8.7.1",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROATJHQDX737YZPEXMPL:testuser@example.com",
+        "arn": "arn:aws:sts::111111111111:assumed-role/Admin/testuser@example.com",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2026-06-09T05:06:39Z",
+            "mfaAuthenticated": "false"
+          },
+          "signInSessionArn": "arn:aws:signin:us-west-2:111111111111:session/daff060f-7871-5tg6-67yu-a07bbdabe61a",
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROA2IRT4N5U4RDHM2LG4",
+            "arn": "arn:aws:iam::111111111111:role/Admin",
+            "accountId": "111111111111",
+            "userName": "Admin"
+          }
+        }
+      },
+      "requestParameters": {
+        "resource": "https://aws-mcp.us-west-2.api.aws/mcp",
+        "client_id": "arn:aws:signin:us-west-2::external-client/dcr/609544da-b3dd-49a4-ab11-c2e98d7fa999"
+      },
+      "responseElements": null,
+      "additionalEventData": {
+        "signInSessionArn": "arn:aws:signin:us-west-2:111111111111:session/daff060f-7871-5tg6-67yu-a07bbdabe61a",
+        "grant_type": "refresh_token",
+        "success": "true"
+      }
+    },
+    {
+      "_comment": "Step 3: The agent invokes an AWS API using the MCP OAuth access token. The call carries aws:SignInSessionArn (sessionContext.signInSessionArn) matching the grant — this is what marks it agent traffic.",
+      "eventVersion": "1.11",
+      "eventTime": "2026-06-09T05:12:31Z",
+      "eventName": "ListBuckets",
+      "eventSource": "s3.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "awsRegion": "us-west-2",
+      "sourceIPAddress": "192.0.2.2",
+      "userAgent": "aws-mcp-server/1.0",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROATJHQDX737YZPEXMPL:testuser@example.com",
+        "arn": "arn:aws:sts::111111111111:assumed-role/Admin/testuser@example.com",
+        "accountId": "111111111111",
+        "accessKeyId": "ASIATJHQDX737MCPTOKEN",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2026-06-09T05:10:04Z",
+            "mfaAuthenticated": "false"
+          },
+          "signInSessionArn": "arn:aws:signin:us-west-2:111111111111:session/daff060f-7871-5tg6-67yu-a07bbdabe61a",
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROA2IRT4N5U4RDHM2LG4",
+            "arn": "arn:aws:iam::111111111111:role/Admin",
+            "accountId": "111111111111",
+            "userName": "Admin"
+          }
+        }
+      },
+      "requestParameters": null,
+      "responseElements": null
+    },
+    {
+      "_comment": "Step 4: A second agent API call under the same OAuth sign-in session — same signInSessionArn, same accessKeyId.",
+      "eventVersion": "1.11",
+      "eventTime": "2026-06-09T05:12:48Z",
+      "eventName": "DescribeInstances",
+      "eventSource": "ec2.amazonaws.com",
+      "eventType": "AwsApiCall",
+      "awsRegion": "us-west-2",
+      "sourceIPAddress": "192.0.2.2",
+      "userAgent": "aws-mcp-server/1.0",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROATJHQDX737YZPEXMPL:testuser@example.com",
+        "arn": "arn:aws:sts::111111111111:assumed-role/Admin/testuser@example.com",
+        "accountId": "111111111111",
+        "accessKeyId": "ASIATJHQDX737MCPTOKEN",
+        "sessionContext": {
+          "attributes": {
+            "creationDate": "2026-06-09T05:10:04Z",
+            "mfaAuthenticated": "false"
+          },
+          "signInSessionArn": "arn:aws:signin:us-west-2:111111111111:session/daff060f-7871-5tg6-67yu-a07bbdabe61a",
+          "sessionIssuer": {
+            "type": "Role",
+            "principalId": "AROA2IRT4N5U4RDHM2LG4",
+            "arn": "arn:aws:iam::111111111111:role/Admin",
+            "accountId": "111111111111",
+            "userName": "Admin"
+          }
+        }
+      },
+      "requestParameters": null,
+      "responseElements": null
+    }
+  ]
+}

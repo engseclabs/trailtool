@@ -307,6 +307,11 @@ func TestClassifySessionType(t *testing.T) {
 			userAgent: "Go-http-client/1.1",
 			want:      "cli-sdk",
 		},
+		{
+			name:      "AWS MCP Server",
+			userAgent: "aws-mcp-server/1.0",
+			want:      "cli-sdk",
+		},
 		// Unrecognized - empty string
 		{
 			name:      "empty user agent",

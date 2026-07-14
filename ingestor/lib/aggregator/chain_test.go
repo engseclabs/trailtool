@@ -218,3 +218,74 @@ func TestExtractSessionTags(t *testing.T) {
 }
 
 
+
+func TestIsMCPServerResource(t *testing.T) {
+	tests := []struct {
+		name     string
+		resource string
+		want     bool
+	}{
+		{"regional api.aws endpoint", "https://aws-mcp.us-west-2.api.aws/mcp", true},
+		{"us-east-1 endpoint", "https://aws-mcp.us-east-1.api.aws/mcp", true},
+		{"headless amazonaws.com resource", "aws-mcp.amazonaws.com", true},
+		{"case-insensitive", "HTTPS://AWS-MCP.US-WEST-2.API.AWS/MCP", true},
+		{"empty", "", false},
+		{"aws login same-device (not MCP)", "arn:aws:signin:::devtools/same-device", false},
+		{"unrelated service", "https://s3.amazonaws.com", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsMCPServerResource(tt.resource); got != tt.want {
+				t.Errorf("IsMCPServerResource(%q) = %v, want %v", tt.resource, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractSignInSessionArn(t *testing.T) {
+	const arn = "arn:aws:signin:us-west-2:111111111111:session/abc123"
+
+	t.Run("from additionalEventData", func(t *testing.T) {
+		event := types.CloudTrailRecord{
+			AdditionalEventData: map[string]interface{}{
+				"signInSessionArn": arn,
+				"grant_type":       "refresh_token",
+			},
+		}
+		if got := ExtractSignInSessionArn(event); got != arn {
+			t.Errorf("ExtractSignInSessionArn() = %q, want %q", got, arn)
+		}
+	})
+
+	t.Run("from sessionContext", func(t *testing.T) {
+		sc := &types.SessionContext{}
+		sc.SignInSessionArn = arn
+		event := types.CloudTrailRecord{
+			UserIdentity: types.UserIdentity{SessionContext: sc},
+		}
+		if got := ExtractSignInSessionArn(event); got != arn {
+			t.Errorf("ExtractSignInSessionArn() = %q, want %q", got, arn)
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		if got := ExtractSignInSessionArn(types.CloudTrailRecord{}); got != "" {
+			t.Errorf("ExtractSignInSessionArn() = %q, want empty", got)
+		}
+	})
+}
+
+func TestExtractOAuthResource(t *testing.T) {
+	event := types.CloudTrailRecord{
+		RequestParameters: map[string]interface{}{
+			"resource":  "https://aws-mcp.us-west-2.api.aws/mcp",
+			"client_id": "arn:aws:signin:us-west-2::external-client/dcr/abc",
+		},
+	}
+	if got := ExtractOAuthResource(event); got != "https://aws-mcp.us-west-2.api.aws/mcp" {
+		t.Errorf("ExtractOAuthResource() = %q", got)
+	}
+	if got := ExtractOAuthResource(types.CloudTrailRecord{}); got != "" {
+		t.Errorf("ExtractOAuthResource(empty) = %q, want empty", got)
+	}
+}
