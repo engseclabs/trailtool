@@ -14,7 +14,12 @@ type SessionContext struct {
 		MfaAuthenticated             string `json:"mfaAuthenticated,omitempty"`
 		SessionCredentialFromConsole string `json:"sessionCredentialFromConsole,omitempty"`
 	} `json:"attributes,omitempty"`
-	SessionIssuer struct {
+	// SignInSessionArn ties an event back to an AWS Sign-In OAuth session. It is present on
+	// CreateOAuth2Token (the MCP OAuth grant) and, per the AWS MCP Server release, on every
+	// subsequent AWS API call made with the resulting OAuth access token (aws:SignInSessionArn
+	// context). This is the correlation key for attributing agent traffic to its OAuth grant.
+	SignInSessionArn string `json:"signInSessionArn,omitempty"`
+	SessionIssuer    struct {
 		Type        string `json:"type,omitempty"`
 		PrincipalID string `json:"principalId,omitempty"`
 		ARN         string `json:"arn,omitempty"`
@@ -37,6 +42,7 @@ type CloudTrailRecord struct {
 	SessionContext               *SessionContext      `json:"sessionContext,omitempty"`
 	RequestParameters            interface{}          `json:"requestParameters,omitempty"`
 	ResponseElements             interface{}          `json:"responseElements,omitempty"`
+	AdditionalEventData          interface{}          `json:"additionalEventData,omitempty"`
 	ReadOnly                     *bool                `json:"readOnly,omitempty"`
 	Resources                    []CloudTrailResource `json:"resources,omitempty"`
 	ErrorCode                    string               `json:"errorCode,omitempty"`
@@ -257,6 +263,14 @@ type DynamoDBSessionAggregated struct {
 	// Correlation is by roleARN + sourceIP + creationDate within ±60s of CreateOAuth2Token.
 	LoginGrantedBySessionKey string `dynamodbav:"login_granted_by_session_key,omitempty"` // session_start key of the authorizing session
 	LoginGrantedByEmail      string `dynamodbav:"login_granted_by_email,omitempty"`       // email of the human who ran aws login
+
+	// AWS MCP Server OAuth attribution — set on sessions whose events carry an
+	// aws:SignInSessionArn matching a CreateOAuth2Token grant for the AWS MCP Server resource.
+	// These represent agent traffic driven through the AWS MCP Server (SessionType "agent").
+	SignInSessionArn         string `dynamodbav:"sign_in_session_arn,omitempty"`          // the OAuth sign-in session ARN correlating this session's events
+	MCPResource              string `dynamodbav:"mcp_resource,omitempty"`                 // the AWS MCP Server resource the OAuth grant targeted
+	AgentAuthorizedBySession string `dynamodbav:"agent_authorized_by_session,omitempty"` // session_start key of the human session that authorized the MCP grant
+	AgentAuthorizedByEmail   string `dynamodbav:"agent_authorized_by_email,omitempty"`   // email of the human who authorized the MCP grant
 }
 
 // DynamoDBChainLink records a temporary credential issued via AssumeRole,
@@ -282,6 +296,11 @@ type DynamoDBChainLink struct {
 	// SessionPolicy is the raw inline IAM policy from requestParameters.policy.
 	// Propagated to the child session record.
 	SessionPolicy string `dynamodbav:"session_policy,omitempty"`
+
+	// MCPResource is the AWS MCP Server resource from a CreateOAuth2Token grant's
+	// requestParameters.resource. Non-empty only on MCP OAuth grant links, whose PK is
+	// "mcp_grant:signInSessionArn". Used to tag correlated agent sessions.
+	MCPResource string `dynamodbav:"mcp_resource,omitempty"`
 }
 
 // DynamoDBAccount represents an aggregated account record

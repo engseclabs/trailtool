@@ -98,12 +98,14 @@ func ClassifySessionType(userAgent string) string {
 		}
 	}
 
-	// Programmatic patterns (CLI, SDK, IaC tools)
+	// Programmatic patterns (CLI, SDK, IaC tools, MCP servers)
 	programmaticPatterns := []string{
 		"aws-cli/", "boto3/", "botocore/", "aws-sdk-",
 		"terraform/", "pulumi/", "cloudformation/",
 		"aws-internal/", "console.amazonaws.com",
 		"python-requests/", "go-http-client/",
+		"aws-mcp",      // AWS MCP Server (invokedBy on API calls it makes; UA "aws-mcp.amazonaws.com")
+		"claude-code/", // Claude Code agent client (UA on the MCP CallReadWriteTool event itself)
 	}
 	for _, pattern := range programmaticPatterns {
 		if strings.Contains(userAgentLower, pattern) {

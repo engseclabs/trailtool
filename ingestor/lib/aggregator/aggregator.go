@@ -115,6 +115,12 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		if event.EventSource != "signin.amazonaws.com" || event.EventName != "CreateOAuth2Token" {
 			continue
 		}
+		// AWS MCP Server OAuth grants are handled by the MCP pre-pass below (correlated by
+		// signInSessionArn), not by roleID+creationDate windowing. Skip them here so an MCP
+		// token doesn't register a spurious `aws login` grant.
+		if IsMCPServerResource(ExtractOAuthResource(event)) {
+			continue
+		}
 
 		email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
 		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
@@ -155,6 +161,75 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			}
 			if err := ddblib.WriteChainLinkToDynamoDB(ctx, ddbClient, cfg.Tables.ChainLinks, grantLink); err != nil {
 				log.Printf("WARNING: failed to write login grant to DynamoDB: %v", err)
+			}
+		}
+	}
+
+	// === MCP OAuth pre-pass: Detect AWS MCP Server OAuth grants (agent traffic) ===
+	// When an agent connects to the AWS MCP Server, CreateOAuth2Token on signin.amazonaws.com
+	// mints an OAuth access token whose requestParameters.resource is the MCP Server. The grant
+	// carries a signInSessionArn, and — per the AWS MCP Server release — every subsequent AWS API
+	// call made with that token carries the same aws:SignInSessionArn context. We key each grant
+	// by signInSessionArn so Pass 2 can tag correlated API activity as "agent" traffic.
+	//
+	// This is distinct from the older `aws login` PKCE flow (keyed by roleID+creationDate above):
+	// MCP tokens are minted via client_credentials / refresh_token and are not tied to the
+	// authorizing session's creationDate, so signInSessionArn is the reliable correlation key.
+	type mcpGrant struct {
+		authorizingSessionMapKey string // human session that authorized the MCP grant
+		authorizingEmail         string
+		resource                 string // the AWS MCP Server resource the grant targeted
+	}
+	// Index by signInSessionArn for O(1) lookup in Pass 2.
+	mcpGrants := make(map[string]*mcpGrant)
+
+	for _, event := range events {
+		if event.EventSource != "signin.amazonaws.com" || event.EventName != "CreateOAuth2Token" {
+			continue
+		}
+		resource := ExtractOAuthResource(event)
+		if !IsMCPServerResource(resource) {
+			continue // not an MCP Server grant — leave to the aws login pre-pass
+		}
+		signInSessionArn := ExtractSignInSessionArn(event)
+		if signInSessionArn == "" {
+			log.Printf("MCP_GRANT_SKIP: CreateOAuth2Token for %s has no signInSessionArn", resource)
+			continue
+		}
+
+		email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
+		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
+		startTime := session.GetSessionCreationTime(event)
+		var authorizingSessionMapKey string
+		if email != "" && roleID != "" && startTime != "" {
+			authorizingSessionMapKey = fmt.Sprintf("%s:%s:%s", email, roleID, startTime)
+		}
+
+		mcpGrants[signInSessionArn] = &mcpGrant{
+			authorizingSessionMapKey: authorizingSessionMapKey,
+			authorizingEmail:         email,
+			resource:                 resource,
+		}
+		log.Printf("MCP_GRANT: signInSessionArn=%s resource=%s authorizedBy=%s",
+			signInSessionArn, resource, authorizingSessionMapKey)
+
+		// Persist to DynamoDB so the grant survives cross-batch delivery — the API calls
+		// carrying aws:SignInSessionArn often land in a different S3 file than this grant.
+		if cfg.Tables.ChainLinks != "" {
+			eventT, err := time.Parse(time.RFC3339, event.EventTime)
+			if err != nil {
+				log.Printf("WARNING: MCP pre-pass: could not parse event time %s: %v", event.EventTime, err)
+				continue
+			}
+			grantLink := &types.DynamoDBChainLink{
+				AccessKeyID:         "mcp_grant:" + signInSessionArn,
+				ParentSessionMapKey: authorizingSessionMapKey,
+				ParentEmail:         email,
+				MCPResource:         resource,
+				TTL:                 eventT.Add(chainLinkTTLHours * time.Hour).Unix(),
+			}
+			if err := ddblib.WriteChainLinkToDynamoDB(ctx, ddbClient, cfg.Tables.ChainLinks, grantLink); err != nil {
+				log.Printf("WARNING: failed to write MCP grant to DynamoDB: %v", err)
 			}
 		}
 	}
@@ -316,6 +391,17 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 				if _, inBatch := newChainLinks[loginKey]; !inBatch {
 					seen[loginKey] = true
 					unkeyedAccessKeyIDs = append(unkeyedAccessKeyIDs, loginKey)
+				}
+			}
+		}
+		// MCP grant lookup: mcp_grant:signInSessionArn. Present on API calls made with the
+		// MCP OAuth access token (aws:SignInSessionArn context in sessionContext).
+		if arn := ExtractSignInSessionArn(event); arn != "" {
+			mcpKey := "mcp_grant:" + arn
+			if !seen[mcpKey] {
+				if _, inBatch := mcpGrants[arn]; !inBatch {
+					seen[mcpKey] = true
+					unkeyedAccessKeyIDs = append(unkeyedAccessKeyIDs, mcpKey)
 				}
 			}
 		}
@@ -545,8 +631,34 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		if sessionMapKey != "" && accountID != "" && roleARN != "" {
 			normalizedUserAgent := session.NormalizeUserAgent(event.UserAgent)
 			resourceList := resources.ExtractResources(event)
+
+			// MCP agent detection: resolve any AWS MCP Server OAuth grant for this event's
+			// aws:SignInSessionArn up front. When matched, force SessionType "agent" so the
+			// session is created even if the MCP server's user agent is unrecognized — the
+			// signInSessionArn, not the user agent, is the authoritative agent-traffic signal.
+			var mcpMatch *mcpGrant
+			var mcpArn string
+			if arn := ExtractSignInSessionArn(event); arn != "" {
+				if g, ok := mcpGrants[arn]; ok {
+					mcpMatch = g
+				} else if link := resolveChainLink("mcp_grant:" + arn); link != nil && link.MCPResource != "" {
+					mcpMatch = &mcpGrant{
+						authorizingSessionMapKey: link.ParentSessionMapKey,
+						authorizingEmail:         link.ParentEmail,
+						resource:                 link.MCPResource,
+					}
+				}
+				if mcpMatch != nil {
+					mcpArn = arn
+				}
+			}
+			forcedSessionType := ""
+			if mcpMatch != nil {
+				forcedSessionType = "agent"
+			}
+
 			processSessionEvent(sessions, people, ns, sessionMapKey, truncatedSessionID, email, roleID, accountID, roleARN, session.ExtractRoleNameFromARN(roleARN),
-				sessionCreationTime, eventTime, event.SourceIPAddress, normalizedUserAgent, eventSource, event.EventName, event.ErrorCode, event.ErrorMessage, resourceList, eventDate)
+				sessionCreationTime, eventTime, event.SourceIPAddress, normalizedUserAgent, eventSource, event.EventName, event.ErrorCode, event.ErrorMessage, resourceList, eventDate, forcedSessionType)
 			addToSet(sessionServices, sessionMapKey, eventSource)
 
 			// Login grant attribution: look up "login:roleID:startTime" in the in-memory
@@ -571,6 +683,21 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 						log.Printf("LOGIN_ATTR: session=%s loginKey=%s grantedBy=%s",
 							sessionMapKey, loginKey, grant.parentSessionMapKey)
 					}
+				}
+			}
+
+			// MCP agent attribution: annotate the session (resolved above) with the AWS MCP
+			// Server OAuth grant details. SessionType was already forced to "agent" so this
+			// overrides any "login" tag — MCP is the more specific classification.
+			if mcpMatch != nil {
+				if sess, exists := sessions[sessionMapKey]; exists && sess.SignInSessionArn == "" {
+					sess.SessionType = "agent"
+					sess.SignInSessionArn = mcpArn
+					sess.MCPResource = mcpMatch.resource
+					sess.AgentAuthorizedBySession = mcpMatch.authorizingSessionMapKey
+					sess.AgentAuthorizedByEmail = mcpMatch.authorizingEmail
+					log.Printf("MCP_ATTR: session=%s signInSessionArn=%s resource=%s authorizedBy=%s",
+						sessionMapKey, mcpArn, mcpMatch.resource, mcpMatch.authorizingSessionMapKey)
 				}
 			}
 		} else if sessionMapKey != "" {
@@ -856,7 +983,10 @@ func processPersonEvent(people map[string]*types.DynamoDBPerson, email, accountI
 }
 
 // processSessionEvent tracks aggregated data for a session.
-func processSessionEvent(sessions map[string]*types.DynamoDBSessionAggregated, people map[string]*types.DynamoDBPerson, ns, sessionMapKey, truncatedSessionID, email, roleID, accountID, roleARN, roleName, sessionCreationTime, eventTime, sourceIP, userAgent, eventSource, eventName, errorCode, errorMessage string, resourceList []string, eventDate string) {
+// forcedSessionType, when non-empty, overrides user-agent classification and guarantees the
+// session is created even for an unrecognized user agent. Used for AWS MCP Server agent traffic,
+// which is identified by its aws:SignInSessionArn rather than its user agent.
+func processSessionEvent(sessions map[string]*types.DynamoDBSessionAggregated, people map[string]*types.DynamoDBPerson, ns, sessionMapKey, truncatedSessionID, email, roleID, accountID, roleARN, roleName, sessionCreationTime, eventTime, sourceIP, userAgent, eventSource, eventName, errorCode, errorMessage string, resourceList []string, eventDate, forcedSessionType string) {
 	sess, exists := sessions[sessionMapKey]
 	if !exists {
 		displayName := ""
@@ -864,7 +994,10 @@ func processSessionEvent(sessions map[string]*types.DynamoDBSessionAggregated, p
 			displayName = person.DisplayName
 		}
 
-		sessionType := session.ClassifySessionType(userAgent)
+		sessionType := forcedSessionType
+		if sessionType == "" {
+			sessionType = session.ClassifySessionType(userAgent)
+		}
 		if sessionType == "" {
 			log.Printf("SKIPPED: Unrecognized session type - email:%s role:%s userAgent:%s", email, roleID, userAgent)
 			return

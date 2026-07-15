@@ -69,6 +69,13 @@ type SessionAggregated struct {
 	LoginGrantedBySessionKey string `json:"login_granted_by_session_key,omitempty" dynamodbav:"login_granted_by_session_key"`
 	LoginGrantedByEmail      string `json:"login_granted_by_email,omitempty" dynamodbav:"login_granted_by_email"`
 
+	// AWS MCP Server OAuth attribution — set on agent-traffic sessions correlated via
+	// aws:SignInSessionArn to a CreateOAuth2Token grant for the AWS MCP Server resource.
+	SignInSessionArn         string `json:"sign_in_session_arn,omitempty" dynamodbav:"sign_in_session_arn"`
+	MCPResource              string `json:"mcp_resource,omitempty" dynamodbav:"mcp_resource"`
+	AgentAuthorizedBySession string `json:"agent_authorized_by_session,omitempty" dynamodbav:"agent_authorized_by_session"`
+	AgentAuthorizedByEmail   string `json:"agent_authorized_by_email,omitempty" dynamodbav:"agent_authorized_by_email"`
+
 	// SessionTags holds the session tags from the AssumeRole requestParameters.tags
 	// that created this child session. Non-nil only on chained sessions.
 	SessionTags map[string]string `json:"session_tags,omitempty" dynamodbav:"session_tags,omitempty"`
@@ -81,6 +88,8 @@ type SessionAggregated struct {
 // DetectSessionType returns a display label for the session type.
 func (s *SessionAggregated) DetectSessionType() string {
 	switch s.SessionType {
+	case "agent":
+		return "AGENT"
 	case "login":
 		return "LOGIN"
 	case "web-console":

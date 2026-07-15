@@ -285,7 +285,9 @@ func sessionsListCmd() *cobra.Command {
 				st := sess.DetectSessionType()
 				duration := fmt.Sprintf("%dm", sess.DurationMinutes)
 				chained := ""
-				if sess.LoginGrantedBySessionKey != "" {
+				if sess.AgentAuthorizedBySession != "" {
+					chained = "← agent"
+				} else if sess.LoginGrantedBySessionKey != "" {
 					chained = "← login"
 				} else if sess.ParentSessionKey != "" {
 					chained = "↑ child"
@@ -502,6 +504,24 @@ Examples:
 				sort.Strings(resourceKeys)
 				for _, resource := range resourceKeys {
 					fmt.Printf("  %s: %d\n", resource, sess.ResourcesAccessed[resource])
+				}
+			}
+
+			// AWS MCP Server agent traffic: show the MCP resource and the human session that
+			// authorized the OAuth grant these agent credentials were minted under.
+			if sess.AgentAuthorizedBySession != "" || sess.MCPResource != "" {
+				if sess.MCPResource != "" {
+					fmt.Printf("\nAWS MCP Server: %s\n", sess.MCPResource)
+				}
+				if sess.SignInSessionArn != "" {
+					fmt.Printf("Sign-in session: %s\n", sess.SignInSessionArn)
+				}
+				if sess.AgentAuthorizedBySession != "" {
+					grantTime := parentSessionTime(sess.AgentAuthorizedBySession)
+					fmt.Printf("OAuth grant authorized by: %s at %s [%s]\n",
+						sess.AgentAuthorizedByEmail, grantTime, relativeTime(grantTime))
+					fmt.Printf("  → trailtool sessions detail --at %s --user %s\n",
+						grantTime[:min(len(grantTime), 19)], sess.AgentAuthorizedByEmail)
 				}
 			}
 

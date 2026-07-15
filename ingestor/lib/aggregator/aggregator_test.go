@@ -2,6 +2,9 @@ package aggregator
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
@@ -13,6 +16,14 @@ func makeSessionContext(creationDate, roleARN, email string) *types.SessionConte
 	sc.Attributes.CreationDate = creationDate
 	sc.SessionIssuer.ARN = roleARN
 	sc.SessionIssuer.Type = "Role"
+	return sc
+}
+
+// makeSessionContextWithSignIn builds a SessionContext carrying an aws:SignInSessionArn,
+// as present on the MCP OAuth grant and on API calls made with the OAuth access token.
+func makeSessionContextWithSignIn(creationDate, roleARN, signInSessionArn string) *types.SessionContext {
+	sc := makeSessionContext(creationDate, roleARN, "")
+	sc.SignInSessionArn = signInSessionArn
 	return sc
 }
 
@@ -574,6 +585,335 @@ func TestTaggedAssumeRoleAttribution(t *testing.T) {
 	}
 	if parentSess.ChainedEventCount != 1 {
 		t.Errorf("parent ChainedEventCount = %d, want 1", parentSess.ChainedEventCount)
+	}
+}
+
+// TestMCPAgentSessionAttribution verifies the AWS MCP Server OAuth flow: a CreateOAuth2Token
+// grant for the AWS MCP Server resource, followed by API calls carrying the matching
+// aws:SignInSessionArn, are tagged as SessionType "agent" and correlated to the authorizing
+// human session. Mirrors testdata/aws_mcp_agent_session.json.
+func TestMCPAgentSessionAttribution(t *testing.T) {
+	const (
+		userEmail        = "testuser@example.com"
+		roleID           = "AROATJHQDX737YZPEXMPL"
+		roleARN          = "arn:aws:iam::111111111111:role/Admin"
+		accountID        = "111111111111"
+		sourceIP         = "192.0.2.2"
+		humanCreation    = "2026-06-09T05:06:39Z"
+		grantTime        = "2026-06-09T05:10:04Z"
+		mcpResource      = "https://aws-mcp.us-west-2.api.aws/mcp"
+		signInSessionArn = "arn:aws:signin:us-west-2:111111111111:session/daff060f-7871-5tg6-67yu-a07bbdabe61a"
+		// Agent API calls run under a fresh session created when the token was minted.
+		agentCreation = "2026-06-09T05:10:04Z"
+		agentKey      = "ASIATJHQDX737MCPTOKEN"
+	)
+
+	// The human's authorizing session key (email:roleID:humanCreation).
+	authorizingSessionMapKey := userEmail + ":" + roleID + ":" + humanCreation
+
+	assumedRoleARN := "arn:aws:sts::111111111111:assumed-role/Admin/" + userEmail
+
+	// AuthorizeOAuth2Access: browser popup, resource is the AWS MCP Server.
+	authorizeEvent := types.CloudTrailRecord{
+		EventTime:       "2026-06-09T05:09:00Z",
+		EventName:       "AuthorizeOAuth2Access",
+		EventSource:     "signin.amazonaws.com",
+		SourceIPAddress: sourceIP,
+		UserAgent:       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/149.0 Safari/537.36",
+		UserIdentity: types.UserIdentity{
+			Type:           "AssumedRole",
+			PrincipalID:    roleID + ":" + userEmail,
+			ARN:            assumedRoleARN,
+			AccountID:      accountID,
+			SessionContext: makeSessionContext(humanCreation, roleARN, userEmail),
+		},
+		RequestParameters: map[string]interface{}{
+			"resource":  mcpResource,
+			"client_id": "arn:aws:signin:us-west-2::external-client/dcr/609544da",
+		},
+	}
+
+	// CreateOAuth2Token: mints the OAuth access token. resource is the MCP Server,
+	// and additionalEventData carries the signInSessionArn correlation key.
+	createTokenEvent := types.CloudTrailRecord{
+		EventTime:       grantTime,
+		EventName:       "CreateOAuth2Token",
+		EventSource:     "signin.amazonaws.com",
+		SourceIPAddress: sourceIP,
+		UserAgent:       "curl/8.7.1",
+		UserIdentity: types.UserIdentity{
+			Type:           "AssumedRole",
+			PrincipalID:    roleID + ":" + userEmail,
+			ARN:            assumedRoleARN,
+			AccountID:      accountID,
+			SessionContext: makeSessionContextWithSignIn(humanCreation, roleARN, signInSessionArn),
+		},
+		RequestParameters: map[string]interface{}{
+			"resource":  mcpResource,
+			"client_id": "arn:aws:signin:us-west-2::external-client/dcr/609544da",
+		},
+		AdditionalEventData: map[string]interface{}{
+			"signInSessionArn": signInSessionArn,
+			"grant_type":       "refresh_token",
+			"success":          "true",
+		},
+	}
+
+	// Agent API call: carries aws:SignInSessionArn matching the grant.
+	agentEvent := types.CloudTrailRecord{
+		EventTime:       "2026-06-09T05:12:31Z",
+		EventName:       "ListBuckets",
+		EventSource:     "s3.amazonaws.com",
+		SourceIPAddress: sourceIP,
+		UserAgent:       "aws-mcp-server/1.0",
+		UserIdentity: types.UserIdentity{
+			Type:           "AssumedRole",
+			PrincipalID:    roleID + ":" + userEmail,
+			ARN:            assumedRoleARN,
+			AccountID:      accountID,
+			AccessKeyID:    agentKey,
+			SessionContext: makeSessionContextWithSignIn(agentCreation, roleARN, signInSessionArn),
+		},
+	}
+
+	sessions, err := processForTest([]types.CloudTrailRecord{authorizeEvent, createTokenEvent, agentEvent})
+	if err != nil {
+		t.Fatalf("processForTest() error: %v", err)
+	}
+
+	// aws-mcp-server/1.0 is recognized as a programmatic (cli-sdk) user agent, so the agent
+	// session keys off the 4-hour CLI window: agentCreation 05:10:04 → window 04:00:00Z.
+	agentWindowStart := "2026-06-09T04:00:00Z"
+	agentSessionKey := userEmail + ":" + roleID + ":" + agentWindowStart
+	agentSess, ok := sessions[agentSessionKey]
+	if !ok {
+		t.Fatalf("agent session %q not found; keys: %v", agentSessionKey, sessionKeys(sessions))
+	}
+
+	if agentSess.SessionType != "agent" {
+		t.Errorf("agent session SessionType = %q, want \"agent\"", agentSess.SessionType)
+	}
+	if agentSess.SignInSessionArn != signInSessionArn {
+		t.Errorf("agent SignInSessionArn = %q, want %q", agentSess.SignInSessionArn, signInSessionArn)
+	}
+	if agentSess.MCPResource != mcpResource {
+		t.Errorf("agent MCPResource = %q, want %q", agentSess.MCPResource, mcpResource)
+	}
+	if agentSess.AgentAuthorizedBySession != authorizingSessionMapKey {
+		t.Errorf("agent AgentAuthorizedBySession = %q, want %q", agentSess.AgentAuthorizedBySession, authorizingSessionMapKey)
+	}
+	if agentSess.AgentAuthorizedByEmail != userEmail {
+		t.Errorf("agent AgentAuthorizedByEmail = %q, want %q", agentSess.AgentAuthorizedByEmail, userEmail)
+	}
+	if agentSess.EventsCount != 1 {
+		t.Errorf("agent EventsCount = %d, want 1 (CreateOAuth2Token must not inflate the count)", agentSess.EventsCount)
+	}
+}
+
+// TestMCPMultipleAgentEventsCorrelate verifies that multiple API calls sharing the same
+// aws:SignInSessionArn all aggregate into one agent session with the correct event count.
+func TestMCPMultipleAgentEventsCorrelate(t *testing.T) {
+	const (
+		userEmail        = "testuser@example.com"
+		roleID           = "AROATJHQDX737YZPEXMPL"
+		roleARN          = "arn:aws:iam::111111111111:role/Admin"
+		accountID        = "111111111111"
+		sourceIP         = "192.0.2.2"
+		humanCreation    = "2026-06-09T05:06:39Z"
+		mcpResource      = "https://aws-mcp.us-west-2.api.aws/mcp"
+		signInSessionArn = "arn:aws:signin:us-west-2:111111111111:session/multi-event-session"
+		agentCreation    = "2026-06-09T05:10:04Z"
+		agentKey         = "ASIATJHQDX737MCPTOKEN"
+	)
+
+	assumedRoleARN := "arn:aws:sts::111111111111:assumed-role/Admin/" + userEmail
+
+	createTokenEvent := types.CloudTrailRecord{
+		EventTime:       "2026-06-09T05:10:04Z",
+		EventName:       "CreateOAuth2Token",
+		EventSource:     "signin.amazonaws.com",
+		SourceIPAddress: sourceIP,
+		UserAgent:       "curl/8.7.1",
+		UserIdentity: types.UserIdentity{
+			Type:           "AssumedRole",
+			PrincipalID:    roleID + ":" + userEmail,
+			ARN:            assumedRoleARN,
+			AccountID:      accountID,
+			SessionContext: makeSessionContextWithSignIn(humanCreation, roleARN, signInSessionArn),
+		},
+		RequestParameters: map[string]interface{}{
+			"resource": mcpResource,
+		},
+		AdditionalEventData: map[string]interface{}{
+			"signInSessionArn": signInSessionArn,
+			"grant_type":       "client_credentials",
+		},
+	}
+
+	newAgentEvent := func(eventTime, name, src string) types.CloudTrailRecord {
+		return types.CloudTrailRecord{
+			EventTime:       eventTime,
+			EventName:       name,
+			EventSource:     src,
+			SourceIPAddress: sourceIP,
+			UserAgent:       "aws-mcp-server/1.0",
+			UserIdentity: types.UserIdentity{
+				Type:           "AssumedRole",
+				PrincipalID:    roleID + ":" + userEmail,
+				ARN:            assumedRoleARN,
+				AccountID:      accountID,
+				AccessKeyID:    agentKey,
+				SessionContext: makeSessionContextWithSignIn(agentCreation, roleARN, signInSessionArn),
+			},
+		}
+	}
+
+	sessions, err := processForTest([]types.CloudTrailRecord{
+		createTokenEvent,
+		newAgentEvent("2026-06-09T05:12:31Z", "ListBuckets", "s3.amazonaws.com"),
+		newAgentEvent("2026-06-09T05:12:48Z", "DescribeInstances", "ec2.amazonaws.com"),
+		newAgentEvent("2026-06-09T05:13:02Z", "ListUsers", "iam.amazonaws.com"),
+	})
+	if err != nil {
+		t.Fatalf("processForTest() error: %v", err)
+	}
+
+	agentWindowStart := "2026-06-09T04:00:00Z"
+	agentSessionKey := userEmail + ":" + roleID + ":" + agentWindowStart
+	agentSess, ok := sessions[agentSessionKey]
+	if !ok {
+		t.Fatalf("agent session %q not found; keys: %v", agentSessionKey, sessionKeys(sessions))
+	}
+	if agentSess.SessionType != "agent" {
+		t.Errorf("agent session SessionType = %q, want \"agent\"", agentSess.SessionType)
+	}
+	if agentSess.EventsCount != 3 {
+		t.Errorf("agent EventsCount = %d, want 3", agentSess.EventsCount)
+	}
+}
+
+// TestNonMCPOAuthTokenNotTaggedAgent verifies that a CreateOAuth2Token grant whose resource is
+// NOT the AWS MCP Server (e.g. the aws login same-device flow) does not produce an agent session.
+func TestNonMCPOAuthTokenNotTaggedAgent(t *testing.T) {
+	const (
+		userEmail        = "testuser@example.com"
+		roleID           = "AROATJHQDX737YZPEXMPL"
+		roleARN          = "arn:aws:iam::111111111111:role/Admin"
+		accountID        = "111111111111"
+		sourceIP         = "192.0.2.2"
+		humanCreation    = "2026-06-09T05:06:39Z"
+		signInSessionArn = "arn:aws:signin:us-west-2:111111111111:session/non-mcp-session"
+		agentCreation    = "2026-06-09T05:10:04Z"
+	)
+
+	assumedRoleARN := "arn:aws:sts::111111111111:assumed-role/Admin/" + userEmail
+
+	// CreateOAuth2Token WITHOUT an MCP Server resource — should not create an MCP grant.
+	createTokenEvent := types.CloudTrailRecord{
+		EventTime:       "2026-06-09T05:10:04Z",
+		EventName:       "CreateOAuth2Token",
+		EventSource:     "signin.amazonaws.com",
+		SourceIPAddress: sourceIP,
+		UserAgent:       "aws-cli/2.34.30 md/command#login",
+		UserIdentity: types.UserIdentity{
+			Type:           "AssumedRole",
+			PrincipalID:    roleID + ":" + userEmail,
+			ARN:            assumedRoleARN,
+			AccountID:      accountID,
+			SessionContext: makeSessionContextWithSignIn(humanCreation, roleARN, signInSessionArn),
+		},
+		RequestParameters: map[string]interface{}{
+			"client_id": "arn:aws:signin:::devtools/same-device",
+		},
+	}
+
+	apiEvent := types.CloudTrailRecord{
+		EventTime:       "2026-06-09T05:12:31Z",
+		EventName:       "ListBuckets",
+		EventSource:     "s3.amazonaws.com",
+		SourceIPAddress: sourceIP,
+		UserAgent:       "aws-cli/2.34.30 md/command#s3.ls",
+		UserIdentity: types.UserIdentity{
+			Type:           "AssumedRole",
+			PrincipalID:    roleID + ":" + userEmail,
+			ARN:            assumedRoleARN,
+			AccountID:      accountID,
+			AccessKeyID:    "ASIATJHQDX737NONMCP0",
+			SessionContext: makeSessionContextWithSignIn(agentCreation, roleARN, signInSessionArn),
+		},
+	}
+
+	sessions, err := processForTest([]types.CloudTrailRecord{createTokenEvent, apiEvent})
+	if err != nil {
+		t.Fatalf("processForTest() error: %v", err)
+	}
+
+	// aws-cli user agent → 4-hour CLI window: agentCreation 05:10:04 → 04:00:00Z.
+	sessionKey := userEmail + ":" + roleID + ":2026-06-09T04:00:00Z"
+	sess, ok := sessions[sessionKey]
+	if !ok {
+		t.Fatalf("session %q not found; keys: %v", sessionKey, sessionKeys(sessions))
+	}
+	if sess.SessionType == "agent" {
+		t.Errorf("session SessionType = %q, should not be \"agent\" for a non-MCP OAuth token", sess.SessionType)
+	}
+	if sess.SignInSessionArn != "" {
+		t.Errorf("SignInSessionArn = %q, want empty for a non-MCP OAuth token", sess.SignInSessionArn)
+	}
+}
+
+// TestMCPAgentFixture drives the testdata/aws_mcp_agent_session.json fixture end-to-end through
+// the aggregator, ensuring the documented AWS MCP Server CloudTrail flow yields an agent session.
+// This keeps the JSON fixture and the aggregator behaviour in sync.
+func TestMCPAgentFixture(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "aws_mcp_agent_session.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var log types.CloudTrailLog
+	if err := json.Unmarshal(data, &log); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+
+	sessions, err := processForTest(log.Records)
+	if err != nil {
+		t.Fatalf("processForTest() error: %v", err)
+	}
+
+	var agentSess *types.DynamoDBSessionAggregated
+	for _, s := range sessions {
+		if s.SessionType == "agent" {
+			agentSess = s
+			break
+		}
+	}
+	if agentSess == nil {
+		t.Fatalf("no agent session produced from fixture; keys: %v", sessionKeys(sessions))
+	}
+	// Exactly one agent session — the CallReadWriteTool (claude-code UA) and the ListUsers
+	// (aws-mcp UA) events must aggregate together, not split into two records.
+	agentCount := 0
+	for _, s := range sessions {
+		if s.SessionType == "agent" {
+			agentCount++
+		}
+	}
+	if agentCount != 1 {
+		t.Errorf("agent session count = %d, want 1 (agent events must not split across sessions); keys: %v", agentCount, sessionKeys(sessions))
+	}
+	if agentSess.MCPResource != "https://aws-mcp.us-east-1.api.aws/mcp" {
+		t.Errorf("MCPResource = %q, want the real us-east-1 MCP server resource", agentSess.MCPResource)
+	}
+	if agentSess.SignInSessionArn != "arn:aws:signin:us-east-1:278835131762:session/a90e1d90-b08a-4ecf-ac06-e45576d13b98" {
+		t.Errorf("SignInSessionArn = %q, want the real captured arn", agentSess.SignInSessionArn)
+	}
+	if agentSess.AgentAuthorizedByEmail != "alex@engseclabs.com" {
+		t.Errorf("AgentAuthorizedByEmail = %q, want alex@engseclabs.com", agentSess.AgentAuthorizedByEmail)
+	}
+	// Both agent events (CallReadWriteTool + ListUsers) aggregate into this session;
+	// the CreateOAuth2Token grant is handled in the pre-pass and must not inflate the count.
+	if agentSess.EventsCount != 2 {
+		t.Errorf("agent EventsCount = %d, want 2 (grant event must not inflate)", agentSess.EventsCount)
 	}
 }
 

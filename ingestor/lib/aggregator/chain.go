@@ -2,9 +2,62 @@ package aggregator
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
+
+// IsMCPServerResource reports whether an OAuth requestParameters.resource value points at the
+// AWS MCP Server. AWS uses regional hostnames (aws-mcp.us-east-1.api.aws) as well as the
+// aws-mcp.amazonaws.com resource identifier used in the client_credentials (headless) flow.
+func IsMCPServerResource(resource string) bool {
+	if resource == "" {
+		return false
+	}
+	r := strings.ToLower(resource)
+	return strings.Contains(r, "aws-mcp.") &&
+		(strings.Contains(r, ".api.aws") || strings.Contains(r, "amazonaws.com"))
+}
+
+// ExtractOAuthResource returns requestParameters.resource from a signin OAuth event
+// (AuthorizeOAuth2Access / CreateOAuth2Token). Returns "" if absent.
+func ExtractOAuthResource(event types.CloudTrailRecord) string {
+	if event.RequestParameters == nil {
+		return ""
+	}
+	b, err := json.Marshal(event.RequestParameters)
+	if err != nil {
+		return ""
+	}
+	var params struct {
+		Resource string `json:"resource"`
+	}
+	if err := json.Unmarshal(b, &params); err != nil {
+		return ""
+	}
+	return params.Resource
+}
+
+// ExtractSignInSessionArn returns the OAuth sign-in session ARN correlating an event to its
+// grant. It checks both locations AWS populates: additionalEventData.signInSessionArn (present
+// on CreateOAuth2Token) and userIdentity.sessionContext.signInSessionArn (present on both the
+// grant and every subsequent API call made with the OAuth access token). Returns "" if absent.
+func ExtractSignInSessionArn(event types.CloudTrailRecord) string {
+	if event.AdditionalEventData != nil {
+		if b, err := json.Marshal(event.AdditionalEventData); err == nil {
+			var aed struct {
+				SignInSessionArn string `json:"signInSessionArn"`
+			}
+			if err := json.Unmarshal(b, &aed); err == nil && aed.SignInSessionArn != "" {
+				return aed.SignInSessionArn
+			}
+		}
+	}
+	if event.UserIdentity.SessionContext != nil && event.UserIdentity.SessionContext.SignInSessionArn != "" {
+		return event.UserIdentity.SessionContext.SignInSessionArn
+	}
+	return ""
+}
 
 // ExtractIssuedAccessKeyID extracts the access key ID from an AssumeRole response.
 // CloudTrail structure: responseElements.credentials.accessKeyId
