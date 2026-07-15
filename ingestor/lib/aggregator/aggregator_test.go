@@ -917,6 +917,49 @@ func TestMCPAgentFixture(t *testing.T) {
 	}
 }
 
+// TestOnBehalfOfFixture drives the testdata/onbehalfof_session.json fixture through the
+// aggregator and asserts the identity-field presence probe tallies the stable cross-refresh
+// fields (onBehalfOf.userId, sourceIdentity, credentialId) plus the signInSessionArn baseline,
+// counting only CLI/SDK-or-agent events. This keeps the JSON fixture and the probe in sync and
+// proves the new struct fields are no longer dropped by encoding/json.
+func TestOnBehalfOfFixture(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "onbehalfof_session.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var log types.CloudTrailLog
+	if err := json.Unmarshal(data, &log); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+
+	// The probe counter is what the live ingest run reports; assert it directly.
+	p := countIdentityFieldPresence(log.Records)
+
+	// Fixture has 2 aws-cli events + 1 claude-code agent event = 3 CLI/agent events.
+	// The Mozilla web-console event must be excluded.
+	if p.AgentOrCLIEvents != 3 {
+		t.Errorf("AgentOrCLIEvents = %d, want 3 (2 CLI + 1 agent; web-console excluded)", p.AgentOrCLIEvents)
+	}
+	if p.OnBehalfOfUserID != 3 {
+		t.Errorf("OnBehalfOfUserID = %d, want 3", p.OnBehalfOfUserID)
+	}
+	if p.SourceIdentity != 3 {
+		t.Errorf("SourceIdentity = %d, want 3", p.SourceIdentity)
+	}
+	if p.CredentialID != 3 {
+		t.Errorf("CredentialID = %d, want 3", p.CredentialID)
+	}
+	// Only the agent event carries signInSessionArn (the baseline comparison).
+	if p.SignInSessionArn != 1 {
+		t.Errorf("SignInSessionArn = %d, want 1", p.SignInSessionArn)
+	}
+
+	// Drive the fixture end-to-end to confirm the probe path doesn't disturb aggregation.
+	if _, err := processForTest(log.Records); err != nil {
+		t.Fatalf("processForTest() error: %v", err)
+	}
+}
+
 // processForTest runs Process and returns the in-memory sessions map for inspection.
 // It uses an empty Tables config to skip all DynamoDB I/O.
 func processForTest(events []types.CloudTrailRecord) (map[string]*types.DynamoDBSessionAggregated, error) {

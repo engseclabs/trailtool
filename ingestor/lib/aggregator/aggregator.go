@@ -21,6 +21,57 @@ import (
 // chainLinkTTLHours is the STS maximum credential lifetime used as the TTL for chain link records.
 const chainLinkTTLHours = 12
 
+// identityFieldPresence is a per-run tally of how often the stable cross-refresh
+// identity fields appear on CLI/SDK or agent events. It is a read-only probe: the
+// counts are logged (see logIdentityFieldPresence) but never written to DynamoDB.
+// The goal is to measure whether onBehalfOf/sourceIdentity/credentialId are populated
+// in this environment before deciding to re-key sessions on them in a follow-up.
+type identityFieldPresence struct {
+	AgentOrCLIEvents int // total CLI/SDK or agent events seen
+	OnBehalfOfUserID int // count with non-empty onBehalfOf.userId
+	SourceIdentity   int // count with non-empty sourceIdentity
+	CredentialID     int // count with non-empty credentialId
+	SignInSessionArn int // count with non-empty sessionContext.signInSessionArn (baseline)
+}
+
+// countIdentityFieldPresence tallies the stable identity fields across the events
+// that belong to CLI/SDK or agent sessions. An event is counted when either its user
+// agent classifies as "cli-sdk" or it carries a sessionContext.signInSessionArn (the
+// agent/OAuth-token signal). This mirrors how the aggregator already distinguishes
+// agent traffic without depending on the user agent alone.
+func countIdentityFieldPresence(events []types.CloudTrailRecord) identityFieldPresence {
+	var p identityFieldPresence
+	for _, event := range events {
+		signInArn := ExtractSignInSessionArn(event)
+		normalizedUA := session.NormalizeUserAgent(event.UserAgent)
+		isCLIOrAgent := signInArn != "" || session.ClassifySessionType(normalizedUA) == "cli-sdk"
+		if !isCLIOrAgent {
+			continue
+		}
+		p.AgentOrCLIEvents++
+		if event.UserIdentity.OnBehalfOf != nil && event.UserIdentity.OnBehalfOf.UserID != "" {
+			p.OnBehalfOfUserID++
+		}
+		if event.UserIdentity.SourceIdentity != "" {
+			p.SourceIdentity++
+		}
+		if event.UserIdentity.CredentialID != "" {
+			p.CredentialID++
+		}
+		if signInArn != "" {
+			p.SignInSessionArn++
+		}
+	}
+	return p
+}
+
+// logIdentityFieldPresence emits the identity-field probe tally as a single summary
+// line, matching the existing summary logging style in the aggregator.
+func logIdentityFieldPresence(p identityFieldPresence) {
+	log.Printf("IDENTITY_FIELD_PRESENCE: cli_agent_events=%d onBehalfOf.userId=%d sourceIdentity=%d credentialId=%d signInSessionArn=%d",
+		p.AgentOrCLIEvents, p.OnBehalfOfUserID, p.SourceIdentity, p.CredentialID, p.SignInSessionArn)
+}
+
 // Tables holds the DynamoDB table names for each aggregated entity.
 type Tables struct {
 	Roles      string
@@ -62,6 +113,11 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	ns := cfg.namespace()
 	log.Printf("=== Processing Noun-Based Aggregation ===")
 	log.Printf("Processing %d events for aggregation (namespace: %s)", len(events), ns)
+
+	// Identity-field probe (read-only): tally how often the stable cross-refresh
+	// identity fields appear on CLI/SDK or agent events this run. Logged at end of run
+	// via logIdentityFieldPresence; never written to DynamoDB.
+	identityPresence := countIdentityFieldPresence(events)
 
 	// Aggregation maps for all nouns
 	roles := make(map[string]*types.DynamoDBRole)
@@ -834,6 +890,10 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		}
 		sess.ChainedSessionKeys = resolved
 	}
+
+	// Emit the identity-field probe tally once per run (before the tests' nil-client
+	// early return, so it is observable in both live and test runs).
+	logIdentityFieldPresence(identityPresence)
 
 	// Write aggregated data to DynamoDB (skip when client is nil, e.g. in tests)
 	if ddbClient == nil {
