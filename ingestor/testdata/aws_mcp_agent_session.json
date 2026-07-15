@@ -1,161 +1,138 @@
 {
-  "_comment": "CloudTrail events for an AWS MCP Server OAuth session (agent traffic), modeled on the AWS Security Blog 'Introducing OAuth support for AWS MCP Server' (09 JUL 2026).",
+  "_comment": "REAL CloudTrail events captured 2026-07-14 from an AWS MCP Server OAuth session (agent traffic). Claude Code (claude-code/2.1.202) connected to https://aws-mcp.us-east-1.api.aws/mcp and invoked a tool that ran iam:ListUsers.",
   "_notes": [
-    "An agent connects to the AWS MCP Server. AuthorizeOAuth2Access records the browser authorization; CreateOAuth2Token mints the OAuth access token.",
-    "The distinguishing marker for MCP agent traffic is requestParameters.resource pointing at the AWS MCP Server (aws-mcp.<region>.api.aws/mcp or aws-mcp.amazonaws.com).",
-    "CreateOAuth2Token carries additionalEventData.signInSessionArn (and grant_type). This signInSessionArn is the correlation key.",
-    "Per the release, every subsequent AWS API call made with the OAuth access token carries the same aws:SignInSessionArn context (sessionContext.signInSessionArn). trailtool tags those sessions as SessionType 'agent'.",
-    "This is distinct from aws login (see aws_login_session.json), which correlates by roleID + creationDate and produces SessionType 'login'."
+    "Correlation key is aws:SignInSessionArn (session/a90e1d90-...). It appears in additionalEventData on the CreateOAuth2Token grant, and in userIdentity.sessionContext on every subsequent event made under the OAuth token.",
+    "CreateOAuth2Token: requestParameters.resource is the AWS MCP Server; userAgent is the MCP client (Bun); grant_type=authorization_code. This is the distinguishing marker of an MCP OAuth grant vs. aws login (see aws_login_session.json).",
+    "ListUsers (iam.amazonaws.com): the real AWS API call the agent made. userAgent AND sourceIPAddress are 'aws-mcp.amazonaws.com', and userIdentity.invokedBy is 'aws-mcp.amazonaws.com' — the AWS MCP Server made the call on the user's behalf. sessionContext.signInSessionArn ties it to the grant.",
+    "CallReadWriteTool (aws-mcp.amazonaws.com): a new eventType 'AwsMcpEvent' recording the MCP tool invocation itself. userAgent is the real agent client (claude-code). additionalEventData.downstreamRequests links the tool call to the iam:ListUsers API call it triggered.",
+    "trailtool tags the resulting session SessionType 'agent' by matching sessionContext.signInSessionArn to the MCP CreateOAuth2Token grant.",
+    "Account 278835131762 and alex@engseclabs.com are the real sandbox values, matching the convention in aws_login_session.json / sso_login_session.json."
   ],
   "Records": [
     {
-      "_comment": "Step 1: Browser authorization. The human approves the agent's OAuth request in AWS Sign-In. userAgent is a browser; resource is the AWS MCP Server; client_id is a DCR external client.",
+      "_comment": "Step 1: AWS Sign-In mints the OAuth access token for the AWS MCP Server. signInSessionArn (in additionalEventData) is the correlation key. No AuthorizeOAuth2Access is required when reusing an active browser sign-in session.",
       "eventVersion": "1.11",
-      "eventTime": "2026-06-09T05:09:00Z",
-      "eventName": "AuthorizeOAuth2Access",
-      "eventSource": "signin.amazonaws.com",
-      "eventType": "AwsApiCall",
-      "awsRegion": "us-west-2",
-      "sourceIPAddress": "192.0.2.2",
-      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
-      "userIdentity": {
-        "type": "AssumedRole",
-        "principalId": "AROATJHQDX737YZPEXMPL:testuser@example.com",
-        "arn": "arn:aws:sts::111111111111:assumed-role/Admin/testuser@example.com",
-        "accountId": "111111111111",
-        "sessionContext": {
-          "attributes": {
-            "creationDate": "2026-06-09T05:06:39Z",
-            "mfaAuthenticated": "false"
-          },
-          "sessionIssuer": {
-            "type": "Role",
-            "principalId": "AROA2IRT4N5U4RDHM2LG4",
-            "arn": "arn:aws:iam::111111111111:role/Admin",
-            "accountId": "111111111111",
-            "userName": "Admin"
-          }
-        }
-      },
-      "requestParameters": {
-        "resource": "https://aws-mcp.us-west-2.api.aws/mcp",
-        "redirect_uri": "http://127.0.0.1:60432/oauth/callback",
-        "code_challenge_method": "S256",
-        "client_id": "arn:aws:signin:us-west-2::external-client/dcr/609544da-aasa-49a4-ab11-c2r457fa999"
-      },
-      "responseElements": null,
-      "additionalEventData": {
-        "success": "true"
-      }
-    },
-    {
-      "_comment": "Step 2: CLI/agent completes the token exchange. resource is the AWS MCP Server; additionalEventData.signInSessionArn is the correlation key for all subsequent OAuth-token API calls.",
-      "eventVersion": "1.11",
-      "eventTime": "2026-06-09T05:10:04Z",
+      "eventTime": "2026-07-14T18:09:51Z",
       "eventName": "CreateOAuth2Token",
       "eventSource": "signin.amazonaws.com",
       "eventType": "AwsApiCall",
-      "awsRegion": "us-west-2",
-      "sourceIPAddress": "192.0.2.2",
-      "userAgent": "curl/8.7.1",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "23.93.22.184",
+      "userAgent": "Bun/1.4.0",
       "userIdentity": {
         "type": "AssumedRole",
-        "principalId": "AROATJHQDX737YZPEXMPL:testuser@example.com",
-        "arn": "arn:aws:sts::111111111111:assumed-role/Admin/testuser@example.com",
-        "accountId": "111111111111",
+        "principalId": "AROAUB266OVZCWROZTVQR:alex@engseclabs.com",
+        "arn": "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_AdministratorAccess_78658cb1063311db/alex@engseclabs.com",
+        "accountId": "278835131762",
         "sessionContext": {
           "attributes": {
-            "creationDate": "2026-06-09T05:06:39Z",
+            "creationDate": "2026-07-14T18:09:35Z",
             "mfaAuthenticated": "false"
           },
-          "signInSessionArn": "arn:aws:signin:us-west-2:111111111111:session/daff060f-7871-5tg6-67yu-a07bbdabe61a",
           "sessionIssuer": {
             "type": "Role",
-            "principalId": "AROA2IRT4N5U4RDHM2LG4",
-            "arn": "arn:aws:iam::111111111111:role/Admin",
-            "accountId": "111111111111",
-            "userName": "Admin"
+            "principalId": "AROAUB266OVZCWROZTVQR",
+            "arn": "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_AdministratorAccess_78658cb1063311db",
+            "accountId": "278835131762",
+            "userName": "AWSReservedSSO_AdministratorAccess_78658cb1063311db"
           }
         }
       },
       "requestParameters": {
-        "resource": "https://aws-mcp.us-west-2.api.aws/mcp",
-        "client_id": "arn:aws:signin:us-west-2::external-client/dcr/609544da-b3dd-49a4-ab11-c2e98d7fa999"
+        "resource": "https://aws-mcp.us-east-1.api.aws/mcp",
+        "client_id": "arn:aws:signin:us-east-1::external-client/dcr/bcb1078d-fb27-4201-9a3d-56cb78830ca3"
       },
       "responseElements": null,
       "additionalEventData": {
-        "signInSessionArn": "arn:aws:signin:us-west-2:111111111111:session/daff060f-7871-5tg6-67yu-a07bbdabe61a",
-        "grant_type": "refresh_token",
+        "signInSessionArn": "arn:aws:signin:us-east-1:278835131762:session/a90e1d90-b08a-4ecf-ac06-e45576d13b98",
+        "grant_type": "authorization_code",
         "success": "true"
       }
     },
     {
-      "_comment": "Step 3: The agent invokes an AWS API using the MCP OAuth access token. The call carries aws:SignInSessionArn (sessionContext.signInSessionArn) matching the grant — this is what marks it agent traffic.",
+      "_comment": "Step 2: The agent's tool invocation, recorded by the AWS MCP Server as an AwsMcpEvent. userAgent is the real agent client (claude-code). downstreamRequests links to the iam:ListUsers call it triggered. sessionContext.signInSessionArn matches the grant.",
       "eventVersion": "1.11",
-      "eventTime": "2026-06-09T05:12:31Z",
-      "eventName": "ListBuckets",
-      "eventSource": "s3.amazonaws.com",
-      "eventType": "AwsApiCall",
-      "awsRegion": "us-west-2",
-      "sourceIPAddress": "192.0.2.2",
-      "userAgent": "aws-mcp-server/1.0",
+      "eventTime": "2026-07-14T18:22:28Z",
+      "eventName": "CallReadWriteTool",
+      "eventSource": "aws-mcp.amazonaws.com",
+      "eventType": "AwsMcpEvent",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "2001:5a8:60e1:2900:9984:e070:dad6:5306",
+      "userAgent": "claude-code/2.1.202 (cli)",
       "userIdentity": {
         "type": "AssumedRole",
-        "principalId": "AROATJHQDX737YZPEXMPL:testuser@example.com",
-        "arn": "arn:aws:sts::111111111111:assumed-role/Admin/testuser@example.com",
-        "accountId": "111111111111",
-        "accessKeyId": "ASIATJHQDX737MCPTOKEN",
+        "principalId": "AROAUB266OVZCWROZTVQR:alex@engseclabs.com",
+        "arn": "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_AdministratorAccess_78658cb1063311db/alex@engseclabs.com",
+        "accountId": "278835131762",
         "sessionContext": {
           "attributes": {
-            "creationDate": "2026-06-09T05:10:04Z",
+            "creationDate": "2026-07-14T18:09:35Z",
             "mfaAuthenticated": "false"
           },
-          "signInSessionArn": "arn:aws:signin:us-west-2:111111111111:session/daff060f-7871-5tg6-67yu-a07bbdabe61a",
+          "signInSessionArn": "arn:aws:signin:us-east-1:278835131762:session/a90e1d90-b08a-4ecf-ac06-e45576d13b98",
           "sessionIssuer": {
             "type": "Role",
-            "principalId": "AROA2IRT4N5U4RDHM2LG4",
-            "arn": "arn:aws:iam::111111111111:role/Admin",
-            "accountId": "111111111111",
-            "userName": "Admin"
+            "principalId": "AROAUB266OVZCWROZTVQR",
+            "arn": "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_AdministratorAccess_78658cb1063311db",
+            "accountId": "278835131762",
+            "userName": "AWSReservedSSO_AdministratorAccess_78658cb1063311db"
           }
         }
       },
-      "requestParameters": null,
-      "responseElements": null
+      "requestParameters": {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "id": 2,
+        "params": {
+          "name": "aws___call_aws"
+        }
+      },
+      "responseElements": null,
+      "additionalEventData": {
+        "downstreamRequests": [
+          {
+            "apiName": "iam:ListUsers",
+            "requestId": "fea587ce-921d-45dd-9d58-c1159ce874eb",
+            "awsRegion": "us-east-1"
+          }
+        ]
+      }
     },
     {
-      "_comment": "Step 4: A second agent API call under the same OAuth sign-in session — same signInSessionArn, same accessKeyId.",
+      "_comment": "Step 3: The AWS API call the MCP Server made on the user's behalf. userAgent and sourceIPAddress are aws-mcp.amazonaws.com, invokedBy is aws-mcp.amazonaws.com, and sessionContext.signInSessionArn matches the grant — this is what marks it as agent traffic.",
       "eventVersion": "1.11",
-      "eventTime": "2026-06-09T05:12:48Z",
-      "eventName": "DescribeInstances",
-      "eventSource": "ec2.amazonaws.com",
+      "eventTime": "2026-07-14T18:22:28Z",
+      "eventName": "ListUsers",
+      "eventSource": "iam.amazonaws.com",
       "eventType": "AwsApiCall",
-      "awsRegion": "us-west-2",
-      "sourceIPAddress": "192.0.2.2",
-      "userAgent": "aws-mcp-server/1.0",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "aws-mcp.amazonaws.com",
+      "userAgent": "aws-mcp.amazonaws.com",
       "userIdentity": {
         "type": "AssumedRole",
-        "principalId": "AROATJHQDX737YZPEXMPL:testuser@example.com",
-        "arn": "arn:aws:sts::111111111111:assumed-role/Admin/testuser@example.com",
-        "accountId": "111111111111",
-        "accessKeyId": "ASIATJHQDX737MCPTOKEN",
+        "principalId": "AROAUB266OVZCWROZTVQR:alex@engseclabs.com",
+        "arn": "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_AdministratorAccess_78658cb1063311db/alex@engseclabs.com",
+        "accountId": "278835131762",
+        "accessKeyId": "ASIAUB266OVZINNJCXNU",
+        "invokedBy": "aws-mcp.amazonaws.com",
         "sessionContext": {
           "attributes": {
-            "creationDate": "2026-06-09T05:10:04Z",
+            "creationDate": "2026-07-14T18:09:35Z",
             "mfaAuthenticated": "false"
           },
-          "signInSessionArn": "arn:aws:signin:us-west-2:111111111111:session/daff060f-7871-5tg6-67yu-a07bbdabe61a",
+          "signInSessionArn": "arn:aws:signin:us-east-1:278835131762:session/a90e1d90-b08a-4ecf-ac06-e45576d13b98",
           "sessionIssuer": {
             "type": "Role",
-            "principalId": "AROA2IRT4N5U4RDHM2LG4",
-            "arn": "arn:aws:iam::111111111111:role/Admin",
-            "accountId": "111111111111",
-            "userName": "Admin"
+            "principalId": "AROAUB266OVZCWROZTVQR",
+            "arn": "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_AdministratorAccess_78658cb1063311db",
+            "accountId": "278835131762",
+            "userName": "AWSReservedSSO_AdministratorAccess_78658cb1063311db"
           }
         }
       },
       "requestParameters": null,
-      "responseElements": null
+      "responseElements": null,
+      "readOnly": true
     }
   ]
 }

@@ -890,18 +890,30 @@ func TestMCPAgentFixture(t *testing.T) {
 	if agentSess == nil {
 		t.Fatalf("no agent session produced from fixture; keys: %v", sessionKeys(sessions))
 	}
-	if agentSess.MCPResource != "https://aws-mcp.us-west-2.api.aws/mcp" {
-		t.Errorf("MCPResource = %q, want the MCP server resource", agentSess.MCPResource)
+	// Exactly one agent session — the CallReadWriteTool (claude-code UA) and the ListUsers
+	// (aws-mcp UA) events must aggregate together, not split into two records.
+	agentCount := 0
+	for _, s := range sessions {
+		if s.SessionType == "agent" {
+			agentCount++
+		}
 	}
-	if agentSess.SignInSessionArn == "" {
-		t.Error("agent session missing SignInSessionArn")
+	if agentCount != 1 {
+		t.Errorf("agent session count = %d, want 1 (agent events must not split across sessions); keys: %v", agentCount, sessionKeys(sessions))
 	}
-	if agentSess.AgentAuthorizedByEmail != "testuser@example.com" {
-		t.Errorf("AgentAuthorizedByEmail = %q, want testuser@example.com", agentSess.AgentAuthorizedByEmail)
+	if agentSess.MCPResource != "https://aws-mcp.us-east-1.api.aws/mcp" {
+		t.Errorf("MCPResource = %q, want the real us-east-1 MCP server resource", agentSess.MCPResource)
 	}
-	// Both agent API calls (ListBuckets, DescribeInstances) should aggregate into this session.
+	if agentSess.SignInSessionArn != "arn:aws:signin:us-east-1:278835131762:session/a90e1d90-b08a-4ecf-ac06-e45576d13b98" {
+		t.Errorf("SignInSessionArn = %q, want the real captured arn", agentSess.SignInSessionArn)
+	}
+	if agentSess.AgentAuthorizedByEmail != "alex@engseclabs.com" {
+		t.Errorf("AgentAuthorizedByEmail = %q, want alex@engseclabs.com", agentSess.AgentAuthorizedByEmail)
+	}
+	// Both agent events (CallReadWriteTool + ListUsers) aggregate into this session;
+	// the CreateOAuth2Token grant is handled in the pre-pass and must not inflate the count.
 	if agentSess.EventsCount != 2 {
-		t.Errorf("agent EventsCount = %d, want 2 (grant/authorize events must not inflate)", agentSess.EventsCount)
+		t.Errorf("agent EventsCount = %d, want 2 (grant event must not inflate)", agentSess.EventsCount)
 	}
 }
 

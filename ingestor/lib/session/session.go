@@ -104,7 +104,8 @@ func ClassifySessionType(userAgent string) string {
 		"terraform/", "pulumi/", "cloudformation/",
 		"aws-internal/", "console.amazonaws.com",
 		"python-requests/", "go-http-client/",
-		"aws-mcp", // AWS MCP Server (agent traffic; promoted to "agent" via OAuth correlation)
+		"aws-mcp",      // AWS MCP Server (invokedBy on API calls it makes; UA "aws-mcp.amazonaws.com")
+		"claude-code/", // Claude Code agent client (UA on the MCP CallReadWriteTool event itself)
 	}
 	for _, pattern := range programmaticPatterns {
 		if strings.Contains(userAgentLower, pattern) {
