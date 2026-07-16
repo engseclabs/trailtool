@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -45,14 +46,36 @@ func TestCredentialGroupKey(t *testing.T) {
 			want:  "ak#ASIAEXAMPLE1",
 		},
 		{
-			name: "no access key falls back to roleID + creationDate",
+			name: "console flag beats access key — per-request keys must not shatter the group",
+			event: func() types.CloudTrailRecord {
+				e := ssoEvent("ASIAFRESH1", "alice@example.com", false)
+				e.UserIdentity.SessionContext = &types.SessionContext{}
+				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:58:00Z"
+				e.UserIdentity.SessionContext.Attributes.SessionCredentialFromConsole = "true"
+				return e
+			}(),
+			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
+		},
+		{
+			name: "record-level console flag works too",
+			event: func() types.CloudTrailRecord {
+				e := ssoEvent("ASIAFRESH2", "alice@example.com", false)
+				e.SessionCredentialFromConsole = "true"
+				e.UserIdentity.SessionContext = &types.SessionContext{}
+				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:58:00Z"
+				return e
+			}(),
+			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
+		},
+		{
+			name: "no access key falls back to principalId + creationDate",
 			event: func() types.CloudTrailRecord {
 				e := ssoEvent("", "alice@example.com", false)
 				e.UserIdentity.SessionContext = &types.SessionContext{}
 				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:58:00Z"
 				return e
 			}(),
-			want: "rc#AROAUB266OVZCWROZTVQR#2026-07-15T09:58:00Z",
+			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
 		},
 		{
 			name: "creationDate normalized to RFC3339",
@@ -62,7 +85,7 @@ func TestCredentialGroupKey(t *testing.T) {
 				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15 09:58:00.000"
 				return e
 			}(),
-			want: "rc#AROAUB266OVZCWROZTVQR#2026-07-15T09:58:00Z",
+			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
 		},
 		{
 			name: "no credential falls back to eventID",
@@ -110,6 +133,46 @@ func TestGroupEventsPartitionsByCredential(t *testing.T) {
 		if groups[i].Key != "" || len(groups[i].Events) != 1 {
 			t.Errorf("group %d = %q with %d events, want singleton with empty key", i, groups[i].Key, len(groups[i].Events))
 		}
+	}
+}
+
+// A console session issues a fresh access key per request but keeps one creationDate:
+// all its events must land in ONE rc# credential group, so an event missing onBehalfOf
+// (C1) still resolves from its group-mates. Keying console events on their access keys
+// would shatter the session into single-event groups and defeat that.
+func TestConsoleSessionFormsOneGroupDespiteFreshKeys(t *testing.T) {
+	var events []types.CloudTrailRecord
+	for i := range 7 {
+		e := ssoEvent(fmt.Sprintf("ASIAPERREQ%d", i), "alice@example.com", i == 2) // only 1 of 7 carries onBehalfOf
+		e.UserIdentity.SessionContext = &types.SessionContext{}
+		e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:00:00Z"
+		e.UserIdentity.SessionContext.Attributes.SessionCredentialFromConsole = "true"
+		events = append(events, e)
+	}
+
+	groups := GroupEvents(events)
+	if len(groups) != 1 {
+		t.Fatalf("got %d groups, want 1 — console per-request keys shattered the group", len(groups))
+	}
+	person, ok := ResolveGroup(groups[0], nil)
+	if !ok || person.Tier != TierIdentityCenter {
+		t.Errorf("console group resolved (ok=%v, tier=%d), want tier 1 via the single onBehalfOf event", ok, person.Tier)
+	}
+}
+
+// Grouping runs before identity is known, so two humans on the same role in the same
+// second must not share a group: the rc# key includes the session name, not bare roleID.
+func TestConsoleGroupsSeparatePeopleOnSameRoleSameSecond(t *testing.T) {
+	mk := func(name string) types.CloudTrailRecord {
+		e := ssoEvent("", name, false)
+		e.UserIdentity.SessionContext = &types.SessionContext{}
+		e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:00:00Z"
+		e.UserIdentity.SessionContext.Attributes.SessionCredentialFromConsole = "true"
+		return e
+	}
+	groups := GroupEvents([]types.CloudTrailRecord{mk("alice@example.com"), mk("bob@example.com")})
+	if len(groups) != 2 {
+		t.Fatalf("got %d groups, want 2 — same-role same-second humans merged", len(groups))
 	}
 }
 

@@ -64,22 +64,42 @@ func RootPersonKey(accountID string) string {
 
 // CredentialGroupKey returns the credential-group key for one event:
 //
-//	ak#<accessKeyId>                when the event carries an access key
-//	rc#<roleID>#<creationDate>      role sessions without one (creationDate normalized to RFC3339)
-//	ev#<eventID>                    everything else — the event resolves alone
-//	""                              ungroupable (no credential and no eventID)
+//	rc#<principalId>#<creationDate>  console sessions — the console mints a fresh access
+//	                                 key per request, so the stable creationDate is the
+//	                                 credential; keying on the access key would shatter a
+//	                                 console session into single-event groups and defeat
+//	                                 the any-event-resolves-the-group C1 mitigation.
+//	                                 Also the fallback for events with a creationDate but
+//	                                 no access key. principalId (roleID:sessionName), not
+//	                                 bare roleID: grouping runs before identity, so two
+//	                                 humans on the same role in the same second must not
+//	                                 share a group.
+//	ak#<accessKeyId>                 everything else with an access key (CLI/SDK)
+//	ev#<eventID>                     everything else — the event resolves alone
+//	""                               ungroupable (no credential and no eventID)
 func CredentialGroupKey(event types.CloudTrailRecord) string {
+	creationDate := session.GetSessionCreationTime(event)
+	if creationDate != "" && (isConsoleSessionCredential(event) || event.UserIdentity.AccessKeyID == "") {
+		return "rc#" + event.UserIdentity.PrincipalID + "#" + creationDate
+	}
 	if ak := event.UserIdentity.AccessKeyID; ak != "" {
 		return "ak#" + ak
-	}
-	if creationDate := session.GetSessionCreationTime(event); creationDate != "" {
-		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
-		return "rc#" + roleID + "#" + creationDate
 	}
 	if event.EventID != "" {
 		return "ev#" + event.EventID
 	}
 	return ""
+}
+
+// isConsoleSessionCredential reports whether the event was made with console session
+// credentials, from CloudTrail's own flag (record-level or session-context attribute) —
+// deterministic, unlike user-agent classification.
+func isConsoleSessionCredential(event types.CloudTrailRecord) bool {
+	if event.SessionCredentialFromConsole == "true" {
+		return true
+	}
+	sc := event.UserIdentity.SessionContext
+	return sc != nil && sc.Attributes.SessionCredentialFromConsole == "true"
 }
 
 // GroupEvents partitions a batch into credential groups, preserving first-seen
