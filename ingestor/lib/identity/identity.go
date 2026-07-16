@@ -1,0 +1,151 @@
+// Package identity implements TrailTool 1.0 identity resolution: events are
+// partitioned into credential groups (all events sharing one credential) and each
+// group resolves to at most one person key via a five-tier fallback. Resolution is
+// per group, never per event, because not all AWS services log onBehalfOf — one
+// human session can mix events with and without it.
+package identity
+
+import (
+	"strings"
+
+	"github.com/engseclabs/trailtool/ingestor/lib/session"
+	"github.com/engseclabs/trailtool/ingestor/lib/types"
+)
+
+// Resolution tiers, in fallback order. A person key's prefix encodes its tier's
+// keyspace (idc#, email#, iamuser#, root#), so people can never merge across tiers.
+const (
+	TierIdentityCenter = 1 // onBehalfOf → Identity Center humans (CLI, console, agents)
+	TierLink           = 2 // identity-links lookup → chained roles, aws login, MCP agents
+	TierEmail          = 3 // email in role-session name → direct SAML federation
+	TierIAMUser        = 4 // long-lived IAM user credentials
+	TierRoot           = 5 // root usage
+)
+
+// Person is the resolved identity for a credential group.
+type Person struct {
+	Key  string
+	Tier int
+}
+
+// Group is one credential group: all events in a batch sharing one credential.
+// Key is "" for ungroupable events (no credential, no eventID); such events form
+// singleton groups and are never merged with each other.
+type Group struct {
+	Key    string
+	Events []types.CloudTrailRecord
+}
+
+// LinkResolver resolves a credential group to a person recorded by an earlier
+// batch (tier 2): cred#, chain#, login#, or mcp# records in identity-links-v1.
+// It is injected so resolution stays pure; nil means no link layer is available.
+type LinkResolver func(g Group) (personKey string, ok bool)
+
+// IdentityCenterPersonKey builds the tier-1 key. It keys on identityStoreArn +
+// userId, never userId alone — a userId is only unique within its identity store.
+func IdentityCenterPersonKey(identityStoreARN, userID string) string {
+	return "idc#" + identityStoreARN + "#" + userID
+}
+
+// EmailPersonKey builds the tier-3 key from a role-session-name email.
+func EmailPersonKey(email string) string {
+	return "email#" + strings.ToLower(email)
+}
+
+// IAMUserPersonKey builds the tier-4 key from the IAM user's ARN.
+func IAMUserPersonKey(userARN string) string {
+	return "iamuser#" + userARN
+}
+
+// RootPersonKey builds the tier-5 key from the account ID.
+func RootPersonKey(accountID string) string {
+	return "root#" + accountID
+}
+
+// CredentialGroupKey returns the credential-group key for one event:
+//
+//	ak#<accessKeyId>                when the event carries an access key
+//	rc#<roleID>#<creationDate>      role sessions without one (creationDate normalized to RFC3339)
+//	ev#<eventID>                    everything else — the event resolves alone
+//	""                              ungroupable (no credential and no eventID)
+func CredentialGroupKey(event types.CloudTrailRecord) string {
+	if ak := event.UserIdentity.AccessKeyID; ak != "" {
+		return "ak#" + ak
+	}
+	if creationDate := session.GetSessionCreationTime(event); creationDate != "" {
+		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
+		return "rc#" + roleID + "#" + creationDate
+	}
+	if event.EventID != "" {
+		return "ev#" + event.EventID
+	}
+	return ""
+}
+
+// GroupEvents partitions a batch into credential groups, preserving first-seen
+// order. Events with an empty key each get their own singleton group.
+func GroupEvents(events []types.CloudTrailRecord) []Group {
+	var groups []Group
+	index := make(map[string]int)
+	for _, event := range events {
+		key := CredentialGroupKey(event)
+		if key == "" {
+			groups = append(groups, Group{Events: []types.CloudTrailRecord{event}})
+			continue
+		}
+		if i, ok := index[key]; ok {
+			groups[i].Events = append(groups[i].Events, event)
+			continue
+		}
+		index[key] = len(groups)
+		groups = append(groups, Group{Key: key, Events: []types.CloudTrailRecord{event}})
+	}
+	return groups
+}
+
+// ResolveGroup resolves one credential group to a person, taking the first tier
+// that matches any event in the group. Groups matching no tier (service-internal
+// traffic) return false: no person, no session — but the events still feed the
+// role/service/resource aggregates.
+func ResolveGroup(g Group, links LinkResolver) (Person, bool) {
+	for _, event := range g.Events {
+		if obo := event.UserIdentity.OnBehalfOf; obo != nil && obo.UserID != "" {
+			return Person{
+				Key:  IdentityCenterPersonKey(obo.IdentityStoreARN, obo.UserID),
+				Tier: TierIdentityCenter,
+			}, true
+		}
+	}
+
+	if links != nil {
+		if personKey, ok := links(g); ok && personKey != "" {
+			return Person{Key: personKey, Tier: TierLink}, true
+		}
+	}
+
+	for _, event := range g.Events {
+		if email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID); email != "" {
+			return Person{Key: EmailPersonKey(email), Tier: TierEmail}, true
+		}
+	}
+
+	for _, event := range g.Events {
+		if event.UserIdentity.Type == "IAMUser" && event.UserIdentity.ARN != "" {
+			return Person{Key: IAMUserPersonKey(event.UserIdentity.ARN), Tier: TierIAMUser}, true
+		}
+	}
+
+	for _, event := range g.Events {
+		if event.UserIdentity.Type == "Root" {
+			accountID := event.UserIdentity.AccountID
+			if accountID == "" {
+				accountID = event.RecipientAccountID
+			}
+			if accountID != "" {
+				return Person{Key: RootPersonKey(accountID), Tier: TierRoot}, true
+			}
+		}
+	}
+
+	return Person{}, false
+}

@@ -19,7 +19,11 @@ type SessionContext struct {
 	// subsequent AWS API call made with the resulting OAuth access token (aws:SignInSessionArn
 	// context). This is the correlation key for attributing agent traffic to its OAuth grant.
 	SignInSessionArn string `json:"signInSessionArn,omitempty"`
-	SessionIssuer    struct {
+	// SourceIdentity is the identity string set at assume-role time, immutable through the
+	// role-assumption chain. Usually absent unless STS/trust policies propagate it — parsed
+	// for observability, never used as an identity key.
+	SourceIdentity string `json:"sourceIdentity,omitempty"`
+	SessionIssuer  struct {
 		Type        string `json:"type,omitempty"`
 		PrincipalID string `json:"principalId,omitempty"`
 		ARN         string `json:"arn,omitempty"`
@@ -30,11 +34,17 @@ type SessionContext struct {
 
 // CloudTrailRecord represents a single CloudTrail event
 type CloudTrailRecord struct {
-	EventVersion                 string               `json:"eventVersion"`
+	EventVersion string `json:"eventVersion"`
+	// EventID is CloudTrail's GUID for the event — the in-batch dedupe key (org trails
+	// duplicate global-service events across region files) and the last-resort
+	// credential-group key for events with no credential at all.
+	EventID                      string               `json:"eventID,omitempty"`
 	EventTime                    string               `json:"eventTime"`
 	EventName                    string               `json:"eventName"`
 	EventSource                  string               `json:"eventSource"`
 	EventType                    string               `json:"eventType,omitempty"`
+	AwsRegion                    string               `json:"awsRegion,omitempty"`
+	RecipientAccountID           string               `json:"recipientAccountId,omitempty"`
 	UserIdentity                 UserIdentity         `json:"userIdentity"`
 	SourceIPAddress              string               `json:"sourceIPAddress,omitempty"`
 	UserAgent                    string               `json:"userAgent,omitempty"`
@@ -56,6 +66,14 @@ type CloudTrailResource struct {
 	Type      string `json:"type"`
 }
 
+// OnBehalfOf identifies the IAM Identity Center user a request was made on behalf of.
+// It names the stable human principal in the identity store independent of
+// role-assumption and credential-refresh churn — the tier-1 identity key.
+type OnBehalfOf struct {
+	UserID           string `json:"userId,omitempty"`
+	IdentityStoreARN string `json:"identityStoreArn,omitempty"`
+}
+
 // UserIdentity represents the user that made the request
 type UserIdentity struct {
 	Type           string          `json:"type"`
@@ -63,7 +81,20 @@ type UserIdentity struct {
 	ARN            string          `json:"arn"`
 	AccountID      string          `json:"accountId,omitempty"`
 	AccessKeyID    string          `json:"accessKeyId,omitempty"`
+	UserName       string          `json:"userName,omitempty"`
 	SessionContext *SessionContext `json:"sessionContext,omitempty"`
+	// OnBehalfOf is a pointer so an absent element is distinguishable from an empty one.
+	// Not all AWS services log it, so one session can mix events with and without it —
+	// identity is resolved per credential group, never per event.
+	OnBehalfOf *OnBehalfOf `json:"onBehalfOf,omitempty"`
+	// InvokedBy names the AWS service calling on the human's behalf (forward-access
+	// sessions, e.g. CloudFormation fan-out). Such events join the person's session but
+	// are counted as service-driven and excluded from ClickOps flagging.
+	InvokedBy string `json:"invokedBy,omitempty"`
+	// CredentialID is the bearer-token credential handle on IdentityCenterUser events
+	// (the access-portal session ID). Absent on role-session events — parsed for
+	// observability, never used as an identity key.
+	CredentialID string `json:"credentialId,omitempty"`
 }
 
 // DynamoDBRole represents an aggregated role record
@@ -190,9 +221,9 @@ type DynamoDBPerson struct {
 
 // ResourceAccess represents a detailed resource access record
 type ResourceAccess struct {
-	Resource     string `dynamodbav:"resource"`                // e.g., "s3:bucket:my-bucket"
-	Service      string `dynamodbav:"service"`                 // e.g., "s3.amazonaws.com"
-	EventName    string `dynamodbav:"event_name"`              // e.g., "PutObject"
+	Resource     string `dynamodbav:"resource"`   // e.g., "s3:bucket:my-bucket"
+	Service      string `dynamodbav:"service"`    // e.g., "s3.amazonaws.com"
+	EventName    string `dynamodbav:"event_name"` // e.g., "PutObject"
 	Count        int    `dynamodbav:"count"`
 	PolicyARN    string `dynamodbav:"policy_arn,omitempty"`    // ARN of denying policy (from Jan 2026 AWS update)
 	PolicyType   string `dynamodbav:"policy_type,omitempty"`   // Type: SCP, RCP, identity-based, session, permission-boundary
@@ -201,8 +232,8 @@ type ResourceAccess struct {
 
 // EventAccess represents a detailed event access record (for events without specific resources)
 type EventAccess struct {
-	Service      string `dynamodbav:"service"`                 // e.g., "ce.amazonaws.com"
-	EventName    string `dynamodbav:"event_name"`              // e.g., "GetAnomalySubscriptions"
+	Service      string `dynamodbav:"service"`    // e.g., "ce.amazonaws.com"
+	EventName    string `dynamodbav:"event_name"` // e.g., "GetAnomalySubscriptions"
 	Count        int    `dynamodbav:"count"`
 	PolicyARN    string `dynamodbav:"policy_arn,omitempty"`    // ARN of denying policy (from Jan 2026 AWS update)
 	PolicyType   string `dynamodbav:"policy_type,omitempty"`   // Type: SCP, RCP, identity-based, session, permission-boundary
@@ -267,8 +298,8 @@ type DynamoDBSessionAggregated struct {
 	// AWS MCP Server OAuth attribution — set on sessions whose events carry an
 	// aws:SignInSessionArn matching a CreateOAuth2Token grant for the AWS MCP Server resource.
 	// These represent agent traffic driven through the AWS MCP Server (SessionType "agent").
-	SignInSessionArn         string `dynamodbav:"sign_in_session_arn,omitempty"`          // the OAuth sign-in session ARN correlating this session's events
-	MCPResource              string `dynamodbav:"mcp_resource,omitempty"`                 // the AWS MCP Server resource the OAuth grant targeted
+	SignInSessionArn         string `dynamodbav:"sign_in_session_arn,omitempty"`         // the OAuth sign-in session ARN correlating this session's events
+	MCPResource              string `dynamodbav:"mcp_resource,omitempty"`                // the AWS MCP Server resource the OAuth grant targeted
 	AgentAuthorizedBySession string `dynamodbav:"agent_authorized_by_session,omitempty"` // session_start key of the human session that authorized the MCP grant
 	AgentAuthorizedByEmail   string `dynamodbav:"agent_authorized_by_email,omitempty"`   // email of the human who authorized the MCP grant
 }
