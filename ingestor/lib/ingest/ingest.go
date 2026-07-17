@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -16,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/engseclabs/trailtool/ingestor/lib/aggregator"
+	ddblib "github.com/engseclabs/trailtool/ingestor/lib/dynamodb"
 	"github.com/engseclabs/trailtool/ingestor/lib/parser"
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
@@ -27,6 +29,13 @@ type ResolveNamespace func(ctx context.Context, ddbClient *dynamodb.Client, sour
 // Config controls the ingest pipeline.
 type Config struct {
 	Tables aggregator.Tables
+
+	// IngestedFiles is the file-marker table for redelivery idempotency.
+	// Empty disables the marker check.
+	IngestedFiles string
+
+	// IdleGap overrides the windowed-fallback idle gap (default 30m).
+	IdleGap time.Duration
 
 	// ResolveNS is called when an EventBridge event includes a source account.
 	// If nil, the default namespace is used for all events.
@@ -44,14 +53,34 @@ func GetEnvOrDefault(key, defaultValue string) string {
 // TablesFromEnv builds a Tables struct from standard environment variables.
 func TablesFromEnv(prefix string) aggregator.Tables {
 	return aggregator.Tables{
-		Roles:      GetEnvOrDefault("ROLES_AGGREGATED_TABLE", prefix+"-roles-aggregated"),
-		Services:   GetEnvOrDefault("SERVICES_AGGREGATED_TABLE", prefix+"-services-aggregated"),
-		Resources:  GetEnvOrDefault("RESOURCES_AGGREGATED_TABLE", prefix+"-resources-aggregated"),
-		People:     GetEnvOrDefault("PEOPLE_AGGREGATED_TABLE", prefix+"-people-aggregated"),
-		Sessions:   GetEnvOrDefault("SESSIONS_AGGREGATED_TABLE", prefix+"-sessions-aggregated"),
-		Accounts:   GetEnvOrDefault("ACCOUNTS_AGGREGATED_TABLE", prefix+"-accounts-aggregated"),
-		ChainLinks: GetEnvOrDefault("CHAIN_LINKS_TABLE", prefix+"-chain-links"),
+		Roles:         GetEnvOrDefault("ROLES_TABLE", prefix+"-roles"),
+		Services:      GetEnvOrDefault("SERVICES_TABLE", prefix+"-services"),
+		Resources:     GetEnvOrDefault("RESOURCES_TABLE", prefix+"-resources"),
+		People:        GetEnvOrDefault("PEOPLE_TABLE", prefix+"-people"),
+		Sessions:      GetEnvOrDefault("SESSIONS_TABLE", prefix+"-sessions"),
+		Accounts:      GetEnvOrDefault("ACCOUNTS_TABLE", prefix+"-accounts"),
+		IdentityLinks: GetEnvOrDefault("IDENTITY_LINKS_TABLE", prefix+"-identity-links"),
 	}
+}
+
+// IngestedFilesTableFromEnv returns the ingestion-marker table name.
+func IngestedFilesTableFromEnv(prefix string) string {
+	return GetEnvOrDefault("INGESTED_FILES_TABLE", prefix+"-ingested-files")
+}
+
+// IdleGapFromEnv parses the IDLE_GAP environment variable (a Go duration,
+// e.g. "30m"). Zero means "use the default".
+func IdleGapFromEnv() time.Duration {
+	raw := os.Getenv("IDLE_GAP")
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		log.Printf("WARNING: ignoring invalid IDLE_GAP %q: %v", raw, err)
+		return 0
+	}
+	return d
 }
 
 // HandleLambdaEvent parses the raw Lambda event (S3 or EventBridge) and
@@ -122,6 +151,19 @@ func processS3Records(ctx context.Context, ddbClient *dynamodb.Client, s3Client 
 			continue
 		}
 
+		// File-level idempotency: S3/EventBridge can redeliver an object; a
+		// marker written after successful processing prevents double counts.
+		// (A crash mid-batch can still double-write a partial batch — accepted.)
+		if cfg.IngestedFiles != "" && ddbClient != nil {
+			ingested, err := ddblib.IsFileIngested(ctx, ddbClient, cfg.IngestedFiles, key)
+			if err != nil {
+				log.Printf("WARNING: ingested-file check failed for %s: %v", key, err)
+			} else if ingested {
+				log.Printf("SKIP_REDELIVERY: %s already ingested", key)
+				continue
+			}
+		}
+
 		result, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(key),
@@ -141,8 +183,15 @@ func processS3Records(ctx context.Context, ddbClient *dynamodb.Client, s3Client 
 		if err := aggregator.Process(ctx, ddbClient, aggregator.Config{
 			Tables:    cfg.Tables,
 			Namespace: namespace,
+			IdleGap:   cfg.IdleGap,
 		}, cloudTrailLog.Records); err != nil {
 			return fmt.Errorf("failed to process CloudTrail events: %w", err)
+		}
+
+		if cfg.IngestedFiles != "" && ddbClient != nil {
+			if err := ddblib.MarkFileIngested(ctx, ddbClient, cfg.IngestedFiles, key, time.Now()); err != nil {
+				log.Printf("WARNING: failed to mark %s ingested: %v", key, err)
+			}
 		}
 
 		log.Printf("SUCCESS: Processed %d events from S3", len(cloudTrailLog.Records))

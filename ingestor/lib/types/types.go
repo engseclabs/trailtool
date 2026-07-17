@@ -170,12 +170,12 @@ type DynamoDBService struct {
 
 // ClickOpsAccess represents a ClickOps (web console) modification to a resource
 type ClickOpsAccess struct {
-	SessionID   string `dynamodbav:"session_id"`   // email:roleID (truncated session ID)
-	PersonEmail string `dynamodbav:"person_email"` // Who performed the operation
-	EventName   string `dynamodbav:"event_name"`   // What operation (CreateBucket, PutObject, UpdateFunction, etc.)
-	AccessTime  string `dynamodbav:"access_time"`  // ISO8601 timestamp of session start time
-	EventCount  int    `dynamodbav:"event_count"`  // Number of times this operation performed in this session
-	AccountID   string `dynamodbav:"account_id"`   // AWS account ID
+	SessionRef string `dynamodbav:"session_ref"` // person_key|sk of the session that performed it
+	PersonKey  string `dynamodbav:"person_key"`  // Who performed the operation
+	EventName  string `dynamodbav:"event_name"`  // What operation (CreateBucket, PutObject, UpdateFunction, etc.)
+	AccessTime string `dynamodbav:"access_time"` // ISO8601 timestamp of session start time
+	EventCount int    `dynamodbav:"event_count"` // Number of times this operation performed in this session
+	AccountID  string `dynamodbav:"account_id"`  // AWS account ID
 }
 
 // DynamoDBResource represents an aggregated resource record
@@ -204,19 +204,29 @@ type DynamoDBResource struct {
 	ClickOpsCount    int              `dynamodbav:"clickops_count"` // Total ClickOps events across all sessions
 }
 
-// DynamoDBPerson represents an aggregated person record
+// DynamoDBPerson represents a person record in trailtool-people, keyed by the
+// tier-prefixed person key (idc#…, email#…, iamuser#…, root#…) resolved per
+// credential group. Email→person is one-to-many: offboard/rehire mints a new
+// Identity Center userId for the same email, and the same human may exist under
+// idc# and email# keys across an Identity Center adoption.
 type DynamoDBPerson struct {
-	CustomerID     string `dynamodbav:"customerId"`
-	Email          string `dynamodbav:"email"`
-	DisplayName    string `dynamodbav:"display_name,omitempty"`
-	FirstSeen      string `dynamodbav:"first_seen"`
-	LastSeen       string `dynamodbav:"last_seen"`
-	SessionsCount  int    `dynamodbav:"sessions_count"`
-	AccountsCount  int    `dynamodbav:"accounts_count"`
-	RolesCount     int    `dynamodbav:"roles_count"`
-	ServicesCount  int    `dynamodbav:"services_count"`
-	ResourcesCount int    `dynamodbav:"resources_count"`
-	EventsCount    int    `dynamodbav:"events_count"`
+	CustomerID string `dynamodbav:"customerId"` // HASH
+	PersonKey  string `dynamodbav:"person_key"` // RANGE
+	Tier       int    `dynamodbav:"tier"`       // resolution tier the key came from (1–5)
+	// Email is the primary observed email (email_index GSI range key). Identity
+	// Center usernames are not required to be emails: non-email session names land
+	// in EmailsSeen (they're the username) but never become an Email.
+	Email          string   `dynamodbav:"email,omitempty"`
+	EmailsSeen     []string `dynamodbav:"emails_seen,omitempty"`
+	DisplayName    string   `dynamodbav:"display_name,omitempty"`
+	FirstSeen      string   `dynamodbav:"first_seen"`
+	LastSeen       string   `dynamodbav:"last_seen"`
+	SessionsCount  int      `dynamodbav:"sessions_count"`
+	AccountsCount  int      `dynamodbav:"accounts_count"`
+	RolesCount     int      `dynamodbav:"roles_count"`
+	ServicesCount  int      `dynamodbav:"services_count"`
+	ResourcesCount int      `dynamodbav:"resources_count"`
+	EventsCount    int      `dynamodbav:"events_count"`
 }
 
 // ResourceAccess represents a detailed resource access record
@@ -240,98 +250,132 @@ type EventAccess struct {
 	ErrorMessage string `dynamodbav:"error_message,omitempty"` // Full CloudTrail error message for context
 }
 
-// DynamoDBSessionAggregated represents an aggregated session record
-type DynamoDBSessionAggregated struct {
-	CustomerID        string           `dynamodbav:"customerId"`
-	SessionID         string           `dynamodbav:"session_id"`
-	SessionType       string           `dynamodbav:"session_type"`  // "web-console" or "cli-sdk"
-	SessionStart      string           `dynamodbav:"session_start"` // Range key - composite: "startTime#sessionID"
-	StartTime         string           `dynamodbav:"start_time"`    // Pure timestamp for display/filtering
-	EndTime           string           `dynamodbav:"end_time"`
-	DurationMinutes   int              `dynamodbav:"duration_minutes"`
-	PersonEmail       string           `dynamodbav:"person_email"`
-	PersonDisplayName string           `dynamodbav:"person_display_name,omitempty"`
-	AccountID         string           `dynamodbav:"account_id"`
-	RoleARN           string           `dynamodbav:"role_arn"`
-	RoleName          string           `dynamodbav:"role_name"`
-	EventsCount       int              `dynamodbav:"events_count"`
-	ServicesCount     int              `dynamodbav:"services_count"`
-	ResourcesCount    int              `dynamodbav:"resources_count"`
-	SourceIPs         []string         `dynamodbav:"source_ips"`
-	UserAgents        []string         `dynamodbav:"user_agents"`
-	EventCounts       map[string]int   `dynamodbav:"event_counts"`       // flattened "eventSource:eventName" -> count
-	ResourcesAccessed map[string]int   `dynamodbav:"resources_accessed"` // resource identifier -> count
-	ResourceAccesses  []ResourceAccess `dynamodbav:"resource_accesses"`  // detailed resource access tracking
+// DynamoDBSession is a session record in trailtool-sessions: all events sharing
+// one (person_key, roleID, anchor). The keys are deterministic, so cross-batch
+// writes for the same credential hit the same item and merge additively — except
+// windowed-fallback sessions (SK "win#…"), whose sort key is sticky
+// (first-written start) and whose writes are guarded by Version.
+type DynamoDBSession struct {
+	PK string `dynamodbav:"pk"` // customerId#person_key — one Query lists a person's sessions
+	SK string `dynamodbav:"sk"` // anchor#roleID, or win#roleID#firstWrittenStart for the fallback
+
+	CustomerID  string `dynamodbav:"customerId"`
+	PersonKey   string `dynamodbav:"person_key"`
+	Anchor      string `dynamodbav:"anchor"`       // sis#… | web#… | key#… | win#… (fallback)
+	SessionType string `dynamodbav:"session_type"` // cli | web | agent | login
+
+	RoleARN    string `dynamodbav:"role_arn"`
+	RoleID     string `dynamodbav:"role_id"`
+	RoleName   string `dynamodbav:"role_name"`
+	AccountID  string `dynamodbav:"account_id"`
+	RoleKey    string `dynamodbav:"role_key"`    // customerId#role_id — role_index GSI hash
+	AccountKey string `dynamodbav:"account_key"` // customerId#account_id — account_index GSI hash
+
+	// True session bounds. For win# sessions the SK keeps the first-written start
+	// even when a later batch extends the window earlier; StartTime moves instead.
+	StartTime       string `dynamodbav:"start_time"`
+	EndTime         string `dynamodbav:"end_time"`
+	DurationMinutes int    `dynamodbav:"duration_minutes"`
+	// Version is an optimistic-lock counter. Load-bearing only for win# sessions,
+	// whose cross-batch extend/fold writes are conditional on it.
+	Version int64 `dynamodbav:"version"`
+
+	EventsCount int `dynamodbav:"events_count"`
+	// ServiceDrivenEventCount counts events with userIdentity.invokedBy set: AWS
+	// services calling with the human's credentials (forward-access sessions).
+	// Included in EventsCount but excluded from ClickOps flagging.
+	ServiceDrivenEventCount int              `dynamodbav:"service_driven_event_count,omitempty"`
+	ServicesCount           int              `dynamodbav:"services_count"`
+	ResourcesCount          int              `dynamodbav:"resources_count"`
+	SourceIPs               []string         `dynamodbav:"source_ips"`
+	UserAgents              []string         `dynamodbav:"user_agents"`
+	EventCounts             map[string]int   `dynamodbav:"event_counts"`       // "eventSource:eventName" -> count
+	ResourcesAccessed       map[string]int   `dynamodbav:"resources_accessed"` // resource identifier -> count
+	ResourceAccesses        []ResourceAccess `dynamodbav:"resource_accesses"`
+
 	// Access Denied tracking
 	DeniedEventCount        int              `dynamodbav:"denied_event_count,omitempty"`
-	DeniedEventCounts       map[string]int   `dynamodbav:"denied_event_counts,omitempty"`       // flattened "eventSource:eventName" -> denied count
-	DeniedResourcesAccessed map[string]int   `dynamodbav:"denied_resources_accessed,omitempty"` // resource identifier -> denied count
-	DeniedResourceAccesses  []ResourceAccess `dynamodbav:"denied_resource_accesses,omitempty"`  // detailed denied resource access tracking
-	DeniedEventAccesses     []EventAccess    `dynamodbav:"denied_event_accesses,omitempty"`     // detailed denied event access tracking (for events without specific resources)
-	// ClickOps tracking - tracks console create/modify operations in this session
-	ClickOpsEventCount  int            `dynamodbav:"clickops_event_count,omitempty"`  // Total ClickOps events in this session
-	ClickOpsEventCounts map[string]int `dynamodbav:"clickops_event_counts,omitempty"` // Event name -> count for ClickOps operations
-	// Role chaining — parent session fields (set on the originating human session)
-	ChainedRoles       []string `dynamodbav:"chained_roles,omitempty"`        // Role ARNs assumed during this session
-	ChainedEventCount  int      `dynamodbav:"chained_event_count,omitempty"`  // Events attributed via chaining (summary counter)
-	ChainedSessionKeys []string `dynamodbav:"chained_session_keys,omitempty"` // session_start keys of child sessions (startTime#accessKeyID)
+	DeniedEventCounts       map[string]int   `dynamodbav:"denied_event_counts,omitempty"`
+	DeniedResourcesAccessed map[string]int   `dynamodbav:"denied_resources_accessed,omitempty"`
+	DeniedResourceAccesses  []ResourceAccess `dynamodbav:"denied_resource_accesses,omitempty"`
+	DeniedEventAccesses     []EventAccess    `dynamodbav:"denied_event_accesses,omitempty"`
 
-	// Role chaining — child session fields (set on sessions created for assumed roles)
-	ParentSessionKey string `dynamodbav:"parent_session_key,omitempty"` // session_start key of the parent human session
-	ParentEmail      string `dynamodbav:"parent_email,omitempty"`       // email of the human who initiated the chain
+	// ClickOps tracking — console create/modify operations in this session
+	ClickOpsEventCount  int            `dynamodbav:"clickops_event_count,omitempty"`
+	ClickOpsEventCounts map[string]int `dynamodbav:"clickops_event_counts,omitempty"`
 
-	// SessionTags holds the session tags from the AssumeRole requestParameters.tags that
-	// created this child session. Only set on chained sessions whose parent AssumeRole
-	// carried session tags (e.g. elhaz-vended agent credentials).
-	SessionTags map[string]string `dynamodbav:"session_tags,omitempty"`
+	// SignInSessionArn is recorded whenever the session's events carried one
+	// (whether or not the session anchored on it).
+	SignInSessionArn string `dynamodbav:"sign_in_session_arn,omitempty"`
 
-	// SessionPolicy is the raw inline IAM policy from requestParameters.policy in the
-	// AssumeRole event. Stored as a JSON string exactly as captured by CloudTrail.
-	SessionPolicy string `dynamodbav:"session_policy,omitempty"`
+	// Role chaining — child fields. AssumedFromSession is a session ref
+	// ("person_key|sk") pointing at the parent session that called AssumeRole.
+	AssumedFromSession string `dynamodbav:"assumed_from_session,omitempty"`
+	AssumedFromRoleARN string `dynamodbav:"assumed_from_role_arn,omitempty"`
 
-	// aws login attribution — set on the child session vended via CreateOAuth2Token.
-	// The parent is the existing human session that authorized the aws login browser flow.
-	// Correlation is by roleARN + sourceIP + creationDate within ±60s of CreateOAuth2Token.
-	LoginGrantedBySessionKey string `dynamodbav:"login_granted_by_session_key,omitempty"` // session_start key of the authorizing session
-	LoginGrantedByEmail      string `dynamodbav:"login_granted_by_email,omitempty"`       // email of the human who ran aws login
+	// Role chaining — parent fields.
+	ChainedSessionRefs []string `dynamodbav:"chained_session_refs,omitempty"` // child session refs
+	ChainedRoles       []string `dynamodbav:"chained_roles,omitempty"`        // role ARNs assumed during this session
+	ChainedEventCount  int      `dynamodbav:"chained_event_count,omitempty"`  // events attributed to children (summary)
 
-	// AWS MCP Server OAuth attribution — set on sessions whose events carry an
-	// aws:SignInSessionArn matching a CreateOAuth2Token grant for the AWS MCP Server resource.
-	// These represent agent traffic driven through the AWS MCP Server (SessionType "agent").
-	SignInSessionArn         string `dynamodbav:"sign_in_session_arn,omitempty"`         // the OAuth sign-in session ARN correlating this session's events
-	MCPResource              string `dynamodbav:"mcp_resource,omitempty"`                // the AWS MCP Server resource the OAuth grant targeted
-	AgentAuthorizedBySession string `dynamodbav:"agent_authorized_by_session,omitempty"` // session_start key of the human session that authorized the MCP grant
-	AgentAuthorizedByEmail   string `dynamodbav:"agent_authorized_by_email,omitempty"`   // email of the human who authorized the MCP grant
+	// SessionTags/SessionPolicy come from the AssumeRole requestParameters that
+	// created this child session.
+	SessionTags   map[string]string `dynamodbav:"session_tags,omitempty"`
+	SessionPolicy string            `dynamodbav:"session_policy,omitempty"`
+
+	// aws login attribution: ref of the human session that authorized the
+	// CreateOAuth2Token grant that vended this session's credentials.
+	LoginGrantedBySession string `dynamodbav:"login_granted_by_session,omitempty"`
+
+	// AWS MCP Server OAuth attribution (session_type "agent").
+	MCPResource              string `dynamodbav:"mcp_resource,omitempty"`
+	AgentAuthorizedBySession string `dynamodbav:"agent_authorized_by_session,omitempty"`
 }
 
-// DynamoDBChainLink records a temporary credential issued via AssumeRole,
-// linking the issued access key back to the originating human session.
+// DynamoDBIdentityLink is a record in trailtool-identity-links: the cross-batch
+// correlation layer. One single-string PK with disjoint prefixes (§4.3), TTL 12h
+// (STS max credential lifetime):
 //
-// The PK (access_key_id) is used in two ways:
-//   - Programmatic sessions: the literal issued STS access key ID (ASIA...)
-//   - Console switch-role sessions: "roleID:creationTime" composite key, since the
-//     console issues a new short-lived credential per request rather than one
-//     stable session credential.
-type DynamoDBChainLink struct {
-	AccessKeyID         string `dynamodbav:"access_key_id"`          // PK — issued key or "roleID:creationTime" for console
-	ParentSessionMapKey string `dynamodbav:"parent_session_map_key"` // e.g. alice@example.com:AROAID...:2024-01-15T10:00:00Z
-	ParentEmail         string `dynamodbav:"parent_email"`
-	ParentRoleARN       string `dynamodbav:"parent_role_arn"`
-	AssumedRoleARN      string `dynamodbav:"assumed_role_arn"` // role that was assumed
-	TTL                 int64  `dynamodbav:"ttl"`              // Unix timestamp — DynamoDB TTL
+//	cred#<accessKeyId>                 credential → person + anchor (C1 continuity)
+//	cred#<principalId>#<creationDate>  same, for console credential groups
+//	chain#<issuedAccessKeyId>          AssumeRole child → person + parent session
+//	chain#<assumedRoleID>#<eventTime>  same, console switch-role variant
+//	login#<roleID>#<creationDate>      aws login (PKCE) grant → authorizing person
+//	mcp#<signInSessionArn>             AWS MCP Server OAuth grant → authorizing person
+type DynamoDBIdentityLink struct {
+	PK        string `dynamodbav:"pk"`
+	PersonKey string `dynamodbav:"person_key"`
+	TTL       int64  `dynamodbav:"ttl"` // Unix timestamp — DynamoDB TTL
 
-	// SessionTags holds the session tags from the AssumeRole requestParameters.tags.
-	// Propagated to the child session record so tag-based filtering works in later batches.
-	SessionTags map[string]string `dynamodbav:"session_tags,omitempty"`
+	// RoleARN and Anchor are set on cred# links: the resolved role and session
+	// anchor of the credential group, so a later batch of the same credential
+	// lands in the same session even when the anchor-deciding fields are absent.
+	RoleARN string `dynamodbav:"role_arn,omitempty"`
+	Anchor  string `dynamodbav:"anchor,omitempty"`
 
-	// SessionPolicy is the raw inline IAM policy from requestParameters.policy.
-	// Propagated to the child session record.
-	SessionPolicy string `dynamodbav:"session_policy,omitempty"`
+	// ParentSessionRef ("person_key|sk") points at the session that issued the
+	// credential (chain#) or authorized the grant (login#, mcp#).
+	// ParentRoleARN is that session's role.
+	ParentSessionRef string `dynamodbav:"parent_session_ref,omitempty"`
+	ParentRoleARN    string `dynamodbav:"parent_role_arn,omitempty"`
 
-	// MCPResource is the AWS MCP Server resource from a CreateOAuth2Token grant's
-	// requestParameters.resource. Non-empty only on MCP OAuth grant links, whose PK is
-	// "mcp_grant:signInSessionArn". Used to tag correlated agent sessions.
+	// AssumedRoleARN, SessionTags, SessionPolicy are set on chain# links from the
+	// AssumeRole request, and propagate to the child session record.
+	AssumedRoleARN string            `dynamodbav:"assumed_role_arn,omitempty"`
+	SessionTags    map[string]string `dynamodbav:"session_tags,omitempty"`
+	SessionPolicy  string            `dynamodbav:"session_policy,omitempty"`
+
+	// MCPResource is the AWS MCP Server resource from the grant's
+	// requestParameters.resource. Set only on mcp# links.
 	MCPResource string `dynamodbav:"mcp_resource,omitempty"`
+}
+
+// DynamoDBIngestedFile marks an S3 object as processed (trailtool-ingested-files):
+// the file-level idempotency guard against S3/EventBridge redelivery.
+type DynamoDBIngestedFile struct {
+	ObjectKey  string `dynamodbav:"object_key"` // HASH — the S3 object key
+	IngestedAt string `dynamodbav:"ingested_at"`
+	TTL        int64  `dynamodbav:"ttl"` // Unix timestamp — DynamoDB TTL (30 days)
 }
 
 // DynamoDBAccount represents an aggregated account record

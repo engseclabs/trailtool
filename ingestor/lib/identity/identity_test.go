@@ -354,6 +354,156 @@ func TestTier1BeatsTier3(t *testing.T) {
 	}
 }
 
+// consoleEvent builds a console-session event: fresh per-request access key,
+// console flag set, one stable creationDate.
+func consoleEvent(accessKeyID, sessionName, creationDate string) types.CloudTrailRecord {
+	e := ssoEvent(accessKeyID, sessionName, false)
+	e.UserIdentity.SessionContext = &types.SessionContext{}
+	e.UserIdentity.SessionContext.Attributes.CreationDate = creationDate
+	e.UserIdentity.SessionContext.Attributes.SessionCredentialFromConsole = "true"
+	return e
+}
+
+func TestAnchorCascade(t *testing.T) {
+	const signInArn = "arn:aws:signin:us-east-1:278835131762:session/a90e1d90-b08a-4ecf-ac06-e45576d13b98"
+
+	sisEvent := ssoEvent("ASIAAGENT1", "alice@example.com", false)
+	sisEvent.UserIdentity.SessionContext = &types.SessionContext{SignInSessionArn: signInArn}
+	sisEvent.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:00:00Z"
+
+	grantEvent := ssoEvent("", "alice@example.com", false)
+	grantEvent.EventSource = "signin.amazonaws.com"
+	grantEvent.EventName = "CreateOAuth2Token"
+	grantEvent.UserIdentity.SessionContext = &types.SessionContext{SignInSessionArn: signInArn}
+	grantEvent.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:00:00Z"
+
+	tests := []struct {
+		name   string
+		events []types.CloudTrailRecord
+		want   string
+	}{
+		{
+			name:   "signInSessionArn wins over everything",
+			events: []types.CloudTrailRecord{ssoEvent("ASIAAGENT1", "alice@example.com", false), sisEvent},
+			want:   "sis#" + signInArn,
+		},
+		{
+			name: "one event carrying the arn decides the whole group (C1 discipline)",
+			events: []types.CloudTrailRecord{
+				ssoEvent("ASIAAGENT1", "alice@example.com", false),
+				sisEvent,
+				ssoEvent("ASIAAGENT1", "alice@example.com", false),
+			},
+			want: "sis#" + signInArn,
+		},
+		{
+			name:   "console session anchors on creationDate despite per-request keys",
+			events: []types.CloudTrailRecord{consoleEvent("ASIAREQ1", "alice@example.com", "2026-07-15T09:00:00Z")},
+			want:   "web#AROAUB266OVZCWROZTVQR#2026-07-15T09:00:00Z",
+		},
+		{
+			name: "keyless event with creationDate anchors web too",
+			events: func() []types.CloudTrailRecord {
+				e := ssoEvent("", "alice@example.com", false)
+				e.UserIdentity.SessionContext = &types.SessionContext{}
+				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:00:00Z"
+				return []types.CloudTrailRecord{e}
+			}(),
+			want: "web#AROAUB266OVZCWROZTVQR#2026-07-15T09:00:00Z",
+		},
+		{
+			name:   "temporary credential anchors on its access key",
+			events: []types.CloudTrailRecord{ssoEvent("ASIACLIKEY1", "alice@example.com", true)},
+			want:   "key#ASIACLIKEY1",
+		},
+		{
+			name: "long-lived AKIA key has no credential boundary — windowed fallback",
+			events: []types.CloudTrailRecord{{
+				EventID: "evt-akia",
+				UserIdentity: types.UserIdentity{
+					Type:        "IAMUser",
+					PrincipalID: "AIDAEXAMPLE",
+					ARN:         "arn:aws:iam::278835131762:user/deploy-bot",
+					AccessKeyID: "AKIAEXAMPLE",
+				},
+			}},
+			want: "",
+		},
+		{
+			name: "root without session context falls back to windowing",
+			events: []types.CloudTrailRecord{{
+				EventID:      "evt-root",
+				UserIdentity: types.UserIdentity{Type: "Root", PrincipalID: "278835131762", ARN: "arn:aws:iam::278835131762:root"},
+			}},
+			want: "",
+		},
+		{
+			name: "OAuth grant's arn names the minted session, never anchors the granting group",
+			events: []types.CloudTrailRecord{
+				grantEvent,
+				consoleEvent("ASIAREQ9", "alice@example.com", "2026-07-15T09:00:00Z"),
+			},
+			want: "web#AROAUB266OVZCWROZTVQR#2026-07-15T09:00:00Z",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Anchor(Group{Events: tt.events}); got != tt.want {
+				t.Errorf("Anchor() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// §8.1(2): a credential refresh mints a new ASIA key → two anchors → two sessions,
+// same person on both. Deliberate v3 semantics: a session is one credential's lifetime.
+func TestRefreshMintsNewAnchorSamePerson(t *testing.T) {
+	groups := GroupEvents([]types.CloudTrailRecord{
+		ssoEvent("ASIABEFORE", "alice@example.com", true),
+		ssoEvent("ASIAAFTER", "alice@example.com", true),
+	})
+	if len(groups) != 2 {
+		t.Fatalf("got %d groups, want 2", len(groups))
+	}
+	a1, a2 := Anchor(groups[0]), Anchor(groups[1])
+	if a1 == a2 {
+		t.Errorf("refresh did not mint a new anchor: both %q", a1)
+	}
+	p1, _ := ResolveGroup(groups[0], nil)
+	p2, _ := ResolveGroup(groups[1], nil)
+	if p1.Key != p2.Key {
+		t.Errorf("person split across refresh: %q vs %q", p1.Key, p2.Key)
+	}
+}
+
+// Channels can't merge by construction: concurrent console + CLI + agent activity
+// for one person and role lands in three disjoint anchor keyspaces.
+func TestChannelSeparationByConstruction(t *testing.T) {
+	const signInArn = "arn:aws:signin:us-east-1:278835131762:session/agent-1"
+	agent := ssoEvent("ASIAAGENTKEY", "alice@example.com", true)
+	agent.UserIdentity.SessionContext = &types.SessionContext{SignInSessionArn: signInArn}
+
+	groups := GroupEvents([]types.CloudTrailRecord{
+		consoleEvent("ASIAWEBREQ1", "alice@example.com", "2026-07-15T09:00:00Z"),
+		ssoEvent("ASIACLIKEY", "alice@example.com", true),
+		agent,
+	})
+	if len(groups) != 3 {
+		t.Fatalf("got %d groups, want 3", len(groups))
+	}
+	prefixes := map[string]bool{}
+	for _, g := range groups {
+		a := Anchor(g)
+		p := a[:strings.Index(a, "#")+1]
+		prefixes[p] = true
+	}
+	for _, want := range []string{"web#", "key#", "sis#"} {
+		if !prefixes[want] {
+			t.Errorf("missing anchor keyspace %q, have %v", want, prefixes)
+		}
+	}
+}
+
 // Disjoint prefixes: one human seen through every tier yields keys in distinct
 // keyspaces — accidental cross-tier merges are impossible by construction.
 func TestPersonKeyPrefixesDisjoint(t *testing.T) {

@@ -19,6 +19,13 @@ func IsMCPServerResource(resource string) bool {
 		(strings.Contains(r, ".api.aws") || strings.Contains(r, "amazonaws.com"))
 }
 
+// IsOAuthGrantEvent reports whether the event is a signin.amazonaws.com
+// CreateOAuth2Token grant (aws login PKCE or AWS MCP Server token mint). Grant
+// events are consumed by the link layer and never counted into sessions.
+func IsOAuthGrantEvent(event types.CloudTrailRecord) bool {
+	return event.EventSource == "signin.amazonaws.com" && event.EventName == "CreateOAuth2Token"
+}
+
 // ExtractOAuthResource returns requestParameters.resource from a signin OAuth event
 // (AuthorizeOAuth2Access / CreateOAuth2Token). Returns "" if absent.
 func ExtractOAuthResource(event types.CloudTrailRecord) string {

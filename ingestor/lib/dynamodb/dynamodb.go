@@ -3,8 +3,10 @@ package dynamodb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,6 +17,16 @@ import (
 
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
+
+// SessionStore is the subset of the DynamoDB client used by the session write
+// paths, abstracted so the windowed extend/fold/conflict logic is unit-testable.
+// *dynamodb.Client satisfies it.
+type SessionStore interface {
+	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+	Query(ctx context.Context, params *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
+	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+	TransactWriteItems(ctx context.Context, params *dynamodb.TransactWriteItemsInput, optFns ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
+}
 
 // WriteRoleToDynamoDB writes or updates a role in DynamoDB using read-merge-write pattern
 func WriteRoleToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, role *types.DynamoDBRole) error {
@@ -365,18 +377,18 @@ func MergeResourceAggregated(existing *types.DynamoDBResource, incoming *types.D
 // MergeClickOpsAccesses merges two slices of ClickOpsAccess, deduplicating by session+event
 func MergeClickOpsAccesses(a, b []types.ClickOpsAccess) []types.ClickOpsAccess {
 	type key struct {
-		SessionID string
-		EventName string
+		SessionRef string
+		EventName  string
 	}
 	merged := make(map[key]*types.ClickOpsAccess)
 
 	for i := range a {
-		k := key{a[i].SessionID, a[i].EventName}
+		k := key{a[i].SessionRef, a[i].EventName}
 		cp := a[i]
 		merged[k] = &cp
 	}
 	for i := range b {
-		k := key{b[i].SessionID, b[i].EventName}
+		k := key{b[i].SessionRef, b[i].EventName}
 		if existing, ok := merged[k]; ok {
 			existing.EventCount += b[i].EventCount
 		} else {
@@ -392,8 +404,27 @@ func MergeClickOpsAccesses(a, b []types.ClickOpsAccess) []types.ClickOpsAccess {
 	return result
 }
 
-// WritePersonToDynamoDB writes or updates a person in DynamoDB
-func WritePersonToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, person *types.DynamoDBPerson) error {
+// WritePersonToDynamoDB writes or updates a person in DynamoDB using a
+// read-merge-write on (customerId, person_key).
+func WritePersonToDynamoDB(ctx context.Context, ddbClient SessionStore, tableName string, person *types.DynamoDBPerson) error {
+	getResult, err := ddbClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(tableName),
+		Key: map[string]ddbtypes.AttributeValue{
+			"customerId": &ddbtypes.AttributeValueMemberS{Value: person.CustomerID},
+			"person_key": &ddbtypes.AttributeValueMemberS{Value: person.PersonKey},
+		},
+	})
+	if err != nil {
+		log.Printf("WARNING: Failed to get existing person: %v", err)
+	} else if len(getResult.Item) > 0 {
+		var existing types.DynamoDBPerson
+		if err := attributevalue.UnmarshalMap(getResult.Item, &existing); err != nil {
+			log.Printf("WARNING: Failed to unmarshal existing person: %v", err)
+		} else {
+			person = MergePerson(&existing, person)
+		}
+	}
+
 	item, err := attributevalue.MarshalMap(person)
 	if err != nil {
 		return fmt.Errorf("failed to marshal person: %w", err)
@@ -407,184 +438,376 @@ func WritePersonToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tabl
 	return err
 }
 
-// WriteSessionToDynamoDB writes or updates a session in DynamoDB
-// Uses composite sort key "startTime#sessionID" to disambiguate sessions from different
-// roles that share the same time bucket (CLI/SDK) or timestamp (console)
-func WriteSessionToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, session *types.DynamoDBSessionAggregated) error {
-	// Build composite sort key: startTime#sessionID to disambiguate sessions from
-	// different roles that fall in the same time bucket (CLI) or same second (console)
-	session.SessionStart = session.StartTime + "#" + session.SessionID
-
-	// Query for existing session with exact same customerId and session_start (composite key)
-	queryInput := &dynamodb.QueryInput{
-		TableName:              aws.String(tableName),
-		KeyConditionExpression: aws.String("customerId = :cid AND session_start = :st"),
-		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-			":cid": &ddbtypes.AttributeValueMemberS{Value: session.CustomerID},
-			":st":  &ddbtypes.AttributeValueMemberS{Value: session.SessionStart},
-		},
-		Limit: aws.Int32(1),
+// MergePerson merges an incoming per-batch person record into the stored one.
+// EventsCount accumulates; the per-batch unique counts (sessions, roles, …) keep
+// the larger of the two values — an approximation until they're recomputed from
+// the aggregate tables.
+func MergePerson(existing, incoming *types.DynamoDBPerson) *types.DynamoDBPerson {
+	merged := *incoming
+	if existing.FirstSeen != "" && (merged.FirstSeen == "" || existing.FirstSeen < merged.FirstSeen) {
+		merged.FirstSeen = existing.FirstSeen
 	}
+	if existing.LastSeen > merged.LastSeen {
+		merged.LastSeen = existing.LastSeen
+	}
+	merged.Email = firstNonEmpty(existing.Email, incoming.Email)
+	merged.DisplayName = firstNonEmpty(existing.DisplayName, incoming.DisplayName)
+	merged.EmailsSeen = MergeUniqueStrings(existing.EmailsSeen, incoming.EmailsSeen)
+	merged.EventsCount = existing.EventsCount + incoming.EventsCount
+	merged.SessionsCount = maxInt(existing.SessionsCount, incoming.SessionsCount)
+	merged.AccountsCount = maxInt(existing.AccountsCount, incoming.AccountsCount)
+	merged.RolesCount = maxInt(existing.RolesCount, incoming.RolesCount)
+	merged.ServicesCount = maxInt(existing.ServicesCount, incoming.ServicesCount)
+	merged.ResourcesCount = maxInt(existing.ResourcesCount, incoming.ResourcesCount)
+	return &merged
+}
 
-	queryResult, err := ddbClient.Query(ctx, queryInput)
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// WriteSession writes or updates an anchored session in DynamoDB. The key is
+// deterministic (pk = customerId#person_key, sk = anchor#roleID), so cross-batch
+// writes for the same credential hit the same item and merge additively via
+// read-merge-write. Optimistic locking is not load-bearing here — a concurrent
+// double-merge has the same (accepted) exposure as a redelivered partial batch.
+func WriteSession(ctx context.Context, ddbClient SessionStore, tableName string, session *types.DynamoDBSession) error {
+	getResult, err := ddbClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(tableName),
+		Key: map[string]ddbtypes.AttributeValue{
+			"pk": &ddbtypes.AttributeValueMemberS{Value: session.PK},
+			"sk": &ddbtypes.AttributeValueMemberS{Value: session.SK},
+		},
+	})
 	if err != nil {
-		log.Printf("WARNING: Failed to query for existing session: %v", err)
-		// Continue with normal write if query fails
-	} else if queryResult.Items != nil && len(queryResult.Items) > 0 {
-		// Session exists - update it by merging events
-		var existingSession types.DynamoDBSessionAggregated
-		if err := attributevalue.UnmarshalMap(queryResult.Items[0], &existingSession); err != nil {
+		log.Printf("WARNING: Failed to get existing session: %v", err)
+		// Continue with normal write if the read fails
+	} else if len(getResult.Item) > 0 {
+		var existing types.DynamoDBSession
+		if err := attributevalue.UnmarshalMap(getResult.Item, &existing); err != nil {
 			log.Printf("WARNING: Failed to unmarshal existing session: %v", err)
 		} else {
-			log.Printf("  Operation: UPDATE (session exists - adding events)")
-			log.Printf("  Previous end_time: %s", existingSession.EndTime)
-			log.Printf("  Previous event_count: %d", existingSession.EventsCount)
-
-			// Merge the sessions - use latest end time and accumulate events
-			merged := MergeSessionAggregated(&existingSession, session)
-
-			// Write the merged session
+			merged := MergeSession(&existing, session)
+			merged.Version = existing.Version + 1
 			item, err := attributevalue.MarshalMap(merged)
 			if err != nil {
 				return fmt.Errorf("failed to marshal merged session: %w", err)
 			}
-
-			_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
+			if _, err := ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
 				TableName: aws.String(tableName),
 				Item:      item,
-			})
-
-			if err != nil {
+			}); err != nil {
 				return fmt.Errorf("failed to write merged session: %w", err)
 			}
-
-			log.Printf("  Updated event_count: %d (was %d, +%d)", merged.EventsCount, existingSession.EventsCount, session.EventsCount)
-			log.Printf("  Updated end_time: %s", merged.EndTime)
-			log.Printf("  Updated duration: %d minutes", merged.DurationMinutes)
-
+			log.Printf("SESSION_MERGED: sk=%s events=%d (was %d, +%d)",
+				merged.SK, merged.EventsCount, existing.EventsCount, session.EventsCount)
 			return nil
 		}
 	}
 
-	// No existing session - write as new
-	log.Printf("  Operation: CREATE (new session)")
-	log.Printf("  Session ID: %s", session.SessionID)
-	log.Printf("  Start time (IAM): %s", session.StartTime)
-	log.Printf("  Event count: %d", session.EventsCount)
-
+	log.Printf("SESSION_CREATE: sk=%s type=%s events=%d start=%s",
+		session.SK, session.SessionType, session.EventsCount, session.StartTime)
 	item, err := attributevalue.MarshalMap(session)
 	if err != nil {
 		return fmt.Errorf("failed to marshal session: %w", err)
 	}
-
 	_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(tableName),
 		Item:      item,
 	})
-
 	return err
 }
 
-// MergeSessionAggregated merges two SessionAggregated records, combining their data
-func MergeSessionAggregated(existing *types.DynamoDBSessionAggregated, new *types.DynamoDBSessionAggregated) *types.DynamoDBSessionAggregated {
-	layout := "2006-01-02T15:04:05Z"
+// windowDeletion names a win# record folded into another and slated for a
+// version-conditional delete.
+type windowDeletion struct {
+	SK      string
+	Version int64
+}
 
-	// Parse times to determine which is earlier/later
-	existingStart, _ := time.Parse(layout, existing.StartTime)
-	newStart, _ := time.Parse(layout, new.StartTime)
-	existingEnd, _ := time.Parse(layout, existing.EndTime)
-	newEnd, _ := time.Parse(layout, new.EndTime)
+// FoldWindows merges an incoming windowed run into the overlapping/adjacent
+// existing win# sessions (same channel only). Pure function — the write path
+// wraps it in optimistic-lock retries. Returns the surviving record (earliest
+// SK, sticky, per §3.2), the version the write must be conditional on (0 =
+// fresh create), and the records folded away.
+func FoldWindows(existing []types.DynamoDBSession, incoming *types.DynamoDBSession, idleGap time.Duration) (*types.DynamoDBSession, int64, []windowDeletion) {
+	var overlapping []types.DynamoDBSession
+	for _, e := range existing {
+		if e.SessionType == incoming.SessionType &&
+			windowsMergeable(e.StartTime, e.EndTime, incoming.StartTime, incoming.EndTime, idleGap) {
+			overlapping = append(overlapping, e)
+		}
+	}
+	if len(overlapping) == 0 {
+		out := *incoming
+		out.Version = 1
+		return &out, 0, nil
+	}
 
-	// Use earliest start time
+	sort.Slice(overlapping, func(a, b int) bool { return overlapping[a].SK < overlapping[b].SK })
+	target := overlapping[0]
+	expectedVersion := target.Version
+	merged := MergeSession(&target, incoming)
+	var deletions []windowDeletion
+	for i := 1; i < len(overlapping); i++ {
+		merged = MergeSession(merged, &overlapping[i])
+		deletions = append(deletions, windowDeletion{SK: overlapping[i].SK, Version: overlapping[i].Version})
+	}
+	merged.Version = expectedVersion + 1
+	return merged, expectedVersion, deletions
+}
+
+// windowsMergeable reports whether two windowed runs belong to one session: the
+// gap between them (if any) is at most idleGap.
+func windowsMergeable(aStart, aEnd, bStart, bEnd string, idleGap time.Duration) bool {
+	as, err1 := time.Parse(time.RFC3339, aStart)
+	ae, err2 := time.Parse(time.RFC3339, aEnd)
+	bs, err3 := time.Parse(time.RFC3339, bStart)
+	be, err4 := time.Parse(time.RFC3339, bEnd)
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return false
+	}
+	return !bs.After(ae.Add(idleGap)) && !as.After(be.Add(idleGap))
+}
+
+// WriteWindowedSession merges a windowed (win#) session into DynamoDB — the only
+// write path where time guesses and optimistic locking are load-bearing (§3.2):
+// fetch potentially-adjacent windows in one Query (±2×idleGap), extend/fold
+// overlapping runs, write back conditionally on version, retry ≤3 on conflict.
+// A fold that deletes records runs as one transaction so a concurrent writer can
+// never observe (or double-merge) a partially applied fold.
+func WriteWindowedSession(ctx context.Context, ddbClient SessionStore, tableName string, session *types.DynamoDBSession, idleGap time.Duration) error {
+	const maxRetries = 3
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		existing, err := queryAdjacentWindows(ctx, ddbClient, tableName, session, idleGap)
+		if err != nil {
+			return fmt.Errorf("query adjacent windows: %w", err)
+		}
+		merged, expectedVersion, deletions := FoldWindows(existing, session, idleGap)
+
+		if len(deletions) == 0 {
+			err = putWindowConditional(ctx, ddbClient, tableName, merged, expectedVersion)
+		} else {
+			err = transactFoldWindows(ctx, ddbClient, tableName, merged, expectedVersion, deletions)
+		}
+		if err == nil {
+			return nil
+		}
+		if !isVersionConflict(err) {
+			return err
+		}
+		lastErr = err // concurrent writer got there first — re-read and converge
+	}
+	return fmt.Errorf("windowed session write did not converge after %d retries: %w", maxRetries, lastErr)
+}
+
+// transactFoldWindows applies a fold atomically: the merged survivor is written
+// and the folded-away records deleted in one transaction, each guarded by the
+// version read during the fold.
+func transactFoldWindows(ctx context.Context, ddbClient SessionStore, tableName string, merged *types.DynamoDBSession, expectedVersion int64, deletions []windowDeletion) error {
+	item, err := attributevalue.MarshalMap(merged)
+	if err != nil {
+		return fmt.Errorf("failed to marshal windowed session: %w", err)
+	}
+	put := &ddbtypes.Put{
+		TableName: aws.String(tableName),
+		Item:      item,
+	}
+	if expectedVersion == 0 {
+		put.ConditionExpression = aws.String("attribute_not_exists(pk)")
+	} else {
+		put.ConditionExpression = aws.String("version = :expected")
+		put.ExpressionAttributeValues = map[string]ddbtypes.AttributeValue{
+			":expected": &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", expectedVersion)},
+		}
+	}
+	items := []ddbtypes.TransactWriteItem{{Put: put}}
+	for _, d := range deletions {
+		items = append(items, ddbtypes.TransactWriteItem{Delete: &ddbtypes.Delete{
+			TableName: aws.String(tableName),
+			Key: map[string]ddbtypes.AttributeValue{
+				"pk": &ddbtypes.AttributeValueMemberS{Value: merged.PK},
+				"sk": &ddbtypes.AttributeValueMemberS{Value: d.SK},
+			},
+			ConditionExpression: aws.String("version = :expected"),
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+				":expected": &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", d.Version)},
+			},
+		}})
+	}
+	_, err = ddbClient.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: items})
+	return err
+}
+
+// queryAdjacentWindows fetches win# sessions for the same person and roleID
+// whose sticky start keys fall within ±2×idleGap of the incoming run.
+func queryAdjacentWindows(ctx context.Context, ddbClient SessionStore, tableName string, session *types.DynamoDBSession, idleGap time.Duration) ([]types.DynamoDBSession, error) {
+	start, err := time.Parse(time.RFC3339, session.StartTime)
+	if err != nil {
+		return nil, fmt.Errorf("unparsable session start %q: %w", session.StartTime, err)
+	}
+	end, err := time.Parse(time.RFC3339, session.EndTime)
+	if err != nil {
+		end = start
+	}
+	prefix := "win#" + session.RoleID + "#"
+	lo := prefix + start.Add(-2*idleGap).UTC().Format(time.RFC3339)
+	hi := prefix + end.Add(2*idleGap).UTC().Format(time.RFC3339)
+
+	out, err := ddbClient.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(tableName),
+		KeyConditionExpression: aws.String("pk = :pk AND sk BETWEEN :lo AND :hi"),
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":pk": &ddbtypes.AttributeValueMemberS{Value: session.PK},
+			":lo": &ddbtypes.AttributeValueMemberS{Value: lo},
+			":hi": &ddbtypes.AttributeValueMemberS{Value: hi},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	sessions := make([]types.DynamoDBSession, 0, len(out.Items))
+	for _, item := range out.Items {
+		var s types.DynamoDBSession
+		if err := attributevalue.UnmarshalMap(item, &s); err != nil {
+			log.Printf("WARNING: failed to unmarshal windowed session: %v", err)
+			continue
+		}
+		sessions = append(sessions, s)
+	}
+	return sessions, nil
+}
+
+func putWindowConditional(ctx context.Context, ddbClient SessionStore, tableName string, session *types.DynamoDBSession, expectedVersion int64) error {
+	item, err := attributevalue.MarshalMap(session)
+	if err != nil {
+		return fmt.Errorf("failed to marshal windowed session: %w", err)
+	}
+	input := &dynamodb.PutItemInput{
+		TableName: aws.String(tableName),
+		Item:      item,
+	}
+	if expectedVersion == 0 {
+		input.ConditionExpression = aws.String("attribute_not_exists(pk)")
+	} else {
+		input.ConditionExpression = aws.String("version = :expected")
+		input.ExpressionAttributeValues = map[string]ddbtypes.AttributeValue{
+			":expected": &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", expectedVersion)},
+		}
+	}
+	_, err = ddbClient.PutItem(ctx, input)
+	return err
+}
+
+// isVersionConflict reports whether a write lost an optimistic-lock race: a
+// plain conditional-check failure, or a transaction cancelled by one.
+func isVersionConflict(err error) bool {
+	var ccf *ddbtypes.ConditionalCheckFailedException
+	if errors.As(err, &ccf) {
+		return true
+	}
+	var tc *ddbtypes.TransactionCanceledException
+	if errors.As(err, &tc) {
+		for _, reason := range tc.CancellationReasons {
+			if reason.Code != nil && *reason.Code == "ConditionalCheckFailed" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// MergeSession merges two session records for the same key, combining their
+// data. The existing record's identity fields and sort key win (the SK is
+// sticky for win# sessions); Version is the caller's concern.
+func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSession) *types.DynamoDBSession {
+	// RFC3339 UTC timestamps compare lexicographically.
 	startTime := existing.StartTime
-	if newStart.Before(existingStart) {
-		startTime = new.StartTime
+	if incoming.StartTime != "" && (startTime == "" || incoming.StartTime < startTime) {
+		startTime = incoming.StartTime
 	}
-
-	// Use latest end time
 	endTime := existing.EndTime
-	if newEnd.After(existingEnd) {
-		endTime = new.EndTime
+	if incoming.EndTime > endTime {
+		endTime = incoming.EndTime
+	}
+	durationMinutes := 0
+	if start, err := time.Parse(time.RFC3339, startTime); err == nil {
+		if end, err := time.Parse(time.RFC3339, endTime); err == nil {
+			durationMinutes = int(end.Sub(start).Minutes())
+		}
 	}
 
-	// Calculate duration
-	start, _ := time.Parse(layout, startTime)
-	end, _ := time.Parse(layout, endTime)
-	durationMinutes := int(end.Sub(start).Minutes())
+	mergedEventCounts := MergeIntMaps(existing.EventCounts, incoming.EventCounts)
+	mergedResourcesAccessed := MergeIntMaps(existing.ResourcesAccessed, incoming.ResourcesAccessed)
 
-	// Merge event counts and resources accessed
-	mergedEventCounts := MergeIntMaps(existing.EventCounts, new.EventCounts)
-	mergedResourcesAccessed := MergeIntMaps(existing.ResourcesAccessed, new.ResourcesAccessed)
-	mergedResourceAccesses := MergeResourceAccesses(existing.ResourceAccesses, new.ResourceAccesses)
-
-	// Merge denied event counts and resources
-	mergedDeniedEventCounts := MergeIntMaps(existing.DeniedEventCounts, new.DeniedEventCounts)
-	mergedDeniedResourcesAccessed := MergeIntMaps(existing.DeniedResourcesAccessed, new.DeniedResourcesAccessed)
-	mergedDeniedResourceAccesses := MergeResourceAccesses(existing.DeniedResourceAccesses, new.DeniedResourceAccesses)
-	mergedDeniedEventAccesses := MergeEventAccesses(existing.DeniedEventAccesses, new.DeniedEventAccesses)
-
-	// Session type specificity: "agent" (AWS MCP Server OAuth traffic) is the most specific,
-	// then "login" (aws login). Prefer the more specific type if either side carries it.
-	// Otherwise keep the existing type (both sides should agree since they share the same
-	// IAM session creation time).
+	// Session type specificity: "agent" (MCP OAuth traffic) is the most specific,
+	// then "login" (aws login). Prefer the more specific type if either side
+	// carries it; otherwise keep the existing type.
 	sessionType := existing.SessionType
-	if new.SessionType == "login" || existing.SessionType == "login" {
+	if incoming.SessionType == "login" || existing.SessionType == "login" {
 		sessionType = "login"
 	}
-	if new.SessionType == "agent" || existing.SessionType == "agent" {
+	if incoming.SessionType == "agent" || existing.SessionType == "agent" {
 		sessionType = "agent"
 	}
 
-	merged := &types.DynamoDBSessionAggregated{
-		CustomerID:        new.CustomerID,
-		SessionID:         existing.SessionID,
-		SessionType:       sessionType,
-		SessionStart:      existing.SessionStart, // Preserve composite range key
-		StartTime:         startTime,             // Pure timestamp
-		EndTime:           endTime,
-		DurationMinutes:   durationMinutes,
-		PersonEmail:       existing.PersonEmail,
-		PersonDisplayName: existing.PersonDisplayName,
-		AccountID:         existing.AccountID,
-		RoleARN:           existing.RoleARN,
-		RoleName:          existing.RoleName,
-		EventsCount:       existing.EventsCount + new.EventsCount,
-		SourceIPs:         MergeUniqueStrings(existing.SourceIPs, new.SourceIPs),
-		UserAgents:        MergeUniqueStrings(existing.UserAgents, new.UserAgents),
-		EventCounts:       mergedEventCounts,
-		ResourcesAccessed: mergedResourcesAccessed,
-		ResourceAccesses:  mergedResourceAccesses,
-		// Access Denied tracking
-		DeniedEventCount:        existing.DeniedEventCount + new.DeniedEventCount,
-		DeniedEventCounts:       mergedDeniedEventCounts,
-		DeniedResourcesAccessed: mergedDeniedResourcesAccessed,
-		DeniedResourceAccesses:  mergedDeniedResourceAccesses,
-		DeniedEventAccesses:     mergedDeniedEventAccesses,
-		// CRITICAL FIX: Calculate counts from merged unique sets, not by adding
-		ServicesCount:  CountUniqueServices(mergedEventCounts),
-		ResourcesCount: len(mergedResourcesAccessed),
-		// Role chaining — parent fields
-		ChainedRoles:       MergeUniqueStrings(existing.ChainedRoles, new.ChainedRoles),
-		ChainedEventCount:  existing.ChainedEventCount + new.ChainedEventCount,
-		ChainedSessionKeys: MergeUniqueStrings(existing.ChainedSessionKeys, new.ChainedSessionKeys),
-		// Role chaining — child fields (preserve from whichever has them)
-		ParentSessionKey: firstNonEmpty(existing.ParentSessionKey, new.ParentSessionKey),
-		ParentEmail:      firstNonEmpty(existing.ParentEmail, new.ParentEmail),
-		// aws login attribution (preserve from whichever has them)
-		LoginGrantedBySessionKey: firstNonEmpty(existing.LoginGrantedBySessionKey, new.LoginGrantedBySessionKey),
-		LoginGrantedByEmail:      firstNonEmpty(existing.LoginGrantedByEmail, new.LoginGrantedByEmail),
-		// AWS MCP Server OAuth attribution (preserve from whichever has them)
-		SignInSessionArn:         firstNonEmpty(existing.SignInSessionArn, new.SignInSessionArn),
-		MCPResource:              firstNonEmpty(existing.MCPResource, new.MCPResource),
-		AgentAuthorizedBySession: firstNonEmpty(existing.AgentAuthorizedBySession, new.AgentAuthorizedBySession),
-		AgentAuthorizedByEmail:   firstNonEmpty(existing.AgentAuthorizedByEmail, new.AgentAuthorizedByEmail),
-		// Session tags (preserve from whichever has them; existing wins)
-		SessionTags: mergeSessionTags(existing.SessionTags, new.SessionTags),
-		// Session policy (first non-empty wins)
-		SessionPolicy: firstNonEmpty(existing.SessionPolicy, new.SessionPolicy),
-	}
+	return &types.DynamoDBSession{
+		PK:          existing.PK,
+		SK:          existing.SK, // sticky
+		CustomerID:  existing.CustomerID,
+		PersonKey:   existing.PersonKey,
+		Anchor:      firstNonEmpty(existing.Anchor, incoming.Anchor),
+		SessionType: sessionType,
+		RoleARN:     firstNonEmpty(existing.RoleARN, incoming.RoleARN),
+		RoleID:      firstNonEmpty(existing.RoleID, incoming.RoleID),
+		RoleName:    firstNonEmpty(existing.RoleName, incoming.RoleName),
+		AccountID:   firstNonEmpty(existing.AccountID, incoming.AccountID),
+		RoleKey:     firstNonEmpty(existing.RoleKey, incoming.RoleKey),
+		AccountKey:  firstNonEmpty(existing.AccountKey, incoming.AccountKey),
 
-	return merged
+		StartTime:       startTime,
+		EndTime:         endTime,
+		DurationMinutes: durationMinutes,
+		Version:         existing.Version,
+
+		EventsCount:             existing.EventsCount + incoming.EventsCount,
+		ServiceDrivenEventCount: existing.ServiceDrivenEventCount + incoming.ServiceDrivenEventCount,
+		SourceIPs:               MergeUniqueStrings(existing.SourceIPs, incoming.SourceIPs),
+		UserAgents:              MergeUniqueStrings(existing.UserAgents, incoming.UserAgents),
+		EventCounts:             mergedEventCounts,
+		ResourcesAccessed:       mergedResourcesAccessed,
+		ResourceAccesses:        MergeResourceAccesses(existing.ResourceAccesses, incoming.ResourceAccesses),
+		ServicesCount:           CountUniqueServices(mergedEventCounts),
+		ResourcesCount:          len(mergedResourcesAccessed),
+
+		DeniedEventCount:        existing.DeniedEventCount + incoming.DeniedEventCount,
+		DeniedEventCounts:       MergeIntMaps(existing.DeniedEventCounts, incoming.DeniedEventCounts),
+		DeniedResourcesAccessed: MergeIntMaps(existing.DeniedResourcesAccessed, incoming.DeniedResourcesAccessed),
+		DeniedResourceAccesses:  MergeResourceAccesses(existing.DeniedResourceAccesses, incoming.DeniedResourceAccesses),
+		DeniedEventAccesses:     MergeEventAccesses(existing.DeniedEventAccesses, incoming.DeniedEventAccesses),
+
+		ClickOpsEventCount:  existing.ClickOpsEventCount + incoming.ClickOpsEventCount,
+		ClickOpsEventCounts: MergeIntMaps(existing.ClickOpsEventCounts, incoming.ClickOpsEventCounts),
+
+		SignInSessionArn: firstNonEmpty(existing.SignInSessionArn, incoming.SignInSessionArn),
+
+		AssumedFromSession: firstNonEmpty(existing.AssumedFromSession, incoming.AssumedFromSession),
+		AssumedFromRoleARN: firstNonEmpty(existing.AssumedFromRoleARN, incoming.AssumedFromRoleARN),
+		ChainedSessionRefs: MergeUniqueStrings(existing.ChainedSessionRefs, incoming.ChainedSessionRefs),
+		ChainedRoles:       MergeUniqueStrings(existing.ChainedRoles, incoming.ChainedRoles),
+		ChainedEventCount:  existing.ChainedEventCount + incoming.ChainedEventCount,
+
+		SessionTags:   mergeSessionTags(existing.SessionTags, incoming.SessionTags),
+		SessionPolicy: firstNonEmpty(existing.SessionPolicy, incoming.SessionPolicy),
+
+		LoginGrantedBySession:    firstNonEmpty(existing.LoginGrantedBySession, incoming.LoginGrantedBySession),
+		MCPResource:              firstNonEmpty(existing.MCPResource, incoming.MCPResource),
+		AgentAuthorizedBySession: firstNonEmpty(existing.AgentAuthorizedBySession, incoming.AgentAuthorizedBySession),
+	}
 }
 
 // mergeSessionTags returns the non-nil session tags map, preferring existing over new.
@@ -745,12 +968,13 @@ func MergeEventAccesses(a, b []types.EventAccess) []types.EventAccess {
 	return result
 }
 
-// WriteChainLinkToDynamoDB writes a chain link record to DynamoDB.
-// TTL is set to 12 hours from eventTime (STS max credential lifetime).
-func WriteChainLinkToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, link *types.DynamoDBChainLink) error {
+// WriteIdentityLink writes an identity link record (cred#/chain#/login#/mcp#)
+// to trailtool-identity-links. TTL is the caller's concern (12h — the STS max
+// credential lifetime).
+func WriteIdentityLink(ctx context.Context, ddbClient SessionStore, tableName string, link *types.DynamoDBIdentityLink) error {
 	item, err := attributevalue.MarshalMap(link)
 	if err != nil {
-		return fmt.Errorf("failed to marshal chain link: %w", err)
+		return fmt.Errorf("failed to marshal identity link: %w", err)
 	}
 
 	_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
@@ -758,35 +982,34 @@ func WriteChainLinkToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, t
 		Item:      item,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to write chain link: %w", err)
+		return fmt.Errorf("failed to write identity link: %w", err)
 	}
 
-	log.Printf("CHAIN_LINK_WRITE: access_key_id=%s parent_session=%s assumed_role=%s",
-		link.AccessKeyID, link.ParentSessionMapKey, link.AssumedRoleARN)
+	log.Printf("IDENTITY_LINK_WRITE: pk=%s person=%s parent=%s", link.PK, link.PersonKey, link.ParentSessionRef)
 	return nil
 }
 
-// BatchGetChainLinks fetches chain link records for a set of access key IDs.
-// Returns a map of accessKeyID -> DynamoDBChainLink for found records.
-func BatchGetChainLinks(ctx context.Context, ddbClient *dynamodb.Client, tableName string, keyIDs []string) (map[string]*types.DynamoDBChainLink, error) {
-	result := make(map[string]*types.DynamoDBChainLink)
-	if len(keyIDs) == 0 {
+// BatchGetIdentityLinks fetches identity link records for a set of PKs.
+// Returns a map of pk -> DynamoDBIdentityLink for found records.
+func BatchGetIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, tableName string, pks []string) (map[string]*types.DynamoDBIdentityLink, error) {
+	result := make(map[string]*types.DynamoDBIdentityLink)
+	if len(pks) == 0 {
 		return result, nil
 	}
 
 	// DynamoDB BatchGetItem limit is 100 keys per request
 	const batchSize = 100
-	for i := 0; i < len(keyIDs); i += batchSize {
+	for i := 0; i < len(pks); i += batchSize {
 		end := i + batchSize
-		if end > len(keyIDs) {
-			end = len(keyIDs)
+		if end > len(pks) {
+			end = len(pks)
 		}
-		batch := keyIDs[i:end]
+		batch := pks[i:end]
 
 		keys := make([]map[string]ddbtypes.AttributeValue, 0, len(batch))
-		for _, keyID := range batch {
+		for _, pk := range batch {
 			keys = append(keys, map[string]ddbtypes.AttributeValue{
-				"access_key_id": &ddbtypes.AttributeValueMemberS{Value: keyID},
+				"pk": &ddbtypes.AttributeValueMemberS{Value: pk},
 			})
 		}
 
@@ -796,80 +1019,107 @@ func BatchGetChainLinks(ctx context.Context, ddbClient *dynamodb.Client, tableNa
 			},
 		})
 		if err != nil {
-			return result, fmt.Errorf("batch get chain links failed: %w", err)
+			return result, fmt.Errorf("batch get identity links failed: %w", err)
 		}
 
 		for _, item := range out.Responses[tableName] {
-			var link types.DynamoDBChainLink
+			var link types.DynamoDBIdentityLink
 			if err := attributevalue.UnmarshalMap(item, &link); err != nil {
-				log.Printf("WARNING: failed to unmarshal chain link: %v", err)
+				log.Printf("WARNING: failed to unmarshal identity link: %v", err)
 				continue
 			}
-			result[link.AccessKeyID] = &link
+			result[link.PK] = &link
 		}
 	}
 
 	return result, nil
 }
 
-// UpdateParentSessionChaining updates an existing parent session in DynamoDB with chaining
-// metadata from a child (assumed role) session. This is used when the parent session was
-// ingested in a prior Lambda invocation and is not in the current in-memory sessions map.
+// UpdateParentSessionChaining updates an existing parent session in DynamoDB with
+// chaining metadata from a child (assumed role) session. Used when the parent was
+// ingested in a prior Lambda invocation and is not in the current in-memory map.
 //
-// parentSessionMapKey format: "email:roleID:creationTime"
-// DynamoDB sort key format:   "creationTime#email:roleID"
-func UpdateParentSessionChaining(ctx context.Context, ddbClient *dynamodb.Client, tableName, customerID, parentSessionMapKey, childSessionMapKey, childRoleARN string) error {
-	// Convert parentSessionMapKey (email:roleID:creationTime) → DynamoDB session_start (creationTime#email:roleID).
-	// The creationTime is the last colon-delimited token (RFC3339: "2006-01-02T15:04:05Z").
-	lastColon := strings.LastIndex(parentSessionMapKey, ":")
-	if lastColon < 0 {
-		return fmt.Errorf("invalid parentSessionMapKey format: %s", parentSessionMapKey)
+// Session refs are "person_key|sk"; the table key is (customerId#person_key, sk).
+func UpdateParentSessionChaining(ctx context.Context, ddbClient SessionStore, tableName, customerID, parentRef, childRef, childRoleARN string, childEventCount int) error {
+	personKey, sk, ok := strings.Cut(parentRef, "|")
+	if !ok || personKey == "" || sk == "" {
+		return fmt.Errorf("invalid parent session ref: %s", parentRef)
 	}
-	creationTime := parentSessionMapKey[lastColon+1:]
-	sessionID := parentSessionMapKey[:lastColon]
-	sessionStart := creationTime + "#" + sessionID
+	pk := customerID + "#" + personKey
 
-	// Fetch the existing parent session.
 	getOut, err := ddbClient.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(tableName),
 		Key: map[string]ddbtypes.AttributeValue{
-			"customerId":    &ddbtypes.AttributeValueMemberS{Value: customerID},
-			"session_start": &ddbtypes.AttributeValueMemberS{Value: sessionStart},
+			"pk": &ddbtypes.AttributeValueMemberS{Value: pk},
+			"sk": &ddbtypes.AttributeValueMemberS{Value: sk},
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("failed to get parent session %s: %w", sessionStart, err)
+		return fmt.Errorf("failed to get parent session %s: %w", parentRef, err)
 	}
-	if getOut.Item == nil {
-		// Parent not yet in DDB — will be handled by the in-memory path on the next ingest.
-		log.Printf("CHAIN_PARENT_UPDATE: parent session not yet in DDB, skipping update for %s", sessionStart)
+	if len(getOut.Item) == 0 {
+		// Parent not yet in DDB — will be attributed by a later batch's merge.
+		log.Printf("CHAIN_PARENT_UPDATE: parent session not yet in DDB, skipping update for %s", parentRef)
 		return nil
 	}
 
-	var existing types.DynamoDBSessionAggregated
+	var existing types.DynamoDBSession
 	if err := attributevalue.UnmarshalMap(getOut.Item, &existing); err != nil {
-		return fmt.Errorf("failed to unmarshal parent session %s: %w", sessionStart, err)
+		return fmt.Errorf("failed to unmarshal parent session %s: %w", parentRef, err)
 	}
 
 	// Apply chaining updates (deduplicated).
-	existing.ChainedEventCount++
+	existing.ChainedEventCount += childEventCount
 	existing.ChainedRoles = MergeUniqueStrings(existing.ChainedRoles, []string{childRoleARN})
-	existing.ChainedSessionKeys = MergeUniqueStrings(existing.ChainedSessionKeys, []string{childSessionMapKey})
+	existing.ChainedSessionRefs = MergeUniqueStrings(existing.ChainedSessionRefs, []string{childRef})
+	existing.Version++
 
-	// Write back.
 	item, err := attributevalue.MarshalMap(&existing)
 	if err != nil {
-		return fmt.Errorf("failed to marshal updated parent session %s: %w", sessionStart, err)
+		return fmt.Errorf("failed to marshal updated parent session %s: %w", parentRef, err)
 	}
 	if _, err := ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(tableName),
 		Item:      item,
 	}); err != nil {
-		return fmt.Errorf("failed to write updated parent session %s: %w", sessionStart, err)
+		return fmt.Errorf("failed to write updated parent session %s: %w", parentRef, err)
 	}
 
-	log.Printf("CHAIN_PARENT_UPDATE: updated parent=%s with child=%s role=%s", sessionStart, childSessionMapKey, childRoleARN)
+	log.Printf("CHAIN_PARENT_UPDATE: updated parent=%s with child=%s role=%s", parentRef, childRef, childRoleARN)
 	return nil
+}
+
+// MarkFileIngested records an S3 object as processed in trailtool-ingested-files
+// (TTL 30 days) — the redelivery idempotency marker.
+func MarkFileIngested(ctx context.Context, ddbClient SessionStore, tableName, objectKey string, now time.Time) error {
+	rec := &types.DynamoDBIngestedFile{
+		ObjectKey:  objectKey,
+		IngestedAt: now.UTC().Format(time.RFC3339),
+		TTL:        now.Add(30 * 24 * time.Hour).Unix(),
+	}
+	item, err := attributevalue.MarshalMap(rec)
+	if err != nil {
+		return fmt.Errorf("failed to marshal ingested-file marker: %w", err)
+	}
+	_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(tableName),
+		Item:      item,
+	})
+	return err
+}
+
+// IsFileIngested reports whether an S3 object already has an ingestion marker.
+func IsFileIngested(ctx context.Context, ddbClient SessionStore, tableName, objectKey string) (bool, error) {
+	out, err := ddbClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(tableName),
+		Key: map[string]ddbtypes.AttributeValue{
+			"object_key": &ddbtypes.AttributeValueMemberS{Value: objectKey},
+		},
+	})
+	if err != nil {
+		return false, err
+	}
+	return len(out.Item) > 0, nil
 }
 
 // WriteAccountToDynamoDB writes or updates an account in DynamoDB

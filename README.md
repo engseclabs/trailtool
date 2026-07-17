@@ -23,6 +23,12 @@ A hosted version with more features (e.g. UI, API, MCP) is available - see [trai
 
 *Requires [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)*
 
+> **Upgrading from a pre-1.0 deployment?** The 1.0 ingestor replaces the old
+> `trailtool-*-aggregated` DynamoDB tables with clean-named tables
+> (`trailtool-sessions`, `trailtool-people`, …) under a new, identity-first
+> schema. Redeploying **deletes the pre-1.0 tables and all their data** — there
+> is no migration. History rebuilds from CloudTrail going forward.
+
 ### New CloudTrail
 
 Creates new CloudTrail trail/S3 bucket in addition to trailtool resources:

@@ -123,6 +123,81 @@ func GroupEvents(events []types.CloudTrailRecord) []Group {
 	return groups
 }
 
+// Anchor resolves the session anchor for a credential group (§3.1): a session is
+// the lifetime of a credential or sign-in, so the anchor is derived from fields AWS
+// stamps on the events, never from time windows. Like person resolution, the anchor
+// is decided per group — signInSessionArn may be stamped per-service (the C1
+// discipline applied to session identity). Returns "" when no credential boundary
+// exists (long-lived AKIA keys, root, credential-less events): the windowed
+// fallback is the caller's job.
+//
+//	sis#<signInSessionArn>          a literal AWS sign-in session (MCP agents, aws login,
+//	                                and AWS's ongoing rollout to ordinary sessions);
+//	                                survives credential rotation underneath
+//	web#<roleID>#<creationDate>     one console sign-in = one stable creationDate
+//	                                across its per-request access keys
+//	key#<accessKeyId>               one temporary credential = one session (CLI/SDK,
+//	                                chained roles, SAML); a refresh is a new session,
+//	                                deliberately
+//	""                              windowed fallback (§3.2)
+func Anchor(g Group) string {
+	for _, event := range g.Events {
+		// Only sessionContext.signInSessionArn marks an event as made *under* a
+		// sign-in session. A CreateOAuth2Token grant is excluded outright: its ARN
+		// (in additionalEventData, and observed in sessionContext too) names the
+		// session it mints, not the session the grant was made under — letting it
+		// decide the group's anchor would re-key the authorizing human's session.
+		if isOAuthGrantEvent(event) {
+			continue
+		}
+		if sc := event.UserIdentity.SessionContext; sc != nil && sc.SignInSessionArn != "" {
+			return "sis#" + sc.SignInSessionArn
+		}
+	}
+	for _, event := range g.Events {
+		creationDate := session.GetSessionCreationTime(event)
+		if creationDate == "" {
+			continue
+		}
+		if isConsoleSessionCredential(event) || event.UserIdentity.AccessKeyID == "" {
+			roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
+			return "web#" + roleID + "#" + creationDate
+		}
+	}
+	for _, event := range g.Events {
+		if ak := event.UserIdentity.AccessKeyID; strings.HasPrefix(ak, "ASIA") {
+			return "key#" + ak
+		}
+	}
+	return ""
+}
+
+// isOAuthGrantEvent reports whether the event is a signin.amazonaws.com
+// CreateOAuth2Token grant (aws login PKCE or AWS MCP Server token mint).
+func isOAuthGrantEvent(event types.CloudTrailRecord) bool {
+	return event.EventSource == "signin.amazonaws.com" && event.EventName == "CreateOAuth2Token"
+}
+
+// SessionSK builds the trailtool-sessions sort key for an anchored session:
+// deterministic, so cross-batch writes for the same credential hit the same item.
+func SessionSK(anchor, roleID string) string {
+	return anchor + "#" + roleID
+}
+
+// WindowSK builds the sort key for a windowed-fallback session (§3.2). The SK is
+// sticky — first-written start — so later batches that extend the window earlier
+// keep the SK and move the start_time attribute instead.
+func WindowSK(roleID, startTime string) string {
+	return "win#" + roleID + "#" + startTime
+}
+
+// SessionRef names a session record within a customer namespace: person partition
+// plus sort key. "|" cannot appear in person keys or anchors, so the ref splits
+// unambiguously.
+func SessionRef(personKey, sk string) string {
+	return personKey + "|" + sk
+}
+
 // ResolveGroup resolves one credential group to a person, taking the first tier
 // that matches any event in the group. Groups matching no tier (service-internal
 // traffic) return false: no person, no session — but the events still feed the
