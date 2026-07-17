@@ -196,10 +196,10 @@ func peopleListCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "#\tEMAIL\tDISPLAY NAME\tSESSIONS\tROLES\tACCOUNTS\tLAST SEEN")
+			fmt.Fprintln(w, "#\tPERSON\tKEY\tSESSIONS\tROLES\tACCOUNTS\tLAST SEEN")
 			for i, p := range people {
 				fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%d\t%d\t%s\n",
-					i+1, p.Email, p.DisplayName, p.SessionsCount, p.RolesCount, p.AccountsCount, p.LastSeen)
+					i+1, p.DisplayLabel(), shortPersonKey(p.PersonKey), p.SessionsCount, p.RolesCount, p.AccountsCount, p.LastSeen)
 			}
 			return w.Flush()
 		},
@@ -249,9 +249,12 @@ func sessionsListCmd() *cobra.Command {
 				Before:    before,
 			}
 
-			sessions, err := session.ListSessions(ctx, s, customerID, user, filter)
+			sessions, personKeys, err := session.ListSessions(ctx, s, customerID, user, filter)
 			if err != nil {
 				return fatal("%v", err)
+			}
+			if user != "" && len(personKeys) > 1 {
+				fmt.Fprintf(os.Stderr, "note: %d identities matched %s\n", len(personKeys), user)
 			}
 
 			// Apply --tag KEY=VALUE filters (all must match — AND semantics)
@@ -279,6 +282,7 @@ func sessionsListCmd() *cobra.Command {
 				return printJSON(sessions)
 			}
 
+			label := personLabels(ctx, s)
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "#\tWHEN\tUSER\tROLE\tACCOUNT\tEVENTS\tTYPE\tDURATION\tCHAINED")
 			for i, sess := range sessions {
@@ -287,9 +291,9 @@ func sessionsListCmd() *cobra.Command {
 				chained := ""
 				if sess.AgentAuthorizedBySession != "" {
 					chained = "← agent"
-				} else if sess.LoginGrantedBySessionKey != "" {
+				} else if sess.LoginGrantedBySession != "" {
 					chained = "← login"
-				} else if sess.ParentSessionKey != "" {
+				} else if sess.AssumedFromSession != "" {
 					chained = "↑ child"
 				} else if len(sess.ChainedRoles) > 0 {
 					chained = fmt.Sprintf("→ %d role(s)", len(sess.ChainedRoles))
@@ -299,7 +303,7 @@ func sessionsListCmd() *cobra.Command {
 					displayRole = shortRoleName(sess.RoleName)
 				}
 				fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
-					i+1, relativeTime(sess.StartTime), sess.PersonEmail, displayRole, sess.AccountID,
+					i+1, relativeTime(sess.StartTime), label(sess.PersonKey), displayRole, sess.AccountID,
 					sess.EventsCount, st, duration, chained)
 			}
 			return w.Flush()
@@ -353,31 +357,63 @@ func sessionMatchesTags(sessionTags map[string]string, filters map[string]string
 	return true
 }
 
-// parentSessionTime extracts the RFC3339 start time from a parentSessionKey
-// which has format "email:roleID:creationTime".
-// We skip past the first two colon-separated fields (email, roleID) to get
-// the timestamp, which itself contains colons (e.g. 2026-04-16T17:43:08Z).
-func parentSessionTime(key string) string {
-	if key == "" {
-		return ""
-	}
-	colons := 0
-	for i, c := range key {
-		if c == ':' {
-			colons++
-			if colons == 2 {
-				return key[i+1:]
-			}
+// shortPersonKey trims the noisy middle out of person keys for display:
+// "email#alice@x.com" → "alice@x.com" stays readable via labels; idc# keys
+// keep their tier prefix plus the trailing userId segment.
+func shortPersonKey(key string) string {
+	if rest, ok := strings.CutPrefix(key, "idc#"); ok {
+		if idx := strings.LastIndex(rest, "#"); idx >= 0 {
+			return "idc#…" + rest[idx:]
 		}
 	}
 	return key
 }
 
+// personLabels fetches the people table once and returns a resolver mapping
+// person keys to their friendliest display label (display name, email, or the
+// key itself).
+func personLabels(ctx context.Context, s *store.Store) func(string) string {
+	labels := map[string]string{}
+	if people, err := s.ListPeople(ctx, customerID); err == nil {
+		for i := range people {
+			labels[people[i].PersonKey] = people[i].DisplayLabel()
+		}
+	}
+	return func(key string) string {
+		if l, ok := labels[key]; ok && l != "" {
+			return l
+		}
+		return shortPersonKey(key)
+	}
+}
+
+// refPersonKey returns the person-key half of a session ref ("person_key|sk").
+func refPersonKey(ref string) string {
+	if personKey, _, ok := strings.Cut(ref, "|"); ok {
+		return personKey
+	}
+	return ref
+}
+
+// printRefNav prints one attribution line (who + when) for a session ref,
+// followed by a copy-pasteable detail command when the target is fetchable.
+func printRefNav(ctx context.Context, s *store.Store, heading, ref string, label func(string) string) {
+	who := label(refPersonKey(ref))
+	target, err := s.GetSessionByRef(ctx, customerID, ref)
+	if err != nil || target == nil {
+		fmt.Printf("%s: %s\n", heading, who)
+		return
+	}
+	fmt.Printf("%s: %s at %s [%s]\n", heading, who, target.StartTime, relativeTime(target.StartTime))
+	fmt.Printf("  → trailtool sessions detail --at %s --user %s\n",
+		target.StartTime[:min(len(target.StartTime), 19)], refPersonKey(ref))
+}
+
 // resolveSession finds a session by --at prefix or "latest", with optional --user.
-func resolveSession(ctx context.Context, s *store.Store, at, user string) (*models.SessionAggregated, error) {
+func resolveSession(ctx context.Context, s *store.Store, at, user string) (*models.Session, error) {
 	if at == "latest" {
 		filter := store.SessionFilter{Days: 90}
-		sessions, err := session.ListSessions(ctx, s, customerID, user, filter)
+		sessions, _, err := session.ListSessions(ctx, s, customerID, user, filter)
 		if err != nil {
 			return nil, err
 		}
@@ -431,7 +467,7 @@ Examples:
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			var sess *models.SessionAggregated
+			var sess *models.Session
 			if index != 0 {
 				filter := store.SessionFilter{
 					Days:      days,
@@ -440,7 +476,7 @@ Examples:
 					After:     after,
 					Before:    before,
 				}
-				sessions, listErr := session.ListSessions(ctx, s, customerID, user, filter)
+				sessions, _, listErr := session.ListSessions(ctx, s, customerID, user, filter)
 				if listErr != nil {
 					return fatal("%v", listErr)
 				}
@@ -460,12 +496,17 @@ Examples:
 				return printJSON(sess)
 			}
 
-			fmt.Printf("User: %s\n", sess.PersonEmail)
+			label := personLabels(ctx, s)
+			fmt.Printf("User: %s (%s)\n", label(sess.PersonKey), sess.PersonKey)
 			fmt.Printf("Role: %s (%s)\n", sess.RoleName, sess.RoleARN)
 			fmt.Printf("Account: %s\n", sess.AccountID)
 			fmt.Printf("Type: %s\n", sess.DetectSessionType())
+			fmt.Printf("Session: %s\n", sess.SK)
 			fmt.Printf("Time: %s -> %s (%dm) [%s]\n", sess.StartTime, sess.EndTime, sess.DurationMinutes, relativeTime(sess.StartTime))
 			fmt.Printf("Events: %d across %d services\n", sess.EventsCount, sess.ServicesCount)
+			if sess.ServiceDrivenEventCount > 0 {
+				fmt.Printf("Service-driven events: %d (AWS services calling with these credentials)\n", sess.ServiceDrivenEventCount)
+			}
 
 			if len(sess.SessionTags) > 0 {
 				fmt.Println("\nSession Tags:")
@@ -516,51 +557,44 @@ Examples:
 				if sess.SignInSessionArn != "" {
 					fmt.Printf("Sign-in session: %s\n", sess.SignInSessionArn)
 				}
-				if sess.AgentAuthorizedBySession != "" {
-					grantTime := parentSessionTime(sess.AgentAuthorizedBySession)
-					fmt.Printf("OAuth grant authorized by: %s at %s [%s]\n",
-						sess.AgentAuthorizedByEmail, grantTime, relativeTime(grantTime))
-					fmt.Printf("  → trailtool sessions detail --at %s --user %s\n",
-						grantTime[:min(len(grantTime), 19)], sess.AgentAuthorizedByEmail)
+				if sess.AgentAuthorizedBySession != "" && sess.AgentAuthorizedBySession != sess.Ref() {
+					printRefNav(ctx, s, "OAuth grant authorized by", sess.AgentAuthorizedBySession, label)
 				}
 			}
 
 			// Login grant: show the human session that ran aws login to create these credentials
-			if sess.LoginGrantedBySessionKey != "" {
-				grantTime := parentSessionTime(sess.LoginGrantedBySessionKey)
-				fmt.Printf("\nCredentials granted via aws login by: %s at %s [%s]\n",
-					sess.LoginGrantedByEmail, grantTime, relativeTime(grantTime))
-				fmt.Printf("  → trailtool sessions detail --at %s --user %s\n",
-					grantTime[:min(len(grantTime), 19)], sess.LoginGrantedByEmail)
+			if sess.LoginGrantedBySession != "" {
+				fmt.Println()
+				printRefNav(ctx, s, "Credentials granted via aws login by", sess.LoginGrantedBySession, label)
 			}
 
 			// Chaining: child view — show parent with navigable time
-			if sess.ParentSessionKey != "" {
-				parentTime := parentSessionTime(sess.ParentSessionKey)
-				fmt.Printf("\nAssumed by: %s at %s [%s]\n",
-					sess.ParentEmail, parentTime, relativeTime(parentTime))
-				fmt.Printf("  → trailtool sessions detail --at %s --user %s\n",
-					parentTime[:min(len(parentTime), 19)], sess.ParentEmail)
+			if sess.AssumedFromSession != "" {
+				fmt.Println()
+				printRefNav(ctx, s, "Assumed by", sess.AssumedFromSession, label)
 			}
 
 			// Chaining: parent view — show each child session with navigable time
-			if len(sess.ChainedRoles) > 0 {
+			if len(sess.ChainedSessionRefs) > 0 || len(sess.ChainedRoles) > 0 {
 				fmt.Printf("\nAssumed Roles (%d, %d events):\n", len(sess.ChainedRoles), sess.ChainedEventCount)
-				for i, childRoleARN := range sess.ChainedRoles {
-					var childSess *models.SessionAggregated
-					if i < len(sess.ChainedSessionKeys) {
-						// ChainedSessionKeys[i] is the full session_start key: "startTime#sessionID"
-						childSess, _ = s.GetSession(ctx, customerID, sess.ChainedSessionKeys[i])
+				shown := 0
+				for _, childRef := range sess.ChainedSessionRefs {
+					childSess, _ := s.GetSessionByRef(ctx, customerID, childRef)
+					if childSess == nil {
+						fmt.Printf("  %s\n", childRef)
+						continue
 					}
-					if childSess != nil {
-						childAt := childSess.StartTime[:min(len(childSess.StartTime), 19)]
-						fmt.Printf("  %s  %-25s  %d events  %dm  [%s]\n",
-							childSess.StartTime, childSess.RoleName,
-							childSess.EventsCount, childSess.DurationMinutes,
-							relativeTime(childSess.StartTime))
-						fmt.Printf("    → trailtool sessions detail --at %s --user %s\n",
-							childAt, sess.PersonEmail)
-					} else {
+					shown++
+					childAt := childSess.StartTime[:min(len(childSess.StartTime), 19)]
+					fmt.Printf("  %s  %-25s  %d events  %dm  [%s]\n",
+						childSess.StartTime, childSess.RoleName,
+						childSess.EventsCount, childSess.DurationMinutes,
+						relativeTime(childSess.StartTime))
+					fmt.Printf("    → trailtool sessions detail --at %s --user %s\n",
+						childAt, refPersonKey(childRef))
+				}
+				if shown == 0 && len(sess.ChainedSessionRefs) == 0 {
+					for _, childRoleARN := range sess.ChainedRoles {
 						fmt.Printf("  %s\n", childRoleARN)
 					}
 				}
@@ -1247,6 +1281,7 @@ func resourcesListCmd() *cobra.Command {
 				}
 				w.Flush()
 
+				label := personLabels(ctx, s)
 				fmt.Println("\n--- Console Operations ---")
 				for _, r := range resources {
 					fmt.Printf("\n%s (%s)\n", r.Name, r.Type)
@@ -1256,7 +1291,7 @@ func resourcesListCmd() *cobra.Command {
 							date = date[:10]
 						}
 						fmt.Printf("  %s by %s (%dx) - %s\n",
-							access.EventName, access.PersonEmail, access.EventCount, date)
+							access.EventName, label(access.PersonKey), access.EventCount, date)
 					}
 				}
 			} else {

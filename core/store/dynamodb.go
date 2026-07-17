@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -16,12 +17,16 @@ import (
 )
 
 const (
-	PeopleTableName    = "trailtool-people-aggregated"
-	SessionsTableName  = "trailtool-sessions-aggregated"
-	RolesTableName     = "trailtool-roles-aggregated"
-	ResourcesTableName = "trailtool-resources-aggregated"
-	AccountsTableName  = "trailtool-accounts-aggregated"
-	ServicesTableName  = "trailtool-services-aggregated"
+	PeopleTableName    = "trailtool-people"
+	SessionsTableName  = "trailtool-sessions"
+	RolesTableName     = "trailtool-roles"
+	ResourcesTableName = "trailtool-resources"
+	AccountsTableName  = "trailtool-accounts"
+	ServicesTableName  = "trailtool-services"
+
+	// legacySessionsTableName identifies a pre-1.0 stack. Detection is by table
+	// name only — no version markers are stored anywhere.
+	legacySessionsTableName = "trailtool-sessions-aggregated"
 )
 
 // Store wraps the DynamoDB client
@@ -36,6 +41,24 @@ func NewStore(ctx context.Context) (*Store, error) {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 	return &Store{client: dynamodb.NewFromConfig(cfg)}, nil
+}
+
+// explainError wraps a DynamoDB error: when a 1.0 table is missing because the
+// deployed stack is still pre-1.0, say exactly that instead of surfacing a raw
+// AWS error.
+func (s *Store) explainError(ctx context.Context, err error, action string) error {
+	var rnf *types.ResourceNotFoundException
+	if errors.As(err, &rnf) {
+		if _, derr := s.client.DescribeTable(ctx, &dynamodb.DescribeTableInput{
+			TableName: aws.String(legacySessionsTableName),
+		}); derr == nil {
+			return fmt.Errorf(`this version of trailtool requires the 1.0 ingestor stack.
+Redeploy it:  cd ingestor && make deploy
+Note: redeploying deletes the pre-1.0 tables — existing aggregated
+data is not migrated. History rebuilds from CloudTrail going forward`)
+		}
+	}
+	return fmt.Errorf("failed to %s: %w", action, err)
 }
 
 // ListPeople returns all people for a customer
@@ -55,7 +78,7 @@ func (s *Store) ListPeople(ctx context.Context, customerID string) ([]models.Per
 
 		result, err := s.client.Query(ctx, input)
 		if err != nil {
-			return nil, fmt.Errorf("failed to query people: %w", err)
+			return nil, s.explainError(ctx, err, "query people")
 		}
 
 		var page []models.Person
@@ -90,7 +113,7 @@ func (s *Store) ListRoles(ctx context.Context, customerID string) ([]models.Role
 
 		result, err := s.client.Query(ctx, input)
 		if err != nil {
-			return nil, fmt.Errorf("failed to query roles: %w", err)
+			return nil, s.explainError(ctx, err, "query roles")
 		}
 
 		var page []models.Role
@@ -118,7 +141,7 @@ func (s *Store) GetRole(ctx context.Context, customerID, roleARN string) (*model
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get role: %w", err)
+		return nil, s.explainError(ctx, err, "get role")
 	}
 	if result.Item == nil {
 		return nil, nil
@@ -175,77 +198,102 @@ type SessionFilter struct {
 	Before    string // Only sessions starting before this time (ISO8601/RFC3339)
 }
 
-// ListSessions returns sessions, optionally filtered by email and additional filters
-func (s *Store) ListSessions(ctx context.Context, customerID, email string, filter SessionFilter) ([]models.SessionAggregated, error) {
-	var sessions []models.SessionAggregated
+// filterValues renders the filter as a DynamoDB filter expression and merges
+// its values into vals. Returns "" when no filters apply.
+func (f SessionFilter) filterValues(vals map[string]types.AttributeValue) string {
+	var filters []string
+
+	// Time range: --after / --before take precedence over --days
+	afterVal := f.After
+	if afterVal == "" && f.Days > 0 {
+		afterVal = time.Now().AddDate(0, 0, -f.Days).Format(time.RFC3339)
+	}
+	if afterVal != "" {
+		filters = append(filters, "start_time >= :after")
+		vals[":after"] = &types.AttributeValueMemberS{Value: afterVal}
+	}
+	if f.Before != "" {
+		filters = append(filters, "start_time < :before")
+		vals[":before"] = &types.AttributeValueMemberS{Value: f.Before}
+	}
+	if f.AccountID != "" {
+		filters = append(filters, "account_id = :accountId")
+		vals[":accountId"] = &types.AttributeValueMemberS{Value: f.AccountID}
+	}
+	if f.Role != "" {
+		filters = append(filters, "contains(role_name, :role)")
+		vals[":role"] = &types.AttributeValueMemberS{Value: f.Role}
+	}
+	return strings.Join(filters, " AND ")
+}
+
+// ResolvePersonKeys maps a --user value to person keys. A value containing "#"
+// is already a person key; otherwise it's an email resolved through the people
+// email_index — one email can map to several identities (offboard/rehire mints
+// a new Identity Center userId; the same human may exist under idc# and email#
+// keys across an Identity Center adoption).
+func (s *Store) ResolvePersonKeys(ctx context.Context, customerID, user string) ([]string, error) {
+	if strings.Contains(user, "#") {
+		return []string{user}, nil
+	}
+	email := strings.ToLower(user)
+
+	var keys []string
 	var lastKey map[string]types.AttributeValue
-
 	for {
-		var input *dynamodb.QueryInput
-
-		if email != "" {
-			input = &dynamodb.QueryInput{
-				TableName:              aws.String(SessionsTableName),
-				IndexName:              aws.String("person_email_index"),
-				KeyConditionExpression: aws.String("customerId = :customerId AND person_email = :email"),
-				ExpressionAttributeValues: map[string]types.AttributeValue{
-					":customerId": &types.AttributeValueMemberS{Value: customerID},
-					":email":      &types.AttributeValueMemberS{Value: email},
-				},
-				ExclusiveStartKey: lastKey,
-			}
-		} else {
-			input = &dynamodb.QueryInput{
-				TableName:              aws.String(SessionsTableName),
-				KeyConditionExpression: aws.String("customerId = :customerId"),
-				ExpressionAttributeValues: map[string]types.AttributeValue{
-					":customerId": &types.AttributeValueMemberS{Value: customerID},
-				},
-				ExclusiveStartKey: lastKey,
-			}
+		result, err := s.client.Query(ctx, &dynamodb.QueryInput{
+			TableName:              aws.String(PeopleTableName),
+			IndexName:              aws.String("email_index"),
+			KeyConditionExpression: aws.String("customerId = :cid AND email = :email"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":cid":   &types.AttributeValueMemberS{Value: customerID},
+				":email": &types.AttributeValueMemberS{Value: email},
+			},
+			ExclusiveStartKey: lastKey,
+		})
+		if err != nil {
+			return nil, s.explainError(ctx, err, "resolve user email")
 		}
-
-		// Build filter expressions
-		var filters []string
-
-		// Time range: --after / --before take precedence over --days
-		afterVal := filter.After
-		if afterVal == "" && filter.Days > 0 {
-			afterVal = time.Now().AddDate(0, 0, -filter.Days).Format(time.RFC3339)
+		var page []models.Person
+		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal people: %w", err)
 		}
-		if afterVal != "" {
-			filters = append(filters, "start_time >= :after")
-			input.ExpressionAttributeValues[":after"] = &types.AttributeValueMemberS{Value: afterVal}
+		for _, p := range page {
+			keys = append(keys, p.PersonKey)
 		}
-		if filter.Before != "" {
-			filters = append(filters, "start_time < :before")
-			input.ExpressionAttributeValues[":before"] = &types.AttributeValueMemberS{Value: filter.Before}
+		if result.LastEvaluatedKey == nil {
+			break
 		}
+		lastKey = result.LastEvaluatedKey
+	}
+	sort.Strings(keys)
+	return keys, nil
+}
 
-		if filter.AccountID != "" {
-			filters = append(filters, "account_id = :accountId")
-			input.ExpressionAttributeValues[":accountId"] = &types.AttributeValueMemberS{Value: filter.AccountID}
+// querySessionPartition returns one person's sessions (a single-partition
+// Query on pk = customerId#person_key), with filters applied server-side.
+func (s *Store) querySessionPartition(ctx context.Context, customerID, personKey string, filter SessionFilter) ([]models.Session, error) {
+	var sessions []models.Session
+	var lastKey map[string]types.AttributeValue
+	for {
+		vals := map[string]types.AttributeValue{
+			":pk": &types.AttributeValueMemberS{Value: customerID + "#" + personKey},
 		}
-
-		if filter.Role != "" {
-			filters = append(filters, "contains(role_name, :role)")
-			input.ExpressionAttributeValues[":role"] = &types.AttributeValueMemberS{Value: filter.Role}
+		input := &dynamodb.QueryInput{
+			TableName:                 aws.String(SessionsTableName),
+			KeyConditionExpression:    aws.String("pk = :pk"),
+			ExpressionAttributeValues: vals,
+			ExclusiveStartKey:         lastKey,
 		}
-
-		if len(filters) > 0 {
-			expr := filters[0]
-			for _, f := range filters[1:] {
-				expr += " AND " + f
-			}
+		if expr := filter.filterValues(vals); expr != "" {
 			input.FilterExpression = aws.String(expr)
 		}
 
 		result, err := s.client.Query(ctx, input)
 		if err != nil {
-			return nil, fmt.Errorf("failed to query sessions: %w", err)
+			return nil, s.explainError(ctx, err, "query sessions")
 		}
-
-		var page []models.SessionAggregated
+		var page []models.Session
 		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal sessions: %w", err)
 		}
@@ -256,12 +304,80 @@ func (s *Store) ListSessions(ctx context.Context, customerID, email string, filt
 		}
 		lastKey = result.LastEvaluatedKey
 	}
+	return sessions, nil
+}
+
+// scanSessions returns sessions across every person via a filtered Scan — the
+// accepted 1.0 approach for "recent sessions across everyone" (a customerId-
+// keyed time GSI would hot-partition under load).
+func (s *Store) scanSessions(ctx context.Context, customerID string, filter SessionFilter) ([]models.Session, error) {
+	var sessions []models.Session
+	var lastKey map[string]types.AttributeValue
+	for {
+		vals := map[string]types.AttributeValue{
+			":cid": &types.AttributeValueMemberS{Value: customerID},
+		}
+		expr := "customerId = :cid"
+		if f := filter.filterValues(vals); f != "" {
+			expr += " AND " + f
+		}
+		result, err := s.client.Scan(ctx, &dynamodb.ScanInput{
+			TableName:                 aws.String(SessionsTableName),
+			FilterExpression:          aws.String(expr),
+			ExpressionAttributeValues: vals,
+			ExclusiveStartKey:         lastKey,
+		})
+		if err != nil {
+			return nil, s.explainError(ctx, err, "scan sessions")
+		}
+		var page []models.Session
+		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal sessions: %w", err)
+		}
+		sessions = append(sessions, page...)
+
+		if result.LastEvaluatedKey == nil {
+			break
+		}
+		lastKey = result.LastEvaluatedKey
+	}
+	return sessions, nil
+}
+
+// ListSessions returns sessions sorted by start time. With a user (email or
+// person key), it queries each matching person's partition; the returned keys
+// tell the caller how many identities matched (so the CLI can note a split).
+// Without a user it scans the table.
+func (s *Store) ListSessions(ctx context.Context, customerID, user string, filter SessionFilter) ([]models.Session, []string, error) {
+	var sessions []models.Session
+	var personKeys []string
+
+	if user != "" {
+		keys, err := s.ResolvePersonKeys(ctx, customerID, user)
+		if err != nil {
+			return nil, nil, err
+		}
+		personKeys = keys
+		for _, key := range keys {
+			page, err := s.querySessionPartition(ctx, customerID, key, filter)
+			if err != nil {
+				return nil, nil, err
+			}
+			sessions = append(sessions, page...)
+		}
+	} else {
+		var err error
+		sessions, err = s.scanSessions(ctx, customerID, filter)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].StartTime < sessions[j].StartTime
 	})
 
-	return sessions, nil
+	return sessions, personKeys, nil
 }
 
 // ResourceFilter controls which resources are returned by ListResources
@@ -290,7 +406,7 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 
 		result, err := s.client.Query(ctx, input)
 		if err != nil {
-			return nil, fmt.Errorf("failed to query resources: %w", err)
+			return nil, s.explainError(ctx, err, "query resources")
 		}
 
 		for _, item := range result.Items {
@@ -372,7 +488,7 @@ func (s *Store) ListAccounts(ctx context.Context, customerID string) ([]models.A
 
 		result, err := s.client.Query(ctx, input)
 		if err != nil {
-			return nil, fmt.Errorf("failed to query accounts: %w", err)
+			return nil, s.explainError(ctx, err, "query accounts")
 		}
 
 		var page []models.Account
@@ -400,7 +516,7 @@ func (s *Store) GetAccount(ctx context.Context, customerID, accountID string) (*
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get account: %w", err)
+		return nil, s.explainError(ctx, err, "get account")
 	}
 	if result.Item == nil {
 		return nil, nil
@@ -430,7 +546,7 @@ func (s *Store) ListServices(ctx context.Context, customerID string) ([]models.S
 
 		result, err := s.client.Query(ctx, input)
 		if err != nil {
-			return nil, fmt.Errorf("failed to query services: %w", err)
+			return nil, s.explainError(ctx, err, "query services")
 		}
 
 		var page []models.Service
@@ -458,7 +574,7 @@ func (s *Store) GetService(ctx context.Context, customerID, eventSource string) 
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get service: %w", err)
+		return nil, s.explainError(ctx, err, "get service")
 	}
 	if result.Item == nil {
 		return nil, nil
@@ -471,82 +587,65 @@ func (s *Store) GetService(ctx context.Context, customerID, eventSource string) 
 	return &service, nil
 }
 
-// GetSession fetches a session by its composite sort key (startTime#sessionID).
-// Used internally and by agents/scripts that have the exact key.
-func (s *Store) GetSession(ctx context.Context, customerID, sessionStart string) (*models.SessionAggregated, error) {
+// GetSessionByRef fetches a session by its stable ref ("person_key|sk") — the
+// format chained/login/MCP attribution fields use to point at other sessions.
+func (s *Store) GetSessionByRef(ctx context.Context, customerID, ref string) (*models.Session, error) {
+	personKey, sk, ok := strings.Cut(ref, "|")
+	if !ok || personKey == "" || sk == "" {
+		return nil, fmt.Errorf("invalid session ref %q (want person_key|sk)", ref)
+	}
 	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(SessionsTableName),
 		Key: map[string]types.AttributeValue{
-			"customerId":    &types.AttributeValueMemberS{Value: customerID},
-			"session_start": &types.AttributeValueMemberS{Value: sessionStart},
+			"pk": &types.AttributeValueMemberS{Value: customerID + "#" + personKey},
+			"sk": &types.AttributeValueMemberS{Value: sk},
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get session: %w", err)
+		return nil, s.explainError(ctx, err, "get session")
 	}
-	if result.Item == nil {
+	if len(result.Item) == 0 {
 		return nil, nil
 	}
 
-	var session models.SessionAggregated
+	var session models.Session
 	if err := attributevalue.UnmarshalMap(result.Item, &session); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal session: %w", err)
 	}
 	return &session, nil
 }
 
-// FindSession locates a session by approximate time prefix and optional user email.
-// prefix is a truncated ISO8601 string (e.g. "2026-04-15T17:08" or "2026-04-15").
-// If email is provided the person_email_index GSI is used to narrow results.
-// Returns the most recent matching session, or nil if none found.
-// If multiple sessions match the prefix, returns an error listing the candidates.
-func (s *Store) FindSession(ctx context.Context, customerID, prefix, email string) (*models.SessionAggregated, error) {
-	var input *dynamodb.QueryInput
-
-	if email != "" {
-		input = &dynamodb.QueryInput{
-			TableName:              aws.String(SessionsTableName),
-			IndexName:              aws.String("person_email_index"),
-			KeyConditionExpression: aws.String("customerId = :cid AND person_email = :email"),
-			FilterExpression:       aws.String("begins_with(session_start, :prefix)"),
-			ExpressionAttributeValues: map[string]types.AttributeValue{
-				":cid":    &types.AttributeValueMemberS{Value: customerID},
-				":email":  &types.AttributeValueMemberS{Value: email},
-				":prefix": &types.AttributeValueMemberS{Value: prefix},
-			},
-		}
-	} else {
-		input = &dynamodb.QueryInput{
-			TableName:              aws.String(SessionsTableName),
-			KeyConditionExpression: aws.String("customerId = :cid AND begins_with(session_start, :prefix)"),
-			ExpressionAttributeValues: map[string]types.AttributeValue{
-				":cid":    &types.AttributeValueMemberS{Value: customerID},
-				":prefix": &types.AttributeValueMemberS{Value: prefix},
-			},
-		}
-	}
-
-	result, err := s.client.Query(ctx, input)
+// FindSession locates a session by approximate start-time prefix (a truncated
+// ISO8601 string, e.g. "2026-04-15T17:08" or "2026-04-15") and optional user
+// (email or person key). Sort keys are anchors, not timestamps, so the match
+// runs as a filter on start_time — per-person partition queries when a user is
+// given, a table scan otherwise.
+// Returns the single match, nil if none, or an error listing the candidates.
+func (s *Store) FindSession(ctx context.Context, customerID, prefix, user string) (*models.Session, error) {
+	// start_time >= prefix is a safe server-side narrowing: any timestamp
+	// beginning with the prefix compares >= it. The exact match happens below.
+	sessions, _, err := s.ListSessions(ctx, customerID, user, SessionFilter{After: prefix})
 	if err != nil {
-		return nil, fmt.Errorf("failed to find session: %w", err)
+		return nil, err
 	}
-	if len(result.Items) == 0 {
+
+	var matches []models.Session
+	for i := range sessions {
+		if strings.HasPrefix(sessions[i].StartTime, prefix) {
+			matches = append(matches, sessions[i])
+		}
+	}
+
+	switch len(matches) {
+	case 0:
 		return nil, nil
-	}
-
-	var matches []models.SessionAggregated
-	if err := attributevalue.UnmarshalListOfMaps(result.Items, &matches); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal sessions: %w", err)
-	}
-
-	if len(matches) > 1 {
-		// Build a helpful error listing the candidates
+	case 1:
+		return &matches[0], nil
+	default:
 		msg := fmt.Sprintf("%d sessions match %q — be more specific (e.g. include minutes):\n", len(matches), prefix)
 		for _, m := range matches {
-			msg += fmt.Sprintf("  %s  %s  %s\n", m.StartTime, m.PersonEmail, m.RoleName)
+			msg += fmt.Sprintf("  %s  %s  %s\n", m.StartTime, m.PersonKey, m.RoleName)
 		}
 		return nil, fmt.Errorf("%s", msg)
 	}
-
-	return &matches[0], nil
 }
