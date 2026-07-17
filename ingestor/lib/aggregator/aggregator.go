@@ -83,6 +83,18 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	log.Printf("=== Processing Identity-First Aggregation ===")
 	log.Printf("Processing %d events for aggregation (namespace: %s)", len(events), ns)
 
+	// Cross-batch correlation: fetch the identity links earlier batches
+	// recorded for this batch's credentials and grants.
+	groups := identity.GroupEvents(events)
+	stored := fetchStoredLinks(ctx, ddbClient, cfg.Tables.IdentityLinks, groups)
+	return aggregateGroups(ctx, ddbClient, cfg, ns, groups, stored)
+}
+
+// aggregateGroups resolves the credential groups and aggregates their events
+// into entity records, writing to DynamoDB when a client is present. Split
+// from processInternal so tests can inject stored links and simulate
+// cross-batch delivery.
+func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, ns string, groups []identity.Group, stored map[string]*link) (map[string]*types.DynamoDBSession, error) {
 	// Aggregation maps for all nouns
 	roles := make(map[string]*types.DynamoDBRole)
 	services := make(map[string]*types.DynamoDBService)
@@ -114,9 +126,8 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	sessionResources := make(map[string]map[string]bool)
 
 	// Identity resolution: credential groups → person tiers → session anchors,
-	// with in-batch chain/login/MCP links resolving tier 2.
-	groups := identity.GroupEvents(events)
-	resolved, links := resolveGroups(groups)
+	// with in-batch and stored chain/login/MCP/cred links resolving tier 2.
+	resolved, links := resolveGroups(groups, stored)
 
 	// Chaining metadata for parent sessions ingested in a prior invocation:
 	// flushed as DynamoDB updates after all current-batch sessions are written.

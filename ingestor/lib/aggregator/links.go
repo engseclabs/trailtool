@@ -29,12 +29,13 @@ const (
 	linkChain linkKind = iota // AssumeRole issued this credential
 	linkLogin                 // aws login (PKCE) vended this credential
 	linkMCP                   // AWS MCP Server OAuth token traffic
+	linkCred                  // cred# continuity: credential → person + anchor (§2.3)
 )
 
 // link is the in-batch correlation record: a credential/grant issued by a
 // resolved person's session. The same records are persisted to
-// trailtool-identity-links for cross-batch resolution (read wiring lands with
-// the §5 link-layer port).
+// trailtool-identity-links; records fetched back from there (stored=true)
+// resolve tier 2 and anchor continuity across batches.
 type link struct {
 	kind             linkKind
 	personKey        string
@@ -44,14 +45,25 @@ type link struct {
 	sessionTags      map[string]string
 	sessionPolicy    string
 	mcpResource      string
+	anchor           string   // cred# links: the anchor decided when first resolved
 	eventTime        string   // grant/AssumeRole event time, for the TTL
+	stored           bool     // fetched from trailtool-identity-links; never re-written
 	pks              []string // identity-links PKs this link is stored under
+}
+
+// credLinkPK maps a credential-group key to its cred# continuity link PK
+// ("ak#X" → "cred#X", "rc#Y" → "cred#Y"); "" for ungroupable ev#/empty keys.
+func credLinkPK(groupKey string) string {
+	if strings.HasPrefix(groupKey, "ak#") || strings.HasPrefix(groupKey, "rc#") {
+		return "cred#" + groupKey[3:]
+	}
+	return ""
 }
 
 // candidateLinkKeys returns the identity-link PKs any event in the group could
 // match, in match priority order: chain# (this credential was issued by an
-// AssumeRole), then mcp# (OAuth token traffic), then login# (aws login vended
-// credentials).
+// AssumeRole), then the group's own cred# continuity key, then mcp# (OAuth
+// token traffic), then login# (aws login vended credentials).
 func candidateLinkKeys(g identity.Group) []string {
 	var keys []string
 	seen := make(map[string]bool)
@@ -71,6 +83,9 @@ func candidateLinkKeys(g identity.Group) []string {
 			add("chain#" + rID + "#" + st)
 		}
 	}
+	if pk := credLinkPK(g.Key); pk != "" {
+		add(pk)
+	}
 	for _, e := range g.Events {
 		// Only sessionContext marks an event as made under the sign-in session;
 		// a grant's own ARN names the session it mints, not its caller's.
@@ -89,6 +104,72 @@ func candidateLinkKeys(g identity.Group) []string {
 		}
 	}
 	return keys
+}
+
+// linkFromRecord rehydrates a stored identity-link record into the in-batch
+// link shape. The kind comes from the PK's keyspace prefix.
+func linkFromRecord(pk string, rec *types.DynamoDBIdentityLink) *link {
+	l := &link{
+		personKey:        rec.PersonKey,
+		parentSessionRef: rec.ParentSessionRef,
+		parentRoleARN:    rec.ParentRoleARN,
+		assumedRoleARN:   rec.AssumedRoleARN,
+		sessionTags:      rec.SessionTags,
+		sessionPolicy:    rec.SessionPolicy,
+		mcpResource:      rec.MCPResource,
+		anchor:           rec.Anchor,
+		stored:           true,
+		pks:              []string{pk},
+	}
+	switch {
+	case strings.HasPrefix(pk, "cred#"):
+		l.kind = linkCred
+	case strings.HasPrefix(pk, "chain#"):
+		l.kind = linkChain
+	case strings.HasPrefix(pk, "login#"):
+		l.kind = linkLogin
+	case strings.HasPrefix(pk, "mcp#"):
+		l.kind = linkMCP
+	}
+	return l
+}
+
+// fetchStoredLinks batch-reads every identity-link record the batch's groups
+// could match — the groups' own cred# continuity keys plus the
+// chain#/login#/mcp# candidates their events reference. This is what makes
+// tier-2 resolution and anchor continuity work across S3 files: batch A writes
+// the links, batch B (same credentials, different file) reads them here.
+// Returns nil when no client/table is configured.
+func fetchStoredLinks(ctx context.Context, ddbClient *dynamodb.Client, table string, groups []identity.Group) map[string]*link {
+	if ddbClient == nil || table == "" {
+		return nil
+	}
+	var pks []string
+	seen := make(map[string]bool)
+	for _, g := range groups {
+		for _, k := range candidateLinkKeys(g) {
+			if !seen[k] {
+				seen[k] = true
+				pks = append(pks, k)
+			}
+		}
+	}
+	if len(pks) == 0 {
+		return nil
+	}
+	recs, err := ddblib.BatchGetIdentityLinks(ctx, ddbClient, table, pks)
+	if err != nil {
+		log.Printf("WARNING: batch get identity links failed: %v", err)
+		return nil
+	}
+	stored := make(map[string]*link, len(recs))
+	for pk, rec := range recs {
+		stored[pk] = linkFromRecord(pk, rec)
+	}
+	if len(stored) > 0 {
+		log.Printf("IDENTITY_LINKS_FETCHED: %d of %d candidates", len(stored), len(pks))
+	}
+	return stored
 }
 
 func lookupLink(links map[string]*link, g identity.Group) *link {
@@ -209,6 +290,9 @@ func writeIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, table s
 	}
 
 	for pk, l := range links {
+		if l.stored {
+			continue // fetched from the table this batch — nothing new to record
+		}
 		rec := &types.DynamoDBIdentityLink{
 			PK:               pk,
 			PersonKey:        l.personKey,

@@ -26,10 +26,14 @@ type resolvedGroup struct {
 // resolveGroups resolves every credential group to a person and anchor,
 // iterating so that links registered by resolved groups (an AssumeRole, an
 // OAuth grant) can resolve the groups that depend on them — chains within one
-// batch resolve regardless of event order. Cross-batch resolution through
-// trailtool-identity-links is the §5 link-layer port.
-func resolveGroups(groups []identity.Group) ([]resolvedGroup, map[string]*link) {
-	links := make(map[string]*link)
+// batch resolve regardless of event order. The stored map seeds the link
+// registry with records fetched from trailtool-identity-links, so tier 2 and
+// anchor continuity also work across batches (S3 files).
+func resolveGroups(groups []identity.Group, stored map[string]*link) ([]resolvedGroup, map[string]*link) {
+	links := make(map[string]*link, len(stored))
+	for pk, l := range stored {
+		links[pk] = l
+	}
 	resolved := make([]resolvedGroup, len(groups))
 
 	resolver := func(g identity.Group) (string, bool) {
@@ -53,6 +57,15 @@ func resolveGroups(groups []identity.Group) ([]resolvedGroup, map[string]*link) 
 				continue
 			}
 			anchor := identity.Anchor(groups[i])
+			// Anchor continuity (§3.1): the anchor decided when the credential
+			// first resolved wins, so a credential can never split across two
+			// anchors when anchor-deciding fields (signInSessionArn) are
+			// stamped per-service or land only in some batches.
+			if pk := credLinkPK(groups[i].Key); pk != "" {
+				if l, found := links[pk]; found && l.kind == linkCred && l.anchor != "" {
+					anchor = l.anchor
+				}
+			}
 			resolved[i] = resolvedGroup{group: groups[i], person: person, ok: true, anchor: anchor}
 			registerLinks(links, groups[i], person, anchor)
 			progress = true
