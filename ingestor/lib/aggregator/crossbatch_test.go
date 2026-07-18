@@ -228,6 +228,49 @@ func TestCrossBatchMCPLinkTypesAgent(t *testing.T) {
 	}
 }
 
+// Cross-batch service fan-out: the human's session landed in an earlier file;
+// this batch has only forward-access events (invokedBy, per-request keys).
+// The stored cred#<principalId>#<creationDate> link routes them into the
+// originating key# session.
+func TestCrossBatchFanOutJoinsOriginViaCredLink(t *testing.T) {
+	personKey := identity.IdentityCenterPersonKey(xbStoreARN, xbUserID)
+	const (
+		humanKey     = "ASIAXBATCHORIGIN001"
+		creationDate = "2026-07-17T20:43:51Z"
+	)
+	principal := xbRoleID + ":awsuser"
+
+	stored := map[string]*link{
+		"cred#" + principal + "#" + creationDate: {
+			kind:      linkCred,
+			personKey: personKey,
+			anchor:    "key#" + humanKey,
+			stored:    true,
+			pks:       []string{"cred#" + principal + "#" + creationDate},
+		},
+	}
+
+	fanOut := xbCLIEvent("2026-07-17T20:50:00Z", "DescribeTable", "ASIAFANOUTLATE00001", creationDate)
+	fanOut.UserIdentity.InvokedBy = "cloudformation.amazonaws.com"
+
+	sessions, err := aggregateForTest([]types.CloudTrailRecord{fanOut}, stored)
+	if err != nil {
+		t.Fatalf("aggregateForTest() error: %v", err)
+	}
+
+	wantRef := identity.SessionRef(personKey, identity.SessionSK("key#"+humanKey, xbRoleID))
+	sess, ok := sessions[wantRef]
+	if !ok {
+		t.Fatalf("session %q not found — fan-out did not join the origin session; keys: %v", wantRef, sessionKeys(sessions))
+	}
+	if sess.ServiceDrivenEventCount != 1 {
+		t.Errorf("ServiceDrivenEventCount = %d, want 1", sess.ServiceDrivenEventCount)
+	}
+	if len(sessions) != 1 {
+		t.Errorf("got %d sessions, want 1", len(sessions))
+	}
+}
+
 // Cross-batch aws login: the grant landed in an earlier file; the vended
 // credential's events match by roleID + creationDate.
 func TestCrossBatchLoginLinkTypesLogin(t *testing.T) {

@@ -456,7 +456,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	// Persist identity links so later batches can resolve tier 2 and keep anchor
 	// continuity (the read side lands with the §5 link-layer port).
 	if cfg.Tables.IdentityLinks != "" {
-		writeIdentityLinks(ctx, ddbClient, cfg.Tables.IdentityLinks, resolved, links)
+		writeIdentityLinks(ctx, ddbClient, cfg.Tables.IdentityLinks, links)
 	}
 
 	// Flush deferred parent chaining updates (parents ingested in prior batches).

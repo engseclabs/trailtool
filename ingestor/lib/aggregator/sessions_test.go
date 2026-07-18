@@ -271,6 +271,100 @@ func TestInvokedByServiceDriven(t *testing.T) {
 	}
 }
 
+// TestServiceFanOutJoinsOriginatingSession models the observed sandbox
+// failure: CloudFormation deploying a stack fans out hundreds of calls with
+// the human's credentials (invokedBy set), each under a FRESH per-request
+// access key but sharing the originating credential's creationDate. Those
+// events must join the human's key# session as service-driven counts — not
+// shatter into one key# session per request key.
+func TestServiceFanOutJoinsOriginatingSession(t *testing.T) {
+	const (
+		email        = "alex@engseclabs.com"
+		roleID       = "AROAUB266OVZCWROZTVQR"
+		roleARN      = "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_AdministratorAccess_78658cb1063311db"
+		humanKey     = "ASIAUB266OVZCKEQQ6MH"
+		creationDate = "2026-07-17T20:43:51Z"
+		accountID    = "278835131762"
+	)
+	principal := roleID + ":" + email
+	stsARN := "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_AdministratorAccess_78658cb1063311db/" + email
+
+	humanEvent := types.CloudTrailRecord{
+		EventTime:   "2026-07-17T20:43:52Z",
+		EventName:   "CreateStack",
+		EventSource: "cloudformation.amazonaws.com",
+		UserAgent:   "Boto3/1.42.70",
+		UserIdentity: types.UserIdentity{
+			Type:           "AssumedRole",
+			PrincipalID:    principal,
+			ARN:            stsARN,
+			AccountID:      accountID,
+			AccessKeyID:    humanKey,
+			SessionContext: makeSessionContext(creationDate, roleARN),
+			OnBehalfOf: &types.OnBehalfOf{
+				UserID:           "94482488-3041-7098-e2a1-4d3c9c7e0b21",
+				IdentityStoreARN: "arn:aws:identitystore::278835131762:identitystore/d-9967750e0f",
+			},
+		},
+	}
+
+	// Fan-out: fresh ASIA key per request, same principal + creationDate.
+	newFanOutEvent := func(eventTime, name, requestKey string) types.CloudTrailRecord {
+		return types.CloudTrailRecord{
+			EventTime:   eventTime,
+			EventName:   name,
+			EventSource: "dynamodb.amazonaws.com",
+			UserAgent:   "cloudformation.amazonaws.com",
+			UserIdentity: types.UserIdentity{
+				Type:           "AssumedRole",
+				PrincipalID:    principal,
+				ARN:            stsARN,
+				AccountID:      accountID,
+				AccessKeyID:    requestKey,
+				InvokedBy:      "cloudformation.amazonaws.com",
+				SessionContext: makeSessionContext(creationDate, roleARN),
+				OnBehalfOf: &types.OnBehalfOf{
+					UserID:           "94482488-3041-7098-e2a1-4d3c9c7e0b21",
+					IdentityStoreARN: "arn:aws:identitystore::278835131762:identitystore/d-9967750e0f",
+				},
+			},
+		}
+	}
+
+	// Fan-out events arrive BEFORE the human's own event in the file, as
+	// observed — resolution ordering must not depend on file order.
+	sessions, err := processForTest([]types.CloudTrailRecord{
+		newFanOutEvent("2026-07-17T20:44:01Z", "DescribeTable", "ASIAFANOUT0000000001"),
+		newFanOutEvent("2026-07-17T20:44:02Z", "DescribeContinuousBackups", "ASIAFANOUT0000000002"),
+		newFanOutEvent("2026-07-17T20:44:03Z", "ListTagsOfResource", "ASIAFANOUT0000000003"),
+		humanEvent,
+	})
+	if err != nil {
+		t.Fatalf("processForTest() error: %v", err)
+	}
+
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1 (fan-out must not shatter into per-request sessions); keys: %v",
+			len(sessions), sessionKeys(sessions))
+	}
+	personKey := identity.IdentityCenterPersonKey(
+		"arn:aws:identitystore::278835131762:identitystore/d-9967750e0f",
+		"94482488-3041-7098-e2a1-4d3c9c7e0b21")
+	sess := sessions[ref(personKey, "key#"+humanKey, roleID)]
+	if sess == nil {
+		t.Fatalf("expected the human's key# session; keys: %v", sessionKeys(sessions))
+	}
+	if sess.EventsCount != 4 {
+		t.Errorf("EventsCount = %d, want 4 (1 human + 3 fan-out)", sess.EventsCount)
+	}
+	if sess.ServiceDrivenEventCount != 3 {
+		t.Errorf("ServiceDrivenEventCount = %d, want 3", sess.ServiceDrivenEventCount)
+	}
+	if sess.SessionType != SessionTypeCLI {
+		t.Errorf("SessionType = %q, want %q", sess.SessionType, SessionTypeCLI)
+	}
+}
+
 // TestEventIDDedupe verifies §3.3 in-batch dedupe: org trails duplicate
 // global-service events across region files; repeated eventIDs count once.
 func TestEventIDDedupe(t *testing.T) {

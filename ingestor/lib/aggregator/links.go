@@ -45,6 +45,7 @@ type link struct {
 	sessionTags      map[string]string
 	sessionPolicy    string
 	mcpResource      string
+	roleARN          string   // cred# links: the credential group's role
 	anchor           string   // cred# links: the anchor decided when first resolved
 	eventTime        string   // grant/AssumeRole event time, for the TTL
 	stored           bool     // fetched from trailtool-identity-links; never re-written
@@ -117,6 +118,7 @@ func linkFromRecord(pk string, rec *types.DynamoDBIdentityLink) *link {
 		sessionTags:      rec.SessionTags,
 		sessionPolicy:    rec.SessionPolicy,
 		mcpResource:      rec.MCPResource,
+		roleARN:          rec.RoleARN,
 		anchor:           rec.Anchor,
 		stored:           true,
 		pks:              []string{pk},
@@ -191,8 +193,49 @@ func lookupLinkKind(links map[string]*link, g identity.Group, kind linkKind) *li
 }
 
 // registerLinks records the correlation links contributed by a resolved group's
-// events: AssumeRole chain links and CreateOAuth2Token grants (aws login / MCP).
+// events: the group's own cred# continuity links, AssumeRole chain links, and
+// CreateOAuth2Token grants (aws login / MCP).
 func registerLinks(links map[string]*link, g identity.Group, person identity.Person, anchor string) {
+	// Continuity links for the group's own credential (§2.3, §3.1): map both
+	// the credential itself and its principalId#creationDate to the resolved
+	// person and anchor. The second form is how forward-access fan-out
+	// (invokedBy) — which inherits the originating credential's creationDate
+	// but mints per-request access keys — lands in the originating session,
+	// in this batch (in-memory) and in later ones (trailtool-identity-links).
+	if anchor != "" {
+		cl := &link{kind: linkCred, personKey: person.Key, anchor: anchor}
+		addPK := func(pk string) {
+			for _, existing := range cl.pks {
+				if existing == pk {
+					return
+				}
+			}
+			cl.pks = append(cl.pks, pk)
+		}
+		if pk := credLinkPK(g.Key); pk != "" {
+			addPK(pk)
+		}
+		for _, event := range g.Events {
+			if event.UserIdentity.InvokedBy != "" {
+				continue // fan-out events never define the origin credential
+			}
+			if cl.eventTime == "" {
+				cl.eventTime = event.EventTime
+			}
+			if cl.roleARN == "" {
+				cl.roleARN = session.GetRoleARN(event)
+			}
+			if cd := session.GetSessionCreationTime(event); cd != "" && event.UserIdentity.PrincipalID != "" {
+				addPK("cred#" + event.UserIdentity.PrincipalID + "#" + cd)
+			}
+		}
+		for _, pk := range cl.pks {
+			if _, exists := links[pk]; !exists {
+				links[pk] = cl
+			}
+		}
+	}
+
 	for _, event := range g.Events {
 		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
 		parentRef := ""
@@ -276,11 +319,10 @@ func registerLinks(links map[string]*link, g identity.Group, person identity.Per
 }
 
 // writeIdentityLinks persists this batch's correlation records to
-// trailtool-identity-links: the chain/login/mcp links registered during
-// resolution, plus a cred# link per tier-1 credential group carrying the
-// group's person, role, and anchor (§2.3 — the C1 mitigation and anchor
-// continuity for later batches of the same credential).
-func writeIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, table string, resolved []resolvedGroup, links map[string]*link) {
+// trailtool-identity-links: the cred# continuity links and chain/login/mcp
+// links registered during resolution (§2.3 — the C1 mitigation, anchor
+// continuity, and fan-out attribution for later batches).
+func writeIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, table string, links map[string]*link) {
 	linkTTL := func(eventTime string) int64 {
 		t, err := time.Parse(time.RFC3339, eventTime)
 		if err != nil {
@@ -302,35 +344,12 @@ func writeIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, table s
 			SessionTags:      l.sessionTags,
 			SessionPolicy:    l.sessionPolicy,
 			MCPResource:      l.mcpResource,
+			RoleARN:          l.roleARN,
+			Anchor:           l.anchor,
 			TTL:              linkTTL(l.eventTime),
 		}
 		if err := ddblib.WriteIdentityLink(ctx, ddbClient, table, rec); err != nil {
 			log.Printf("WARNING: failed to write identity link %s: %v", pk, err)
-		}
-	}
-
-	for _, rg := range resolved {
-		if !rg.ok || rg.person.Tier != identity.TierIdentityCenter {
-			continue
-		}
-		key := rg.group.Key
-		if !strings.HasPrefix(key, "ak#") && !strings.HasPrefix(key, "rc#") {
-			continue
-		}
-		first := rg.group.Events[0]
-		roleARN := session.GetRoleARN(first)
-		if roleARN == "" {
-			roleARN = first.UserIdentity.ARN
-		}
-		rec := &types.DynamoDBIdentityLink{
-			PK:        "cred#" + key[3:],
-			PersonKey: rg.person.Key,
-			RoleARN:   roleARN,
-			Anchor:    rg.anchor,
-			TTL:       linkTTL(first.EventTime),
-		}
-		if err := ddblib.WriteIdentityLink(ctx, ddbClient, table, rec); err != nil {
-			log.Printf("WARNING: failed to write cred link %s: %v", rec.PK, err)
 		}
 	}
 }

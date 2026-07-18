@@ -88,6 +88,17 @@ func TestCredentialGroupKey(t *testing.T) {
 			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
 		},
 		{
+			name: "forward-access fan-out (invokedBy) groups by creationDate, not its per-request key",
+			event: func() types.CloudTrailRecord {
+				e := ssoEvent("ASIAPERREQVEND1", "alice@example.com", false)
+				e.UserIdentity.InvokedBy = "cloudformation.amazonaws.com"
+				e.UserIdentity.SessionContext = &types.SessionContext{}
+				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:58:00Z"
+				return e
+			}(),
+			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
+		},
+		{
 			name: "no credential falls back to eventID",
 			event: types.CloudTrailRecord{
 				EventID:      "aaaa-bbbb",

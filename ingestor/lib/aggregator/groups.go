@@ -43,9 +43,19 @@ func resolveGroups(groups []identity.Group, stored map[string]*link) ([]resolved
 		return "", false
 	}
 
+	// Service-driven (invokedBy-only) groups resolve after everything else:
+	// their anchor comes from the originating session's cred# continuity link,
+	// which the originating group registers when it resolves.
 	pending := make([]int, 0, len(groups))
 	for i := range groups {
-		pending = append(pending, i)
+		if !serviceDrivenOnly(groups[i]) {
+			pending = append(pending, i)
+		}
+	}
+	for i := range groups {
+		if serviceDrivenOnly(groups[i]) {
+			pending = append(pending, i)
+		}
 	}
 	for len(pending) > 0 {
 		progress := false
@@ -79,6 +89,18 @@ func resolveGroups(groups []identity.Group, stored map[string]*link) ([]resolved
 		resolved[i] = resolvedGroup{group: groups[i]}
 	}
 	return resolved, links
+}
+
+// serviceDrivenOnly reports whether every event in the group is service
+// fan-out (userIdentity.invokedBy set) — an AWS service calling with the
+// human's credentials, minting per-request access keys.
+func serviceDrivenOnly(g identity.Group) bool {
+	for _, e := range g.Events {
+		if e.UserIdentity.InvokedBy == "" {
+			return false
+		}
+	}
+	return len(g.Events) > 0
 }
 
 // dedupeByEventID drops repeated eventIDs within a batch: org trails duplicate
