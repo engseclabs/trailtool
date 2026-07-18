@@ -64,11 +64,13 @@ func RootPersonKey(accountID string) string {
 
 // CredentialGroupKey returns the credential-group key for one event:
 //
-//	rc#<principalId>#<creationDate>  console sessions — the console mints a fresh access
-//	                                 key per request, so the stable creationDate is the
-//	                                 credential; keying on the access key would shatter a
-//	                                 console session into single-event groups and defeat
-//	                                 the any-event-resolves-the-group C1 mitigation.
+//	rc#<principalId>#<creationDate>  per-request-credential sessions: the console AND
+//	                                 forward-access sessions (invokedBy — CloudFormation
+//	                                 fan-out etc.) mint a fresh access key per request,
+//	                                 so the stable creationDate is the credential; keying
+//	                                 on the access key would shatter one session into
+//	                                 single-event groups and defeat the
+//	                                 any-event-resolves-the-group C1 mitigation.
 //	                                 Also the fallback for events with a creationDate but
 //	                                 no access key. principalId (roleID:sessionName), not
 //	                                 bare roleID: grouping runs before identity, so two
@@ -79,7 +81,9 @@ func RootPersonKey(accountID string) string {
 //	""                               ungroupable (no credential and no eventID)
 func CredentialGroupKey(event types.CloudTrailRecord) string {
 	creationDate := session.GetSessionCreationTime(event)
-	if creationDate != "" && (isConsoleSessionCredential(event) || event.UserIdentity.AccessKeyID == "") {
+	if creationDate != "" && (isConsoleSessionCredential(event) ||
+		event.UserIdentity.AccessKeyID == "" ||
+		event.UserIdentity.InvokedBy != "") {
 		return "rc#" + event.UserIdentity.PrincipalID + "#" + creationDate
 	}
 	if ak := event.UserIdentity.AccessKeyID; ak != "" {
@@ -165,6 +169,14 @@ func Anchor(g Group) string {
 		}
 	}
 	for _, event := range g.Events {
+		// A forward-access session's keys are per-request vends, not a session
+		// credential — they must never mint a key# anchor. The group instead
+		// adopts the originating session's anchor through its
+		// cred#<principalId>#<creationDate> continuity link (forward-access
+		// sessions inherit the originator's creationDate).
+		if event.UserIdentity.InvokedBy != "" {
+			continue
+		}
 		if ak := event.UserIdentity.AccessKeyID; strings.HasPrefix(ak, "ASIA") {
 			return "key#" + ak
 		}
