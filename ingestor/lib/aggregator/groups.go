@@ -66,16 +66,7 @@ func resolveGroups(groups []identity.Group, stored map[string]*link) ([]resolved
 				still = append(still, i)
 				continue
 			}
-			anchor := identity.Anchor(groups[i])
-			// Anchor continuity (§3.1): the anchor decided when the credential
-			// first resolved wins, so a credential can never split across two
-			// anchors when anchor-deciding fields (signInSessionArn) are
-			// stamped per-service or land only in some batches.
-			if pk := credLinkPK(groups[i].Key); pk != "" {
-				if l, found := links[pk]; found && l.kind == linkCred && l.anchor != "" {
-					anchor = l.anchor
-				}
-			}
+			anchor := continuityAnchor(links, groups[i], identity.Anchor(groups[i]))
 			resolved[i] = resolvedGroup{group: groups[i], person: person, ok: true, anchor: anchor}
 			registerLinks(links, groups[i], person, anchor)
 			progress = true
@@ -87,6 +78,16 @@ func resolveGroups(groups []identity.Group, stored map[string]*link) ([]resolved
 	}
 	for _, i := range pending {
 		resolved[i] = resolvedGroup{group: groups[i]}
+	}
+
+	// Final continuity pass: a group that resolved before its originating
+	// session registered the relevant link (file order is arbitrary) re-applies
+	// continuity once all links are known.
+	for i := range resolved {
+		if !resolved[i].ok {
+			continue
+		}
+		resolved[i].anchor = continuityAnchor(links, resolved[i].group, resolved[i].anchor)
 	}
 	return resolved, links
 }

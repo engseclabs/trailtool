@@ -95,15 +95,21 @@ func CredentialGroupKey(event types.CloudTrailRecord) string {
 	return ""
 }
 
-// isConsoleSessionCredential reports whether the event was made with console session
-// credentials, from CloudTrail's own flag (record-level or session-context attribute) —
-// deterministic, unlike user-agent classification.
+// isConsoleSessionCredential reports whether the event was made with console
+// session credentials: CloudTrail's own flag (record-level or session-context
+// attribute), or — the §10 sanctioned fallback — a browser user agent. The
+// fallback exists because the flag is not stamped on every console-session
+// event: sign-in bootstrap events (ConsoleLogin, GetSigninToken) and some
+// console framework calls carry a browser UA and the session's creationDate
+// but no flag, and must not shatter into per-key sessions.
 func isConsoleSessionCredential(event types.CloudTrailRecord) bool {
 	if event.SessionCredentialFromConsole == "true" {
 		return true
 	}
-	sc := event.UserIdentity.SessionContext
-	return sc != nil && sc.Attributes.SessionCredentialFromConsole == "true"
+	if sc := event.UserIdentity.SessionContext; sc != nil && sc.Attributes.SessionCredentialFromConsole == "true" {
+		return true
+	}
+	return session.ClassifySessionType(session.NormalizeUserAgent(event.UserAgent)) == "web-console"
 }
 
 // GroupEvents partitions a batch into credential groups, preserving first-seen
