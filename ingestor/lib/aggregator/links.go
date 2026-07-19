@@ -61,6 +61,85 @@ func credLinkPK(groupKey string) string {
 	return ""
 }
 
+// anchorRank orders anchors by cascade strength: a literal sign-in session
+// beats a console creationDate beats a bare temporary credential beats the
+// windowed fallback. Continuity links only ever move a group UP this order —
+// a stronger anchor propagates to weaker groups (a ConsoleLogin bootstrap
+// event joins its console session), but a weaker one can never hijack a
+// group the cascade already anchored deterministically.
+func anchorRank(anchor string) int {
+	switch {
+	case strings.HasPrefix(anchor, "sis#"):
+		return 3
+	case strings.HasPrefix(anchor, "web#"):
+		return 2
+	case strings.HasPrefix(anchor, "key#"):
+		return 1
+	default:
+		return 0
+	}
+}
+
+// credContinuityPKs returns every cred# link PK that could carry a group's
+// credential continuity: the group key itself plus each event's
+// principalId#creationDate form (which per-request-credential events — console
+// bootstrap, forward-access fan-out — share with their originating session).
+func credContinuityPKs(g identity.Group) []string {
+	var pks []string
+	seen := make(map[string]bool)
+	add := func(pk string) {
+		if pk != "" && !seen[pk] {
+			seen[pk] = true
+			pks = append(pks, pk)
+		}
+	}
+	add(credLinkPK(g.Key))
+	for _, e := range g.Events {
+		if cd := session.GetSessionCreationTime(e); cd != "" && e.UserIdentity.PrincipalID != "" {
+			add("cred#" + e.UserIdentity.PrincipalID + "#" + cd)
+		}
+	}
+	return pks
+}
+
+// continuityAnchor applies anchor continuity (§3.1) to a group's cascade
+// decision and returns the final anchor:
+//
+//   - An ak# group's OWN link (cred#<accessKeyId> — the pk embeds the unique
+//     credential, so no other credential can have written it) is adopted
+//     unconditionally: the anchor decided when this credential first resolved
+//     wins, so one credential can never split across two anchors when
+//     anchor-deciding fields (signInSessionArn) land only in some batches.
+//   - Everything else is rank-guarded — a link may only move the group UP the
+//     cascade order. rc# groups share their pk namespace with cd-keyed
+//     associative links (cred#<principalId>#<creationDate>), so a console
+//     session's deterministic web# anchor can never be hijacked by a key#
+//     link some unflagged bootstrap event recorded under the same
+//     creationDate; the sis# rollout-safety upgrade still applies.
+//   - cd-keyed links reach key#-anchored groups only when the cascade found
+//     nothing (forward-access fan-out): a real credential that happens to
+//     share a creationDate with another session — aws login vends its
+//     credentials with the authorizing session's creationDate — keeps its own
+//     key# session.
+func continuityAnchor(links map[string]*link, g identity.Group, computed string) string {
+	ownPK := credLinkPK(g.Key)
+	if strings.HasPrefix(g.Key, "ak#") {
+		if l, ok := links[ownPK]; ok && l.kind == linkCred && l.anchor != "" {
+			return l.anchor
+		}
+		if computed != "" {
+			return computed // cd-keyed links never re-anchor a keyed credential
+		}
+	}
+	best := computed
+	for _, pk := range credContinuityPKs(g) {
+		if l, ok := links[pk]; ok && l.kind == linkCred && anchorRank(l.anchor) > anchorRank(best) {
+			best = l.anchor
+		}
+	}
+	return best
+}
+
 // candidateLinkKeys returns the identity-link PKs any event in the group could
 // match, in match priority order: chain# (this credential was issued by an
 // AssumeRole), then the group's own cred# continuity key, then mcp# (OAuth
@@ -84,7 +163,7 @@ func candidateLinkKeys(g identity.Group) []string {
 			add("chain#" + rID + "#" + st)
 		}
 	}
-	if pk := credLinkPK(g.Key); pk != "" {
+	for _, pk := range credContinuityPKs(g) {
 		add(pk)
 	}
 	for _, e := range g.Events {
@@ -229,8 +308,12 @@ func registerLinks(links map[string]*link, g identity.Group, person identity.Per
 				addPK("cred#" + event.UserIdentity.PrincipalID + "#" + cd)
 			}
 		}
+		// A stronger anchor replaces a weaker registration for the same
+		// credential: the flagged console traffic's web# link must win over
+		// the key# link its unflagged ConsoleLogin bootstrap registered.
 		for _, pk := range cl.pks {
-			if _, exists := links[pk]; !exists {
+			if cur, exists := links[pk]; !exists ||
+				(cur.kind == linkCred && anchorRank(cl.anchor) > anchorRank(cur.anchor)) {
 				links[pk] = cl
 			}
 		}
