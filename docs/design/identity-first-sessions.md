@@ -1,8 +1,6 @@
 # TrailTool 1.0 — Identity-First Session Model
 
-**Status:** Implementation in progress (v3 — sessions anchored to credentials and sign-ins; supersedes the v2 idle-gap-centric design). Clean break, no data migration. Ships as `v1.0.0`.
-
-**Progress:** rollout steps 1–3 landed (§2 identity resolution, §6 parser fields, §3 anchor cascade + `trailtool-sessions` writes + destructive schema cutover). See the [rollout checklist](#9-rollout) and the tracking issue for current state.
+For status see https://github.com/engseclabs/trailtool/issues/12
 
 ## Contents
 
@@ -290,17 +288,7 @@ Existing harness carries over: real-JSON fixtures in `ingestor/testdata/` driven
 
 Deploy to sandbox. Generate: a long CLI session with a real refresh; a console session; an assume-role chain; an MCP call. Assert via the CLI that the refresh produced two cleanly-bounded sessions for one person (not a 4h-window split), the console session is one row, the chain attributes, and nothing merged across people. Record before/after session counts in the release PR.
 
-## 9. Rollout
-
-1. ✅ Branch off main; re-add the identity struct fields per §6.
-2. ✅ §6 type/parser additions + §2 identity resolution with unit tests (pure, no infra) — `ingestor/lib/identity`.
-3. ✅ §3 anchor cascade + `trailtool-sessions` writes. SAM template: replace the `-aggregated` table resources with the clean-named ones + `trailtool-ingested-files`; deploy is destructive by design (documented in the Makefile target and README). Windowed fallback included, exercised by AKIA/root tests.
-4. ⬜ §5 link layer (cross-batch reads: wire tier 2 + anchor continuity through `trailtool-identity-links`; link *writes* landed with step 3).
-5. ⬜ §7 CLI read paths + version/deprecation notice.
-6. ⬜ Full test suite incl. property tests; live validation (§8.5); realign the sandbox Lambda.
-7. ⬜ Tag `v1.0.0` (goreleaser + Homebrew tap auto-release on semver tag). Cut a final pre-1.0 release with the deprecation notice. Release notes document the cutover: redeploying the ingestor deletes pre-1.0 tables and data; history restarts from CloudTrail.
-
-## 10. Decisions (resolved) & sandbox verifications
+## 9. Decisions (resolved) & sandbox verifications
 
 | Decision | Resolution |
 |---|---|
@@ -326,7 +314,7 @@ Verify in sandbox early (cheap; each answer just moves work between existing cod
 - Do ordinary console/CLI sessions now carry `signInSessionArn`, and is it stamped on every event of a session or per-service?
 - Do `aws login`-vended session events carry `signInSessionArn`? (If yes they anchor `sis#`; if no, `key#` — either works.)
 
-## 11. Code map — reuse / replace / delete
+## 10. Code map — reuse / replace / delete
 
 | Pre-1.0 code | 1.0 fate |
 |---|---|
