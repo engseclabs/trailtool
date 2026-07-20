@@ -127,15 +127,23 @@ func dedupeByEventID(events []types.CloudTrailRecord) []types.CloudTrailRecord {
 	return out
 }
 
-// shouldSkipEvent filters console/OAuth bookkeeping that would otherwise create
+// shouldSkipEvent filters sign-in/OAuth bookkeeping that would otherwise create
 // spurious sessions or inflate counts: SwitchRole signin events, CreateOAuth2Token
-// grants (consumed by the link layer), and AWS Config's synthetic sessions.
+// grants (consumed by the link layer), AWS Config's synthetic sessions, and
+// AssumeRoleWithSAML federation calls — the sign-in service re-federates
+// through the IdP (roughly once a minute for an open console) to mint session
+// credentials, and those issuance pings are made by a role-less SAMLUser
+// principal, not by any session we track. The sessions they mint are tracked
+// through their own events.
 func shouldSkipEvent(event types.CloudTrailRecord) bool {
 	if strings.Contains(event.UserIdentity.PrincipalID, "ConfigResourceCompositionSession") {
 		return true
 	}
 	if event.EventSource == "signin.amazonaws.com" &&
 		(event.EventName == "SwitchRole" || event.EventName == "CreateOAuth2Token") {
+		return true
+	}
+	if event.EventSource == "sts.amazonaws.com" && event.EventName == "AssumeRoleWithSAML" {
 		return true
 	}
 	return false
