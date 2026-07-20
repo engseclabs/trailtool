@@ -97,6 +97,11 @@ type Session struct {
 	ChainedRoles       []string `json:"chained_roles,omitempty" dynamodbav:"chained_roles"`
 	ChainedEventCount  int      `json:"chained_event_count,omitempty" dynamodbav:"chained_event_count"`
 
+	// GrantedSessionRefs is the parent side of aws login / MCP attribution:
+	// refs of sessions whose credentials this session authorized via an OAuth
+	// grant.
+	GrantedSessionRefs []string `json:"granted_session_refs,omitempty" dynamodbav:"granted_session_refs"`
+
 	// aws login attribution — ref of the authorizing human session.
 	LoginGrantedBySession string `json:"login_granted_by_session,omitempty" dynamodbav:"login_granted_by_session"`
 

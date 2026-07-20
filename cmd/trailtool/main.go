@@ -288,16 +288,21 @@ func sessionsListCmd() *cobra.Command {
 			for i, sess := range sessions {
 				st := sess.DetectSessionType()
 				duration := fmt.Sprintf("%dm", sess.DurationMinutes)
-				chained := ""
-				if sess.AgentAuthorizedBySession != "" {
-					chained = "← agent"
+				var marks []string
+				if sess.AgentAuthorizedBySession != "" && sess.AgentAuthorizedBySession != sess.Ref() {
+					marks = append(marks, "← agent")
 				} else if sess.LoginGrantedBySession != "" {
-					chained = "← login"
+					marks = append(marks, "← login")
 				} else if sess.AssumedFromSession != "" {
-					chained = "↑ child"
-				} else if len(sess.ChainedRoles) > 0 {
-					chained = fmt.Sprintf("→ %d role(s)", len(sess.ChainedRoles))
+					marks = append(marks, "↑ child")
 				}
+				if n := len(sess.ChainedRoles); n > 0 {
+					marks = append(marks, fmt.Sprintf("→ %d role(s)", n))
+				}
+				if n := len(sess.GrantedSessionRefs); n > 0 {
+					marks = append(marks, fmt.Sprintf("→ %d agent(s)", n))
+				}
+				chained := strings.Join(marks, " ")
 				displayRole := sess.RoleName
 				if !long {
 					displayRole = shortRoleName(sess.RoleName)
@@ -597,6 +602,25 @@ Examples:
 					for _, childRoleARN := range sess.ChainedRoles {
 						fmt.Printf("  %s\n", childRoleARN)
 					}
+				}
+			}
+
+			// Grants: parent view — sessions whose credentials this session
+			// authorized via aws login / MCP OAuth grants.
+			if len(sess.GrantedSessionRefs) > 0 {
+				fmt.Printf("\nAuthorized Sessions (%d):\n", len(sess.GrantedSessionRefs))
+				for _, gRef := range sess.GrantedSessionRefs {
+					gSess, _ := s.GetSessionByRef(ctx, customerID, gRef)
+					if gSess == nil {
+						fmt.Printf("  %s\n", gRef)
+						continue
+					}
+					gAt := gSess.StartTime[:min(len(gSess.StartTime), 19)]
+					fmt.Printf("  %s  %-5s  %-25s  %d events  %dm  [%s]\n",
+						gSess.StartTime, gSess.DetectSessionType(), shortRoleName(gSess.RoleName),
+						gSess.EventsCount, gSess.DurationMinutes, relativeTime(gSess.StartTime))
+					fmt.Printf("    → trailtool sessions detail --at %s --user %s\n",
+						gAt, refPersonKey(gRef))
 				}
 			}
 
