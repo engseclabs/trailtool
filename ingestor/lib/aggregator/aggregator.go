@@ -139,6 +139,14 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	}
 	var deferredParentUpdates []parentUpdate
 
+	// Grant refs for authorizing sessions ingested in a prior invocation
+	// (the symmetric side of aws login / MCP attribution).
+	type grantUpdate struct {
+		parentRef string
+		childRef  string
+	}
+	var deferredGrantUpdates []grantUpdate
+
 	for _, rg := range resolved {
 		var chainL, loginL, mcpL *link
 		var winSlots map[int]windowSlot
@@ -353,6 +361,24 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		}
 	}
 
+	// Symmetric grant refs: record each aws-login/MCP-attributed session on the
+	// session that authorized its credentials, mirroring role chaining's
+	// parent→child refs so "what did this session authorize?" is answerable
+	// from the parent. Same-batch parents update in memory; prior-batch parents
+	// get a deferred DynamoDB update.
+	for sessRef, sess := range sessions {
+		for _, grantRef := range []string{sess.AgentAuthorizedBySession, sess.LoginGrantedBySession} {
+			if grantRef == "" || grantRef == sessRef {
+				continue
+			}
+			if parentSess, inBatch := sessions[grantRef]; inBatch {
+				appendUnique(&parentSess.GrantedSessionRefs, sessRef)
+			} else {
+				deferredGrantUpdates = append(deferredGrantUpdates, grantUpdate{parentRef: grantRef, childRef: sessRef})
+			}
+		}
+	}
+
 	// Update counts from unique sets
 	for arn, role := range roles {
 		role.PeopleCount = setLen(rolePeople, arn)
@@ -471,6 +497,22 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			if err := ddblib.UpdateParentSessionChaining(ctx, ddbClient, cfg.Tables.Sessions, ns,
 				u.parentRef, u.childRef, u.childRoleARN, u.eventCount); err != nil {
 				log.Printf("ERROR: Failed to update parent session chaining: %v", err)
+			}
+		}
+	}
+
+	// Flush deferred grant refs (authorizing sessions from prior batches).
+	if len(deferredGrantUpdates) > 0 && cfg.Tables.Sessions != "" {
+		seen := make(map[string]bool)
+		for _, u := range deferredGrantUpdates {
+			key := u.parentRef + "|" + u.childRef
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if err := ddblib.UpdateParentSessionGrants(ctx, ddbClient, cfg.Tables.Sessions, ns,
+				u.parentRef, u.childRef); err != nil {
+				log.Printf("ERROR: Failed to update authorizing session grants: %v", err)
 			}
 		}
 	}

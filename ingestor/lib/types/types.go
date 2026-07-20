@@ -318,6 +318,12 @@ type DynamoDBSession struct {
 	ChainedRoles       []string `dynamodbav:"chained_roles,omitempty"`        // role ARNs assumed during this session
 	ChainedEventCount  int      `dynamodbav:"chained_event_count,omitempty"`  // events attributed to children (summary)
 
+	// GrantedSessionRefs is the symmetric parent side of the aws login / MCP
+	// attributions below: refs of the sessions whose credentials this session
+	// authorized via an OAuth grant. Mirrors role chaining's parent→child refs
+	// so "what did this session authorize?" is answerable from the parent.
+	GrantedSessionRefs []string `dynamodbav:"granted_session_refs,omitempty"`
+
 	// SessionTags/SessionPolicy come from the AssumeRole requestParameters that
 	// created this child session.
 	SessionTags   map[string]string `dynamodbav:"session_tags,omitempty"`
