@@ -147,6 +147,7 @@ func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSessi
 		ChainedSessionRefs: MergeUniqueStrings(existing.ChainedSessionRefs, incoming.ChainedSessionRefs),
 		ChainedRoles:       MergeUniqueStrings(existing.ChainedRoles, incoming.ChainedRoles),
 		ChainedEventCount:  existing.ChainedEventCount + incoming.ChainedEventCount,
+		GrantedSessionRefs: MergeUniqueStrings(existing.GrantedSessionRefs, incoming.GrantedSessionRefs),
 
 		SessionTags:   mergeSessionTags(existing.SessionTags, incoming.SessionTags),
 		SessionPolicy: firstNonEmpty(existing.SessionPolicy, incoming.SessionPolicy),

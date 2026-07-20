@@ -90,6 +90,10 @@ func TestAwsLoginSessionDetection(t *testing.T) {
 	if parentSess.EventsCount != 1 {
 		t.Errorf("authorizing session EventsCount = %d, want 1 (grant must not inflate)", parentSess.EventsCount)
 	}
+	// Symmetric grant ref: the authorizing session records the vended session.
+	if len(parentSess.GrantedSessionRefs) != 1 || parentSess.GrantedSessionRefs[0] != vendedRef {
+		t.Errorf("authorizing GrantedSessionRefs = %v, want [%s]", parentSess.GrantedSessionRefs, vendedRef)
+	}
 
 	vendedSess, ok := sessions[vendedRef]
 	if !ok {

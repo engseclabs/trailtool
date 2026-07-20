@@ -126,6 +126,10 @@ func TestMCPAgentSessionAttribution(t *testing.T) {
 	if humanSess.SessionType != SessionTypeWeb {
 		t.Errorf("human SessionType = %q, want %q", humanSess.SessionType, SessionTypeWeb)
 	}
+	// Symmetric grant ref: the authorizing session records the agent session.
+	if len(humanSess.GrantedSessionRefs) != 1 || humanSess.GrantedSessionRefs[0] != agentRef {
+		t.Errorf("human GrantedSessionRefs = %v, want [%s]", humanSess.GrantedSessionRefs, agentRef)
+	}
 }
 
 // TestMCPAgentRotationOneSession verifies §8.1(10): agent credentials rotating

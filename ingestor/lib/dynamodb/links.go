@@ -138,6 +138,56 @@ func UpdateParentSessionChaining(ctx context.Context, ddbClient SessionStore, ta
 	return nil
 }
 
+// UpdateParentSessionGrants records a granted (aws login / MCP) session ref on
+// its authorizing session — the symmetric side of the child's
+// agent_authorized_by_session / login_granted_by_session — when the authorizer
+// was ingested in a prior Lambda invocation.
+func UpdateParentSessionGrants(ctx context.Context, ddbClient SessionStore, tableName, customerID, parentRef, childRef string) error {
+	personKey, sk, ok := strings.Cut(parentRef, "|")
+	if !ok || personKey == "" || sk == "" {
+		return fmt.Errorf("invalid authorizing session ref: %s", parentRef)
+	}
+	pk := customerID + "#" + personKey
+
+	getOut, err := ddbClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(tableName),
+		Key: map[string]ddbtypes.AttributeValue{
+			"pk": &ddbtypes.AttributeValueMemberS{Value: pk},
+			"sk": &ddbtypes.AttributeValueMemberS{Value: sk},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get authorizing session %s: %w", parentRef, err)
+	}
+	if len(getOut.Item) == 0 {
+		// Authorizer not yet in DDB — a later batch's merge will attribute it.
+		log.Printf("GRANT_PARENT_UPDATE: authorizing session not yet in DDB, skipping update for %s", parentRef)
+		return nil
+	}
+
+	var existing types.DynamoDBSession
+	if err := attributevalue.UnmarshalMap(getOut.Item, &existing); err != nil {
+		return fmt.Errorf("failed to unmarshal authorizing session %s: %w", parentRef, err)
+	}
+
+	existing.GrantedSessionRefs = MergeUniqueStrings(existing.GrantedSessionRefs, []string{childRef})
+	existing.Version++
+
+	item, err := attributevalue.MarshalMap(&existing)
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated authorizing session %s: %w", parentRef, err)
+	}
+	if _, err := ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(tableName),
+		Item:      item,
+	}); err != nil {
+		return fmt.Errorf("failed to write updated authorizing session %s: %w", parentRef, err)
+	}
+
+	log.Printf("GRANT_PARENT_UPDATE: updated authorizer=%s with granted=%s", parentRef, childRef)
+	return nil
+}
+
 // MarkFileIngested records an S3 object as processed in trailtool-ingested-files
 // (TTL 30 days) — the redelivery idempotency marker.
 func MarkFileIngested(ctx context.Context, ddbClient SessionStore, tableName, objectKey string, now time.Time) error {
