@@ -486,6 +486,43 @@ func TestPoisonedCredLinkCannotHijackConsole(t *testing.T) {
 	}
 }
 
+// TestSAMLFederationPingsSkipped models the third observed sandbox artifact:
+// the sign-in service re-federates through the IdP (AssumeRoleWithSAML by a
+// role-less SAMLUser principal, ~once a minute per open console) to mint the
+// console's session credentials. Those issuance pings must not become a
+// person's session — the sessions they mint are tracked via their own events.
+func TestSAMLFederationPingsSkipped(t *testing.T) {
+	newPing := func(eventTime string) types.CloudTrailRecord {
+		return types.CloudTrailRecord{
+			EventTime:   eventTime,
+			EventName:   "AssumeRoleWithSAML",
+			EventSource: "sts.amazonaws.com",
+			UserAgent:   "aws-sdk-java/2.46.18",
+			UserIdentity: types.UserIdentity{
+				Type:        "SAMLUser",
+				PrincipalID: "4xZXicN6TGyAaMwC5tBBs8KGuSg=:alex@engseclabs.com",
+				UserName:    "alex@engseclabs.com",
+			},
+			RequestParameters: map[string]interface{}{
+				"roleArn": "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_AdministratorAccess_78658cb1063311db",
+			},
+		}
+	}
+
+	sessions, err := processForTest([]types.CloudTrailRecord{
+		newPing("2026-07-19T02:52:31Z"),
+		newPing("2026-07-19T02:53:35Z"),
+		newPing("2026-07-19T02:54:40Z"),
+	})
+	if err != nil {
+		t.Fatalf("processForTest() error: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("got %d sessions, want 0 (federation pings are sign-in bookkeeping); keys: %v",
+			len(sessions), sessionKeys(sessions))
+	}
+}
+
 // TestEventIDDedupe verifies §3.3 in-batch dedupe: org trails duplicate
 // global-service events across region files; repeated eventIDs count once.
 func TestEventIDDedupe(t *testing.T) {
