@@ -38,15 +38,31 @@ func ExtractRoleIDFromPrincipalID(principalID string) string {
 	return principalID
 }
 
-// ExtractRoleNameFromARN extracts role name from ARN
-// Example: "arn:aws:iam::123456789012:role/MyRole" -> "MyRole"
-// Example: "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/us-east-2/MyRole" -> "aws-reserved/sso.amazonaws.com/us-east-2/MyRole"
+// ExtractRoleNameFromARN extracts role name from an IAM role ARN or an STS
+// assumed-role ARN.
+// IAM role:      "arn:aws:iam::123456789012:role/MyRole" -> "MyRole"
+// IAM role path: "arn:aws:iam::123456789012:role/aws-reserved/.../MyRole" -> "aws-reserved/.../MyRole"
+// Assumed-role:  "arn:aws:sts::123456789012:assumed-role/MyRole/session-name" -> "MyRole"
+//
+// Both forms occur: session-context sessionIssuer ARNs are IAM :role/ ARNs, but a
+// bare event's userIdentity.arn (e.g. a lone ConsoleLogin under a direct-SAML
+// role) is an sts:assumed-role ARN. Without the assumed-role case those sessions
+// render with a blank role name.
 func ExtractRoleNameFromARN(arn string) string {
-	// Extract everything after "role/" to preserve full path
+	// Extract everything after "role/" to preserve full path (IAM role ARNs).
 	rolePrefix := ":role/"
-	idx := strings.Index(arn, rolePrefix)
-	if idx != -1 {
+	if idx := strings.Index(arn, rolePrefix); idx != -1 {
 		return arn[idx+len(rolePrefix):]
+	}
+	// STS assumed-role ARN: the role name is the segment between
+	// "assumed-role/" and the role-session-name that follows it.
+	assumedPrefix := ":assumed-role/"
+	if idx := strings.Index(arn, assumedPrefix); idx != -1 {
+		rest := arn[idx+len(assumedPrefix):]
+		if slash := strings.IndexByte(rest, '/'); slash != -1 {
+			return rest[:slash]
+		}
+		return rest
 	}
 	return ""
 }
