@@ -64,6 +64,23 @@ func RootPersonKey(accountID string) string {
 
 // CredentialGroupKey returns the credential-group key for one event:
 //
+//	sig#<signInSessionArn>           events made *under* a sign-in session (agent /
+//	                                 aws login traffic): the arn is the credential
+//	                                 boundary, checked first as the strongest and most
+//	                                 specific. Without this, agent traffic sharing a
+//	                                 console creationDate — and rotating a fresh access
+//	                                 key per request — would either fall into the console
+//	                                 rc# group or shatter across ak# groups, mixing the
+//	                                 human console session and one or more agent sessions.
+//	                                 The CLI-rollout case (a stable CLI credential that
+//	                                 also gets stamped with a signInSessionArn, §3.1) is
+//	                                 preserved by anchor continuity: its cross-batch
+//	                                 cred#<accessKeyId> link, keyed on the stable ASIA key
+//	                                 rather than the arn, still carries its key# anchor
+//	                                 forward (see continuityAnchor). Excludes the
+//	                                 CreateOAuth2Token grant, whose arn (in
+//	                                 additionalEventData) names the session it mints, not
+//	                                 the one it was made under.
 //	rc#<principalId>#<creationDate>  per-request-credential sessions: the console AND
 //	                                 forward-access sessions (invokedBy — CloudFormation
 //	                                 fan-out etc.) mint a fresh access key per request,
@@ -80,6 +97,11 @@ func RootPersonKey(accountID string) string {
 //	ev#<eventID>                     everything else — the event resolves alone
 //	""                               ungroupable (no credential and no eventID)
 func CredentialGroupKey(event types.CloudTrailRecord) string {
+	if !isOAuthGrantEvent(event) {
+		if sc := event.UserIdentity.SessionContext; sc != nil && sc.SignInSessionArn != "" {
+			return "sig#" + sc.SignInSessionArn
+		}
+	}
 	creationDate := session.GetSessionCreationTime(event)
 	if creationDate != "" && (isConsoleSessionCredential(event) ||
 		event.UserIdentity.AccessKeyID == "" ||

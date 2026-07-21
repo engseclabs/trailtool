@@ -99,6 +99,29 @@ func TestCredentialGroupKey(t *testing.T) {
 			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
 		},
 		{
+			name: "signInSessionArn wins over the shared console creationDate (agent traffic)",
+			event: func() types.CloudTrailRecord {
+				e := ssoEvent("ASIAAGENTROT1", "alice@example.com", true)
+				e.UserIdentity.SessionContext = &types.SessionContext{SignInSessionArn: "arn:aws:signin:us-east-1:1:session/agent-x"}
+				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:58:00Z"
+				return e
+			}(),
+			want: "sig#arn:aws:signin:us-east-1:1:session/agent-x",
+		},
+		{
+			name: "the CreateOAuth2Token grant is NOT grouped by the arn it mints",
+			event: func() types.CloudTrailRecord {
+				e := ssoEvent("", "alice@example.com", false)
+				e.EventSource = "signin.amazonaws.com"
+				e.EventName = "CreateOAuth2Token"
+				e.UserIdentity.SessionContext = &types.SessionContext{}
+				e.UserIdentity.SessionContext.SignInSessionArn = "arn:aws:signin:us-east-1:1:session/minted"
+				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:58:00Z"
+				return e
+			}(),
+			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
+		},
+		{
 			name: "no credential falls back to eventID",
 			event: types.CloudTrailRecord{
 				EventID:      "aaaa-bbbb",

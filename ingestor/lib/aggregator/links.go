@@ -81,9 +81,11 @@ func anchorRank(anchor string) int {
 }
 
 // credContinuityPKs returns every cred# link PK that could carry a group's
-// credential continuity: the group key itself plus each event's
-// principalId#creationDate form (which per-request-credential events — console
-// bootstrap, forward-access fan-out — share with their originating session).
+// credential continuity: the group key itself, each event's access key (a
+// sig#-grouped event may carry the stable ASIA key a prior batch anchored —
+// the CLI-rollout case), and each event's principalId#creationDate form (which
+// per-request-credential events — console bootstrap, forward-access fan-out —
+// share with their originating session).
 func credContinuityPKs(g identity.Group) []string {
 	var pks []string
 	seen := make(map[string]bool)
@@ -95,6 +97,9 @@ func credContinuityPKs(g identity.Group) []string {
 	}
 	add(credLinkPK(g.Key))
 	for _, e := range g.Events {
+		if ak := e.UserIdentity.AccessKeyID; ak != "" {
+			add("cred#" + ak)
+		}
 		if cd := session.GetSessionCreationTime(e); cd != "" && e.UserIdentity.PrincipalID != "" {
 			add("cred#" + e.UserIdentity.PrincipalID + "#" + cd)
 		}
@@ -129,6 +134,22 @@ func continuityAnchor(links map[string]*link, g identity.Group, computed string)
 		}
 		if computed != "" {
 			return computed // cd-keyed links never re-anchor a keyed credential
+		}
+	}
+	// CLI-rollout continuity: a sig#-grouped event that also carries a stable
+	// access key which a prior batch already anchored (cred#<accessKeyId>) stays
+	// on that credential's own session, even though this batch's cascade computed
+	// sis# — AWS stamping a signInSessionArn onto an established CLI credential
+	// (§3.1) must not split it. The cred#<accessKeyId> pk embeds the unique key,
+	// so no other credential can have written it; adopt it unconditionally (this
+	// is the one sanctioned downgrade below sis#).
+	if strings.HasPrefix(g.Key, "sig#") {
+		for _, e := range g.Events {
+			if ak := e.UserIdentity.AccessKeyID; ak != "" {
+				if l, ok := links["cred#"+ak]; ok && l.kind == linkCred && strings.HasPrefix(l.anchor, "key#") {
+					return l.anchor
+				}
+			}
 		}
 	}
 	best := computed
@@ -294,18 +315,31 @@ func registerLinks(links map[string]*link, g identity.Group, person identity.Per
 		if pk := credLinkPK(g.Key); pk != "" {
 			addPK(pk)
 		}
+		// A sig# group (agent / aws login traffic keyed on its signInSessionArn)
+		// must not register principalId#creationDate continuity: it shares that
+		// creationDate with the console session that authorized it, and claiming
+		// the key would let an agent's sis# anchor hijack the console session —
+		// the very cross-contamination the sig# split exists to prevent. Its own
+		// cred#<arn> key (added above) is the only continuity it needs.
+		if !strings.HasPrefix(g.Key, "sig#") {
+			for _, event := range g.Events {
+				if event.UserIdentity.InvokedBy != "" {
+					continue // fan-out events never define the origin credential
+				}
+				if cd := session.GetSessionCreationTime(event); cd != "" && event.UserIdentity.PrincipalID != "" {
+					addPK("cred#" + event.UserIdentity.PrincipalID + "#" + cd)
+				}
+			}
+		}
 		for _, event := range g.Events {
 			if event.UserIdentity.InvokedBy != "" {
-				continue // fan-out events never define the origin credential
+				continue
 			}
 			if cl.eventTime == "" {
 				cl.eventTime = event.EventTime
 			}
 			if cl.roleARN == "" {
 				cl.roleARN = session.GetRoleARN(event)
-			}
-			if cd := session.GetSessionCreationTime(event); cd != "" && event.UserIdentity.PrincipalID != "" {
-				addPK("cred#" + event.UserIdentity.PrincipalID + "#" + cd)
 			}
 		}
 		// A stronger anchor replaces a weaker registration for the same
