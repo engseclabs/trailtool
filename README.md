@@ -69,11 +69,10 @@ trailtool people list
 # Sessions
 trailtool sessions list --user alice@example.com --days 7
 trailtool sessions list --user alice@example.com --days 7 --long  # show full role names
-trailtool sessions detail --at 2025-01-15T10:30
-trailtool sessions detail --index 1 --user alice@example.com --days 7  # by list position
-trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
-trailtool sessions detail --at latest
-trailtool sessions summarize --at 2025-01-15T10:30  # requires Bedrock
+trailtool sessions detail --session k7m2qp          # by id (SID column, prefix ok)
+trailtool sessions detail --session latest
+trailtool sessions detail --session latest --user alice@example.com
+trailtool sessions summarize --session k7m2qp        # requires Bedrock
 
 # Accounts
 trailtool accounts list
@@ -88,8 +87,8 @@ trailtool roles policy MyRole
 trailtool roles policy MyRole --include-denied --explain
 
 # Session-scoped policy (tighter: only what this session actually did)
-trailtool sessions policy --at latest
-trailtool sessions policy --at 2025-01-15T10:35 --user alice@example.com --explain
+trailtool sessions policy --session latest
+trailtool sessions policy --session k7m2qp --explain
 
 # Services
 trailtool services list
@@ -110,27 +109,27 @@ TrailTool automatically correlates `AssumeRole` calls back to the originating hu
 ```
 $ trailtool sessions list --days 1
 
-#  WHEN        USER                  ROLE         ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
-1  5 mins ago  alice@example.com     AdminAccess  123456789012   84      API      12m       → 2 role(s)
-2  5 mins ago  alice@example.com     DeployRole   123456789012   31      API      8m        ↑ child
-3  5 mins ago  alice@example.com     AuditRole    123456789012   12      API      3m        ↑ child
+SID     WHEN        USER                  ROLE         ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
+k7m2qp  5 mins ago  alice@example.com     AdminAccess  123456789012   84      API      12m       → 2 role(s)
+q9x4mn  5 mins ago  alice@example.com     DeployRole   123456789012   31      API      8m        ↑ child
+a1b2c3  5 mins ago  alice@example.com     AuditRole    123456789012   12      API      3m        ↑ child
 ```
 
 `→ N role(s)` means this human session assumed N roles. `↑ child` means this session was created via `AssumeRole` and is attributed back to its parent.
 
 ```bash
 # See which roles a session assumed and how many events each generated
-trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
+trailtool sessions detail --session k7m2qp
 
 # The detail view shows the full chain:
 # Assumed by: alice@example.com at 2025-01-15T10:30:00Z            (on child sessions)
-#   → trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
+#   → trailtool sessions detail --session q9x4mn
 #
 # Assumed Roles (2, 43 events):                                    (on parent sessions)
 #   2025-01-15T10:35:00Z  DeployRole  31 events  8m
-#     → trailtool sessions detail --at 2025-01-15T10:35 --user alice@example.com
+#     → trailtool sessions detail --session a1b2c3
 #   2025-01-15T10:36:00Z  AuditRole   12 events  3m
-#     → trailtool sessions detail --at 2025-01-15T10:36 --user alice@example.com
+#     → trailtool sessions detail --session d4e5f6
 ```
 
 ### `aws login` Session Detection
@@ -140,16 +139,16 @@ When a developer runs `aws login` to vend credentials to an AI agent (Claude Cod
 ```
 $ trailtool sessions list --days 1
 
-WHEN        USER                  ROLE         ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
-5 mins ago  alice@example.com     AdminAccess  123456789012   3       LOGIN    8m        ← login
-8 mins ago  alice@example.com     AdminAccess  123456789012   84      API      12m
+SID     WHEN        USER                  ROLE         ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
+b7k9mp  5 mins ago  alice@example.com     AdminAccess  123456789012   3       LOGIN    8m        ← login
+k7m2qp  8 mins ago  alice@example.com     AdminAccess  123456789012   84      API      12m
 ```
 
 `← login` means the session's credentials were vended via `aws login` by a human in another session. The detail view shows the attribution:
 
 ```
 Credentials granted via aws login by: alice@example.com at 2025-01-15T10:30:00Z (8 minutes ago)
-  → trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
+  → trailtool sessions detail --session k7m2qp
 ```
 
 This distinguishes agent-driven activity (credentials vended by a human developer via `aws login`) from background automation or long-running CLI sessions.

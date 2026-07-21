@@ -615,37 +615,40 @@ func (s *Store) GetSessionByRef(ctx context.Context, customerID, ref string) (*m
 	return &session, nil
 }
 
-// FindSession locates a session by approximate start-time prefix (a truncated
-// ISO8601 string, e.g. "2026-04-15T17:08" or "2026-04-15") and optional user
-// (email or person key). Sort keys are anchors, not timestamps, so the match
-// runs as a filter on start_time — per-person partition queries when a user is
-// given, a table scan otherwise.
-// Returns the single match, nil if none, or an error listing the candidates.
-func (s *Store) FindSession(ctx context.Context, customerID, prefix, user string) (*models.Session, error) {
-	// start_time >= prefix is a safe server-side narrowing: any timestamp
-	// beginning with the prefix compares >= it. The exact match happens below.
-	sessions, _, err := s.ListSessions(ctx, customerID, user, SessionFilter{After: prefix})
-	if err != nil {
-		return nil, err
+// FindSessionsBySidPrefix returns every session whose sid starts with prefix,
+// via a begins_with Query on the sid_index GSI (partition customerId, sort sid).
+// Callers pass a short user-typed prefix; 0 matches means not found, 1 is the
+// hit, and >1 is an ambiguous prefix the caller should ask to lengthen. Results
+// are ordered by sid (the GSI sort key).
+func (s *Store) FindSessionsBySidPrefix(ctx context.Context, customerID, prefix string) ([]models.Session, error) {
+	if prefix == "" {
+		return nil, fmt.Errorf("empty session id prefix")
 	}
-
-	var matches []models.Session
-	for i := range sessions {
-		if strings.HasPrefix(sessions[i].StartTime, prefix) {
-			matches = append(matches, sessions[i])
+	var sessions []models.Session
+	var lastKey map[string]types.AttributeValue
+	for {
+		result, err := s.client.Query(ctx, &dynamodb.QueryInput{
+			TableName:              aws.String(SessionsTableName),
+			IndexName:              aws.String("sid_index"),
+			KeyConditionExpression: aws.String("customerId = :cid AND begins_with(sid, :sid)"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":cid": &types.AttributeValueMemberS{Value: customerID},
+				":sid": &types.AttributeValueMemberS{Value: prefix},
+			},
+			ExclusiveStartKey: lastKey,
+		})
+		if err != nil {
+			return nil, s.explainError(ctx, err, "query sessions by sid")
 		}
-	}
-
-	switch len(matches) {
-	case 0:
-		return nil, nil
-	case 1:
-		return &matches[0], nil
-	default:
-		msg := fmt.Sprintf("%d sessions match %q — be more specific (e.g. include minutes):\n", len(matches), prefix)
-		for _, m := range matches {
-			msg += fmt.Sprintf("  %s  %s  %s\n", m.StartTime, m.PersonKey, m.RoleName)
+		var page []models.Session
+		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal sessions: %w", err)
 		}
-		return nil, fmt.Errorf("%s", msg)
+		sessions = append(sessions, page...)
+		if result.LastEvaluatedKey == nil {
+			break
+		}
+		lastKey = result.LastEvaluatedKey
 	}
+	return sessions, nil
 }

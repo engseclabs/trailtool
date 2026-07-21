@@ -1,5 +1,11 @@
 package models
 
+import (
+	"crypto/sha256"
+	"encoding/base32"
+	"strings"
+)
+
 // Person represents a person record from the trailtool-people table, keyed by
 // the tier-prefixed person key (idc#…, email#…, iamuser#…, root#…) resolved by
 // the ingestor's identity tiers.
@@ -37,6 +43,11 @@ func (p *Person) DisplayLabel() string {
 type Session struct {
 	PK string `json:"-" dynamodbav:"pk"`  // customerId#person_key
 	SK string `json:"sk" dynamodbav:"sk"` // anchor#roleID | win#roleID#start
+
+	// Sid is the short deterministic session id (sort key of the sid_index GSI).
+	// The CLI shows a prefix of it and resolves "--session <prefix>" against the
+	// index. Written by the ingestor; empty on records ingested before sids.
+	Sid string `json:"sid,omitempty" dynamodbav:"sid"`
 
 	PersonKey   string `json:"person_key" dynamodbav:"person_key"`
 	Anchor      string `json:"anchor,omitempty" dynamodbav:"anchor"`
@@ -122,6 +133,25 @@ type Session struct {
 // chained/login/MCP attribution fields use to point at other sessions.
 func (s *Session) Ref() string {
 	return s.PersonKey + "|" + s.SK
+}
+
+// sidLength mirrors identity.SidLength on the ingestor side. The two trees don't
+// import each other (see core vs ingestor separation), so the algorithm is
+// duplicated deliberately — like Ref() / SessionRef(). Keep them in sync.
+const sidLength = 16
+
+// SidForRef derives the deterministic session id from a ref ("person_key|sk").
+// Used to print "--session <sid>" drilldown hints without re-fetching the target
+// session, and it must produce the same value the ingestor stored.
+func SidForRef(ref string) string {
+	sum := sha256.Sum256([]byte(ref))
+	enc := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])
+	return strings.ToLower(enc[:sidLength])
+}
+
+// SidForRef on the concrete session, from its own ref.
+func (s *Session) SidForRef() string {
+	return SidForRef(s.Ref())
 }
 
 // DetectSessionType returns a display label for the session type.

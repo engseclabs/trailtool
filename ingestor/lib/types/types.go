@@ -259,6 +259,12 @@ type DynamoDBSession struct {
 	PK string `dynamodbav:"pk"` // customerId#person_key — one Query lists a person's sessions
 	SK string `dynamodbav:"sk"` // anchor#roleID, or win#roleID#firstWrittenStart for the fallback
 
+	// Sid is a deterministic short id derived from the ref (person_key|sk) via
+	// identity.Sid. Sort key of the sid_index GSI (partition customerId), so the
+	// CLI resolves "--session <prefix>" with a begins_with Query. Sticky across
+	// merges, like SK.
+	Sid string `dynamodbav:"sid"`
+
 	CustomerID  string `dynamodbav:"customerId"`
 	PersonKey   string `dynamodbav:"person_key"`
 	Anchor      string `dynamodbav:"anchor"`       // sis#… | web#… | key#… | win#… (fallback)

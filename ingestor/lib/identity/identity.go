@@ -6,6 +6,8 @@
 package identity
 
 import (
+	"crypto/sha256"
+	"encoding/base32"
 	"strings"
 
 	"github.com/engseclabs/trailtool/ingestor/lib/session"
@@ -288,6 +290,28 @@ func WindowSK(roleID, startTime string) string {
 // unambiguously.
 func SessionRef(personKey, sk string) string {
 	return personKey + "|" + sk
+}
+
+// SidLength is the number of base32 characters in a stored session id. 16 chars =
+// 80 bits: collision-free across any realistic dataset. Users never type the whole
+// thing — the CLI shows and accepts a short prefix (see SidDisplayMin) and resolves
+// it against the sid_index GSI with begins_with, Git-style. Storing full strength
+// keeps that prefix resolution safe as datasets grow.
+const SidLength = 16
+
+// SidDisplayMin is the shortest prefix the CLI shows by default; it widens per
+// list only when two rows would otherwise share a prefix.
+const SidDisplayMin = 6
+
+// Sid derives a deterministic, typable id for a session from its ref
+// (person_key|sk). It is the sort key of the sessions sid_index GSI (partition key
+// customerId), so "--session <prefix>" resolves via a single begins_with Query.
+// Deterministic means merges and re-ingests keep the same sid; lowercase base32
+// avoids shell-quoting and visually ambiguous characters.
+func Sid(personKey, sk string) string {
+	sum := sha256.Sum256([]byte(SessionRef(personKey, sk)))
+	enc := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])
+	return strings.ToLower(enc[:SidLength])
 }
 
 // ResolveGroup resolves one credential group to a person, taking the first tier

@@ -283,9 +283,11 @@ func sessionsListCmd() *cobra.Command {
 			}
 
 			label := personLabels(ctx, s)
+			sidWidth := sidDisplayWidth(sessions)
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "#\tWHEN\tUSER\tROLE\tACCOUNT\tEVENTS\tTYPE\tDURATION\tCHAINED")
-			for i, sess := range sessions {
+			fmt.Fprintln(w, "SID\tWHEN\tUSER\tROLE\tACCOUNT\tEVENTS\tTYPE\tDURATION\tCHAINED")
+			for i := range sessions {
+				sess := &sessions[i]
 				st := sess.DetectSessionType()
 				duration := fmt.Sprintf("%dm", sess.DurationMinutes)
 				var marks []string
@@ -307,8 +309,8 @@ func sessionsListCmd() *cobra.Command {
 				if !long {
 					displayRole = shortRoleName(sess.RoleName)
 				}
-				fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
-					i+1, relativeTime(sess.StartTime), label(sess.PersonKey), displayRole, sess.AccountID,
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+					shortSid(sess, sidWidth), relativeTime(sess.StartTime), label(sess.PersonKey), displayRole, sess.AccountID,
 					sess.EventsCount, st, duration, chained)
 			}
 			return w.Flush()
@@ -410,13 +412,63 @@ func printRefNav(ctx context.Context, s *store.Store, heading, ref string, label
 		return
 	}
 	fmt.Printf("%s: %s at %s [%s]\n", heading, who, target.StartTime, relativeTime(target.StartTime))
-	fmt.Printf("  → trailtool sessions detail --at %s --user %s\n",
-		target.StartTime[:min(len(target.StartTime), 19)], refPersonKey(ref))
+	fmt.Printf("  → trailtool sessions detail --session %s\n", sidForRefShort(ref))
 }
 
-// resolveSession finds a session by --at prefix or "latest", with optional --user.
-func resolveSession(ctx context.Context, s *store.Store, at, user string) (*models.Session, error) {
-	if at == "latest" {
+// sidDisplayWidth returns the shortest prefix length (≥ models.SidDisplayMin) at
+// which every session's sid stays unique within the given list, so every SID the
+// CLI prints is copy-pasteable and unambiguous against what's on screen. Sessions
+// without a stored sid (pre-sid records) are ignored for width purposes.
+func sidDisplayWidth(sessions []models.Session) int {
+	width := sidDisplayMin
+	for {
+		seen := make(map[string]bool, len(sessions))
+		clash := false
+		for i := range sessions {
+			sid := sessions[i].Sid
+			if sid == "" {
+				continue
+			}
+			p := sid[:min(len(sid), width)]
+			if seen[p] {
+				clash = true
+				break
+			}
+			seen[p] = true
+		}
+		if !clash || width >= sidFullLen {
+			return width
+		}
+		width++
+	}
+}
+
+// shortSid renders a session's sid at the given display width, or a placeholder
+// when the record predates sids.
+func shortSid(sess *models.Session, width int) string {
+	if sess.Sid == "" {
+		return "-"
+	}
+	return sess.Sid[:min(len(sess.Sid), width)]
+}
+
+// sidForRefShort renders the display-width sid for a session ref (person_key|sk),
+// for drilldown hints that point at another session without fetching it.
+func sidForRefShort(ref string) string {
+	return models.SidForRef(ref)[:sidDisplayMin]
+}
+
+// sid display/lookup constants, mirrored from ingestor identity.Sid.
+const (
+	sidDisplayMin = 6
+	sidFullLen    = 16
+)
+
+// resolveSession finds a single session by --session: a sid prefix, or "latest".
+// An empty prefix, no match, or an ambiguous prefix each return an actionable
+// error.
+func resolveSession(ctx context.Context, s *store.Store, sel, user string) (*models.Session, error) {
+	if sel == "latest" {
 		filter := store.SessionFilter{Days: 90}
 		sessions, _, err := session.ListSessions(ctx, s, customerID, user, filter)
 		if err != nil {
@@ -428,42 +480,52 @@ func resolveSession(ctx context.Context, s *store.Store, at, user string) (*mode
 		latest := sessions[len(sessions)-1]
 		return &latest, nil
 	}
-	sess, err := s.FindSession(ctx, customerID, at, user)
+
+	matches, err := s.FindSessionsBySidPrefix(ctx, customerID, sel)
 	if err != nil {
 		return nil, err
 	}
-	if sess == nil {
-		return nil, fmt.Errorf("no session found matching %q (try a longer prefix or add --user)", at)
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no session found with id %q (check 'trailtool sessions list')", sel)
+	case 1:
+		return &matches[0], nil
+	default:
+		// Ambiguous prefix: show each match with just enough of the sid to
+		// distinguish it, plus who/when, and ask the user to lengthen.
+		width := sidDisplayWidth(matches)
+		if width <= len(sel) {
+			width = len(sel) + 1
+		}
+		label := personLabels(ctx, s)
+		msg := fmt.Sprintf("%d sessions match id %q — use a longer id:\n", len(matches), sel)
+		for i := range matches {
+			m := &matches[i]
+			msg += fmt.Sprintf("  %s  %s  %s  %s\n",
+				shortSid(m, width), m.StartTime, label(m.PersonKey), m.RoleName)
+		}
+		return nil, fmt.Errorf("%s", msg)
 	}
-	return sess, nil
 }
 
 func sessionsDetailCmd() *cobra.Command {
-	var at string
+	var sessionID string
 	var user string
-	var index int
-	var days int
-	var role string
-	var account string
-	var after string
-	var before string
 
 	cmd := &cobra.Command{
 		Use:   "detail",
 		Short: "Show session details",
-		Long: `Show details for a session identified by approximate start time or list index.
+		Long: `Show details for a session identified by its id (the SID column from
+'trailtool sessions list'). A short prefix is enough; "latest" jumps to the
+most recent session.
 
 Examples:
-  trailtool sessions detail --at 2026-04-15T17:08
-  trailtool sessions detail --at 2026-04-15T17:08 --user alice@example.com
-  trailtool sessions detail --at latest
-  trailtool sessions detail --index 1 --user alice@example.com --days 7`,
+  trailtool sessions detail --session k7m2qp
+  trailtool sessions detail --session latest
+  trailtool sessions detail --session latest --user alice@example.com`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if at != "" && index != 0 {
-				return fatal("--at and --index are mutually exclusive")
-			}
-			if at == "" && index == 0 {
-				return fatal("--at or --index is required")
+			if sessionID == "" {
+				return fatal("--session is required (e.g. --session k7m2qp or --session latest)")
 			}
 
 			ctx := context.Background()
@@ -472,29 +534,9 @@ Examples:
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			var sess *models.Session
-			if index != 0 {
-				filter := store.SessionFilter{
-					Days:      days,
-					Role:      role,
-					AccountID: account,
-					After:     after,
-					Before:    before,
-				}
-				sessions, _, listErr := session.ListSessions(ctx, s, customerID, user, filter)
-				if listErr != nil {
-					return fatal("%v", listErr)
-				}
-				if index < 1 || index > len(sessions) {
-					return fatal("--index %d out of range (1-%d)", index, len(sessions))
-				}
-				tmp := sessions[index-1]
-				sess = &tmp
-			} else {
-				sess, err = resolveSession(ctx, s, at, user)
-				if err != nil {
-					return fatal("%v", err)
-				}
+			sess, err := resolveSession(ctx, s, sessionID, user)
+			if err != nil {
+				return fatal("%v", err)
 			}
 
 			if format == "json" {
@@ -590,13 +632,11 @@ Examples:
 						continue
 					}
 					shown++
-					childAt := childSess.StartTime[:min(len(childSess.StartTime), 19)]
 					fmt.Printf("  %s  %-25s  %d events  %dm  [%s]\n",
 						childSess.StartTime, childSess.RoleName,
 						childSess.EventsCount, childSess.DurationMinutes,
 						relativeTime(childSess.StartTime))
-					fmt.Printf("    → trailtool sessions detail --at %s --user %s\n",
-						childAt, refPersonKey(childRef))
+					fmt.Printf("    → trailtool sessions detail --session %s\n", sidForRefShort(childRef))
 				}
 				if shown == 0 && len(sess.ChainedSessionRefs) == 0 {
 					for _, childRoleARN := range sess.ChainedRoles {
@@ -615,12 +655,10 @@ Examples:
 						fmt.Printf("  %s\n", gRef)
 						continue
 					}
-					gAt := gSess.StartTime[:min(len(gSess.StartTime), 19)]
 					fmt.Printf("  %s  %-5s  %-25s  %d events  %dm  [%s]\n",
 						gSess.StartTime, gSess.DetectSessionType(), shortRoleName(gSess.RoleName),
 						gSess.EventsCount, gSess.DurationMinutes, relativeTime(gSess.StartTime))
-					fmt.Printf("    → trailtool sessions detail --at %s --user %s\n",
-						gAt, refPersonKey(gRef))
+					fmt.Printf("    → trailtool sessions detail --session %s\n", sidForRefShort(gRef))
 				}
 			}
 
@@ -640,14 +678,8 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&at, "at", "", "Session start time prefix, e.g. 2026-04-15T17:08 or \"latest\"")
-	cmd.Flags().IntVar(&index, "index", 0, "1-based index into the session list (alternative to --at)")
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email")
-	cmd.Flags().IntVar(&days, "days", 0, "Filter to last N days (used with --index)")
-	cmd.Flags().StringVar(&role, "role", "", "Filter by role name (used with --index)")
-	cmd.Flags().StringVar(&account, "account", "", "Filter by AWS account ID (used with --index)")
-	cmd.Flags().StringVar(&after, "after", "", "Only sessions starting at or after this time (used with --index)")
-	cmd.Flags().StringVar(&before, "before", "", "Only sessions starting before this time (used with --index)")
+	cmd.Flags().StringVar(&sessionID, "session", "", "Session id from the SID column (prefix ok), or \"latest\"")
+	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with --session latest)")
 
 	return cmd
 }
@@ -673,21 +705,23 @@ func prettyJSON(raw string) (string, error) {
 }
 
 func sessionsSummarizeCmd() *cobra.Command {
-	var at string
+	var sessionID string
 	var user string
 
 	cmd := &cobra.Command{
 		Use:   "summarize",
 		Short: "Generate AI summary of a session via Bedrock",
-		Long: `Generate an AI summary of a session identified by approximate start time.
+		Long: `Generate an AI summary of a session identified by its id (the SID column
+from 'trailtool sessions list'). A short prefix is enough; "latest" jumps to
+the most recent session.
 
 Examples:
-  trailtool sessions summarize --at 2026-04-15T17:08
-  trailtool sessions summarize --at 2026-04-15T17:08 --user alice@example.com
-  trailtool sessions summarize --at latest`,
+  trailtool sessions summarize --session k7m2qp
+  trailtool sessions summarize --session latest
+  trailtool sessions summarize --session latest --user alice@example.com`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if at == "" {
-				return fatal("--at is required (e.g. --at 2026-04-15T17:08 or --at latest)")
+			if sessionID == "" {
+				return fatal("--session is required (e.g. --session k7m2qp or --session latest)")
 			}
 
 			ctx := context.Background()
@@ -696,7 +730,7 @@ Examples:
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			sess, err := resolveSession(ctx, s, at, user)
+			sess, err := resolveSession(ctx, s, sessionID, user)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -731,14 +765,14 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&at, "at", "", "Session start time prefix, e.g. 2026-04-15T17:08 or \"latest\"")
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (helps disambiguate)")
+	cmd.Flags().StringVar(&sessionID, "session", "", "Session id from the SID column (prefix ok), or \"latest\"")
+	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with --session latest)")
 
 	return cmd
 }
 
 func sessionsPolicyCmd() *cobra.Command {
-	var at string
+	var sessionID string
 	var user string
 	var includeDenied bool
 	var explain bool
@@ -746,15 +780,17 @@ func sessionsPolicyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "policy",
 		Short: "Generate least-privilege IAM policy for a session",
-		Long: `Generate a least-privilege IAM policy scoped to a specific session.
+		Long: `Generate a least-privilege IAM policy scoped to a specific session,
+identified by its id (the SID column from 'trailtool sessions list'). A short
+prefix is enough; "latest" jumps to the most recent session.
 
 Examples:
-  trailtool sessions policy --at 2026-04-15T17:08
-  trailtool sessions policy --at latest --user alice@example.com
-  trailtool sessions policy --at 2026-04-15T17:08 --include-denied --explain`,
+  trailtool sessions policy --session k7m2qp
+  trailtool sessions policy --session latest --user alice@example.com
+  trailtool sessions policy --session k7m2qp --include-denied --explain`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if at == "" {
-				return fatal("--at is required (e.g. --at 2026-04-15T17:08 or --at latest)")
+			if sessionID == "" {
+				return fatal("--session is required (e.g. --session k7m2qp or --session latest)")
 			}
 
 			ctx := context.Background()
@@ -763,7 +799,7 @@ Examples:
 				return fatal("failed to connect to AWS: %v", err)
 			}
 
-			sess, err := resolveSession(ctx, s, at, user)
+			sess, err := resolveSession(ctx, s, sessionID, user)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -795,8 +831,8 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&at, "at", "", "Session start time prefix, e.g. 2026-04-15T17:08 or \"latest\"")
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (helps disambiguate)")
+	cmd.Flags().StringVar(&sessionID, "session", "", "Session id from the SID column (prefix ok), or \"latest\"")
+	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with --session latest)")
 	cmd.Flags().BoolVar(&includeDenied, "include-denied", false, "Include denied events in policy")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Show policy explanation on stderr")
 

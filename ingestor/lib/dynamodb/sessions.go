@@ -104,7 +104,8 @@ func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSessi
 
 	return &types.DynamoDBSession{
 		PK:          existing.PK,
-		SK:          existing.SK, // sticky
+		SK:          existing.SK,  // sticky
+		Sid:         existing.Sid, // sticky (derived from PK/SK, which don't change)
 		CustomerID:  existing.CustomerID,
 		PersonKey:   existing.PersonKey,
 		Anchor:      firstNonEmpty(existing.Anchor, incoming.Anchor),

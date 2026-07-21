@@ -469,6 +469,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 	for _, sess := range sessions {
 		var err error
+		sess.Sid = identity.Sid(sess.PersonKey, sess.SK)
 		if strings.HasPrefix(sess.SK, "win#") {
 			err = ddblib.WriteWindowedSession(ctx, ddbClient, cfg.Tables.Sessions, sess, cfg.idleGap())
 		} else {
