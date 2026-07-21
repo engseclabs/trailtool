@@ -402,9 +402,29 @@ func TestConsoleBootstrapJoinsWebSession(t *testing.T) {
 		return e
 	}
 
+	// The real ConsoleLogin event AWS delivers: a bare userIdentity — no
+	// sessionContext, so no creationDate, access key, or console flag (verified
+	// against a real direct-SAML sign-in). It must still fold into the console
+	// session it opens rather than splitting off into a windowed one-event
+	// session; GetSigninToken carries the session context and joins via the
+	// unflagged-bootstrap path.
+	consoleLogin := types.CloudTrailRecord{
+		EventTime:   "2026-07-19T03:02:31Z",
+		EventName:   "ConsoleLogin",
+		EventSource: "signin.amazonaws.com",
+		EventType:   "AwsConsoleSignIn",
+		UserAgent:   browserUA,
+		UserIdentity: types.UserIdentity{
+			Type:        "AssumedRole",
+			PrincipalID: principal,
+			ARN:         stsARN,
+			AccountID:   "278835131762",
+		},
+	}
+
 	// Bootstrap first, as delivered: unflagged, stable key.
 	events := []types.CloudTrailRecord{
-		newEvent("2026-07-19T03:02:31Z", "ConsoleLogin", "signin.amazonaws.com", bootstrapKey, ""),
+		consoleLogin,
 		newEvent("2026-07-19T03:02:33Z", "GetSigninToken", "signin.amazonaws.com", bootstrapKey, ""),
 		// Flagged console activity: fresh key per request.
 		newEvent("2026-07-19T03:03:01Z", "DescribeRegions", "ec2.amazonaws.com", "ASIAPERREQ000000001", "true"),

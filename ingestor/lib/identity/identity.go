@@ -139,6 +139,10 @@ func isConsoleSessionCredential(event types.CloudTrailRecord) bool {
 func GroupEvents(events []types.CloudTrailRecord) []Group {
 	var groups []Group
 	index := make(map[string]int)
+	// console groups this batch, indexed by principalId, so a bare console
+	// sign-in event (which has no credential fields of its own) can be folded
+	// into the console session it initiates — see foldConsoleSignIn.
+	consoleByPrincipal := make(map[string]int)
 	for _, event := range events {
 		key := CredentialGroupKey(event)
 		if key == "" {
@@ -150,9 +154,57 @@ func GroupEvents(events []types.CloudTrailRecord) []Group {
 			continue
 		}
 		index[key] = len(groups)
+		if strings.HasPrefix(key, "rc#") && isConsoleSessionCredential(event) {
+			consoleByPrincipal[event.UserIdentity.PrincipalID] = len(groups)
+		}
 		groups = append(groups, Group{Key: key, Events: []types.CloudTrailRecord{event}})
 	}
-	return groups
+	return foldConsoleSignIn(groups, consoleByPrincipal)
+}
+
+// isConsoleSignInEvent reports whether the event is a console sign-in
+// (ConsoleLogin / AwsConsoleSignIn from signin.amazonaws.com). AWS stamps these
+// with a bare userIdentity — principalId and arn, but no sessionContext — so
+// they carry no creationDate, access key, or sessionCredentialFromConsole flag,
+// and can neither group into nor anchor onto the console session they open.
+func isConsoleSignInEvent(event types.CloudTrailRecord) bool {
+	return event.EventSource == "signin.amazonaws.com" &&
+		(event.EventName == "ConsoleLogin" || event.EventType == "AwsConsoleSignIn")
+}
+
+// foldConsoleSignIn moves a bare console sign-in event out of its ev#/singleton
+// group into the console session it initiated — the rc# console group sharing
+// its principalId — so the sign-in joins that web# session instead of falling
+// to the windowed fallback as a spurious one-event session. If no matching
+// console group exists in the batch (the sign-in's activity landed in another
+// file), the event stays in its own group and resolves normally.
+func foldConsoleSignIn(groups []Group, consoleByPrincipal map[string]int) []Group {
+	drop := make(map[int]bool)
+	for gi := range groups {
+		if len(groups[gi].Events) != 1 {
+			continue
+		}
+		e := groups[gi].Events[0]
+		if !isConsoleSignInEvent(e) {
+			continue
+		}
+		target, ok := consoleByPrincipal[e.UserIdentity.PrincipalID]
+		if !ok || target == gi {
+			continue
+		}
+		groups[target].Events = append(groups[target].Events, e)
+		drop[gi] = true
+	}
+	if len(drop) == 0 {
+		return groups
+	}
+	out := groups[:0:0]
+	for gi := range groups {
+		if !drop[gi] {
+			out = append(out, groups[gi])
+		}
+	}
+	return out
 }
 
 // Anchor resolves the session anchor for a credential group (§3.1): a session is
