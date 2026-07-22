@@ -8,14 +8,12 @@ TrailTool aggregates CloudTrail logs to simplify analysis for AI agents. It comb
 
 With TrailTool, you can:
 
-- Investigate and summarize web/CLI sessions clarifying access patterns
-- Track activity across role assumptions — see which human session assumed which roles and what they did
+- Investigate and summarize AWS access by people, agents, and code
+- Track activity across role assumptions
 - Generate least-privilege IAM policies from actual usage
-- Detect ClickOps resources created or modified via console instead of IaC
+- Detect malicious or unwanted (e.g. ClickOps) behavior
 
 For more details about how to use TrailTool, see https://engseclabs.com/blog/cloudtrail-for-ai-agents/.
-
-A hosted version with more features (e.g. UI, API, MCP) is available - see [trailtool.io](https://trailtool.io).
 
 ## Quick Start
 
