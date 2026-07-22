@@ -29,12 +29,13 @@ const (
 	linkChain linkKind = iota // AssumeRole issued this credential
 	linkLogin                 // aws login (PKCE) vended this credential
 	linkMCP                   // AWS MCP Server OAuth token traffic
+	linkCred                  // cred# continuity: credential → person + anchor (§2.3)
 )
 
 // link is the in-batch correlation record: a credential/grant issued by a
 // resolved person's session. The same records are persisted to
-// trailtool-identity-links for cross-batch resolution (read wiring lands with
-// the §5 link-layer port).
+// trailtool-identity-links; records fetched back from there (stored=true)
+// resolve tier 2 and anchor continuity across batches.
 type link struct {
 	kind             linkKind
 	personKey        string
@@ -44,14 +45,127 @@ type link struct {
 	sessionTags      map[string]string
 	sessionPolicy    string
 	mcpResource      string
+	roleARN          string   // cred# links: the credential group's role
+	anchor           string   // cred# links: the anchor decided when first resolved
 	eventTime        string   // grant/AssumeRole event time, for the TTL
+	stored           bool     // fetched from trailtool-identity-links; not re-written unless re-observed
+	observed         bool     // re-observed this batch — refresh its TTL even if stored
 	pks              []string // identity-links PKs this link is stored under
+}
+
+// credLinkPK maps a credential-group key to its cred# continuity link PK
+// ("ak#X" → "cred#X", "rc#Y" → "cred#Y"); "" for ungroupable ev#/empty keys.
+func credLinkPK(groupKey string) string {
+	if strings.HasPrefix(groupKey, "ak#") || strings.HasPrefix(groupKey, "rc#") {
+		return "cred#" + groupKey[3:]
+	}
+	return ""
+}
+
+// anchorRank orders anchors by cascade strength: a literal sign-in session
+// beats a console creationDate beats a bare temporary credential beats the
+// windowed fallback. Continuity links only ever move a group UP this order —
+// a stronger anchor propagates to weaker groups (a ConsoleLogin bootstrap
+// event joins its console session), but a weaker one can never hijack a
+// group the cascade already anchored deterministically.
+func anchorRank(anchor string) int {
+	switch {
+	case strings.HasPrefix(anchor, "sis#"):
+		return 3
+	case strings.HasPrefix(anchor, "web#"):
+		return 2
+	case strings.HasPrefix(anchor, "key#"):
+		return 1
+	default:
+		return 0
+	}
+}
+
+// credContinuityPKs returns every cred# link PK that could carry a group's
+// credential continuity: the group key itself, each event's access key (a
+// sig#-grouped event may carry the stable ASIA key a prior batch anchored —
+// the CLI-rollout case), and each event's principalId#creationDate form (which
+// per-request-credential events — console bootstrap, forward-access fan-out —
+// share with their originating session).
+func credContinuityPKs(g identity.Group) []string {
+	var pks []string
+	seen := make(map[string]bool)
+	add := func(pk string) {
+		if pk != "" && !seen[pk] {
+			seen[pk] = true
+			pks = append(pks, pk)
+		}
+	}
+	add(credLinkPK(g.Key))
+	for _, e := range g.Events {
+		if ak := e.UserIdentity.AccessKeyID; ak != "" {
+			add("cred#" + ak)
+		}
+		if cd := session.GetSessionCreationTime(e); cd != "" && e.UserIdentity.PrincipalID != "" {
+			add("cred#" + e.UserIdentity.PrincipalID + "#" + cd)
+		}
+	}
+	return pks
+}
+
+// continuityAnchor applies anchor continuity (§3.1) to a group's cascade
+// decision and returns the final anchor:
+//
+//   - An ak# group's OWN link (cred#<accessKeyId> — the pk embeds the unique
+//     credential, so no other credential can have written it) is adopted
+//     unconditionally: the anchor decided when this credential first resolved
+//     wins, so one credential can never split across two anchors when
+//     anchor-deciding fields (signInSessionArn) land only in some batches.
+//   - Everything else is rank-guarded — a link may only move the group UP the
+//     cascade order. rc# groups share their pk namespace with cd-keyed
+//     associative links (cred#<principalId>#<creationDate>), so a console
+//     session's deterministic web# anchor can never be hijacked by a key#
+//     link some unflagged bootstrap event recorded under the same
+//     creationDate; the sis# rollout-safety upgrade still applies.
+//   - cd-keyed links reach key#-anchored groups only when the cascade found
+//     nothing (forward-access fan-out): a real credential that happens to
+//     share a creationDate with another session — aws login vends its
+//     credentials with the authorizing session's creationDate — keeps its own
+//     key# session.
+func continuityAnchor(links map[string]*link, g identity.Group, computed string) string {
+	ownPK := credLinkPK(g.Key)
+	if strings.HasPrefix(g.Key, "ak#") {
+		if l, ok := links[ownPK]; ok && l.kind == linkCred && l.anchor != "" {
+			return l.anchor
+		}
+		if computed != "" {
+			return computed // cd-keyed links never re-anchor a keyed credential
+		}
+	}
+	// CLI-rollout continuity: a sig#-grouped event that also carries a stable
+	// access key which a prior batch already anchored (cred#<accessKeyId>) stays
+	// on that credential's own session, even though this batch's cascade computed
+	// sis# — AWS stamping a signInSessionArn onto an established CLI credential
+	// (§3.1) must not split it. The cred#<accessKeyId> pk embeds the unique key,
+	// so no other credential can have written it; adopt it unconditionally (this
+	// is the one sanctioned downgrade below sis#).
+	if strings.HasPrefix(g.Key, "sig#") {
+		for _, e := range g.Events {
+			if ak := e.UserIdentity.AccessKeyID; ak != "" {
+				if l, ok := links["cred#"+ak]; ok && l.kind == linkCred && strings.HasPrefix(l.anchor, "key#") {
+					return l.anchor
+				}
+			}
+		}
+	}
+	best := computed
+	for _, pk := range credContinuityPKs(g) {
+		if l, ok := links[pk]; ok && l.kind == linkCred && anchorRank(l.anchor) > anchorRank(best) {
+			best = l.anchor
+		}
+	}
+	return best
 }
 
 // candidateLinkKeys returns the identity-link PKs any event in the group could
 // match, in match priority order: chain# (this credential was issued by an
-// AssumeRole), then mcp# (OAuth token traffic), then login# (aws login vended
-// credentials).
+// AssumeRole), then the group's own cred# continuity key, then mcp# (OAuth
+// token traffic), then login# (aws login vended credentials).
 func candidateLinkKeys(g identity.Group) []string {
 	var keys []string
 	seen := make(map[string]bool)
@@ -71,10 +185,13 @@ func candidateLinkKeys(g identity.Group) []string {
 			add("chain#" + rID + "#" + st)
 		}
 	}
+	for _, pk := range credContinuityPKs(g) {
+		add(pk)
+	}
 	for _, e := range g.Events {
 		// Only sessionContext marks an event as made under the sign-in session;
 		// a grant's own ARN names the session it mints, not its caller's.
-		if IsOAuthGrantEvent(e) {
+		if identity.IsOAuthGrantEvent(e) {
 			continue
 		}
 		if sc := e.UserIdentity.SessionContext; sc != nil && sc.SignInSessionArn != "" {
@@ -89,6 +206,73 @@ func candidateLinkKeys(g identity.Group) []string {
 		}
 	}
 	return keys
+}
+
+// linkFromRecord rehydrates a stored identity-link record into the in-batch
+// link shape. The kind comes from the PK's keyspace prefix.
+func linkFromRecord(pk string, rec *types.DynamoDBIdentityLink) *link {
+	l := &link{
+		personKey:        rec.PersonKey,
+		parentSessionRef: rec.ParentSessionRef,
+		parentRoleARN:    rec.ParentRoleARN,
+		assumedRoleARN:   rec.AssumedRoleARN,
+		sessionTags:      rec.SessionTags,
+		sessionPolicy:    rec.SessionPolicy,
+		mcpResource:      rec.MCPResource,
+		roleARN:          rec.RoleARN,
+		anchor:           rec.Anchor,
+		stored:           true,
+		pks:              []string{pk},
+	}
+	switch {
+	case strings.HasPrefix(pk, "cred#"):
+		l.kind = linkCred
+	case strings.HasPrefix(pk, "chain#"):
+		l.kind = linkChain
+	case strings.HasPrefix(pk, "login#"):
+		l.kind = linkLogin
+	case strings.HasPrefix(pk, "mcp#"):
+		l.kind = linkMCP
+	}
+	return l
+}
+
+// fetchStoredLinks batch-reads every identity-link record the batch's groups
+// could match — the groups' own cred# continuity keys plus the
+// chain#/login#/mcp# candidates their events reference. This is what makes
+// tier-2 resolution and anchor continuity work across S3 files: batch A writes
+// the links, batch B (same credentials, different file) reads them here.
+// Returns nil when no client/table is configured.
+func fetchStoredLinks(ctx context.Context, ddbClient *dynamodb.Client, table string, groups []identity.Group) map[string]*link {
+	if ddbClient == nil || table == "" {
+		return nil
+	}
+	var pks []string
+	seen := make(map[string]bool)
+	for _, g := range groups {
+		for _, k := range candidateLinkKeys(g) {
+			if !seen[k] {
+				seen[k] = true
+				pks = append(pks, k)
+			}
+		}
+	}
+	if len(pks) == 0 {
+		return nil
+	}
+	recs, err := ddblib.BatchGetIdentityLinks(ctx, ddbClient, table, pks)
+	if err != nil {
+		log.Printf("WARNING: batch get identity links failed: %v", err)
+		return nil
+	}
+	stored := make(map[string]*link, len(recs))
+	for pk, rec := range recs {
+		stored[pk] = linkFromRecord(pk, rec)
+	}
+	if len(stored) > 0 {
+		log.Printf("IDENTITY_LINKS_FETCHED: %d of %d candidates", len(stored), len(pks))
+	}
+	return stored
 }
 
 func lookupLink(links map[string]*link, g identity.Group) *link {
@@ -110,8 +294,77 @@ func lookupLinkKind(links map[string]*link, g identity.Group, kind linkKind) *li
 }
 
 // registerLinks records the correlation links contributed by a resolved group's
-// events: AssumeRole chain links and CreateOAuth2Token grants (aws login / MCP).
+// events: the group's own cred# continuity links, AssumeRole chain links, and
+// CreateOAuth2Token grants (aws login / MCP).
 func registerLinks(links map[string]*link, g identity.Group, person identity.Person, anchor string) {
+	// Continuity links for the group's own credential (§2.3, §3.1): map both
+	// the credential itself and its principalId#creationDate to the resolved
+	// person and anchor. The second form is how forward-access fan-out
+	// (invokedBy) — which inherits the originating credential's creationDate
+	// but mints per-request access keys — lands in the originating session,
+	// in this batch (in-memory) and in later ones (trailtool-identity-links).
+	if anchor != "" {
+		cl := &link{kind: linkCred, personKey: person.Key, anchor: anchor}
+		addPK := func(pk string) {
+			for _, existing := range cl.pks {
+				if existing == pk {
+					return
+				}
+			}
+			cl.pks = append(cl.pks, pk)
+		}
+		if pk := credLinkPK(g.Key); pk != "" {
+			addPK(pk)
+		}
+		// A sig# group (agent / aws login traffic keyed on its signInSessionArn)
+		// must not register principalId#creationDate continuity: it shares that
+		// creationDate with the console session that authorized it, and claiming
+		// the key would let an agent's sis# anchor hijack the console session —
+		// the very cross-contamination the sig# split exists to prevent. Its own
+		// cred#<arn> key (added above) is the only continuity it needs.
+		if !strings.HasPrefix(g.Key, "sig#") {
+			for _, event := range g.Events {
+				if event.UserIdentity.InvokedBy != "" {
+					continue // fan-out events never define the origin credential
+				}
+				if cd := session.GetSessionCreationTime(event); cd != "" && event.UserIdentity.PrincipalID != "" {
+					addPK("cred#" + event.UserIdentity.PrincipalID + "#" + cd)
+				}
+			}
+		}
+		for _, event := range g.Events {
+			if event.UserIdentity.InvokedBy != "" {
+				continue
+			}
+			if cl.eventTime == "" {
+				cl.eventTime = event.EventTime
+			}
+			if cl.roleARN == "" {
+				cl.roleARN = session.GetRoleARN(event)
+			}
+		}
+		// A stronger anchor replaces a weaker registration for the same
+		// credential: the flagged console traffic's web# link must win over
+		// the key# link its unflagged ConsoleLogin bootstrap registered.
+		for _, pk := range cl.pks {
+			cur, exists := links[pk]
+			if !exists ||
+				(cur.kind == linkCred && anchorRank(cl.anchor) > anchorRank(cur.anchor)) {
+				links[pk] = cl
+				continue
+			}
+			// Re-observed at the same (or weaker) rank: the stored link stays,
+			// but seeing the credential again this batch must refresh its TTL so
+			// active credentials don't expire. Carry the newer event time forward.
+			if cur.kind == linkCred {
+				cur.observed = true
+				if cl.eventTime != "" && cl.eventTime > cur.eventTime {
+					cur.eventTime = cl.eventTime
+				}
+			}
+		}
+	}
+
 	for _, event := range g.Events {
 		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
 		parentRef := ""
@@ -155,7 +408,7 @@ func registerLinks(links map[string]*link, g identity.Group, person identity.Per
 				person.Key, parentRef, l.assumedRoleARN, l.pks)
 		}
 
-		if IsOAuthGrantEvent(event) {
+		if identity.IsOAuthGrantEvent(event) {
 			resource := ExtractOAuthResource(event)
 			if IsMCPServerResource(resource) {
 				signInSessionArn := ExtractSignInSessionArn(event)
@@ -195,11 +448,10 @@ func registerLinks(links map[string]*link, g identity.Group, person identity.Per
 }
 
 // writeIdentityLinks persists this batch's correlation records to
-// trailtool-identity-links: the chain/login/mcp links registered during
-// resolution, plus a cred# link per tier-1 credential group carrying the
-// group's person, role, and anchor (§2.3 — the C1 mitigation and anchor
-// continuity for later batches of the same credential).
-func writeIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, table string, resolved []resolvedGroup, links map[string]*link) {
+// trailtool-identity-links: the cred# continuity links and chain/login/mcp
+// links registered during resolution (§2.3 — the C1 mitigation, anchor
+// continuity, and fan-out attribution for later batches).
+func writeIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, table string, links map[string]*link) {
 	linkTTL := func(eventTime string) int64 {
 		t, err := time.Parse(time.RFC3339, eventTime)
 		if err != nil {
@@ -209,6 +461,9 @@ func writeIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, table s
 	}
 
 	for pk, l := range links {
+		if l.stored && !l.observed {
+			continue // fetched but not re-observed this batch — nothing to record
+		}
 		rec := &types.DynamoDBIdentityLink{
 			PK:               pk,
 			PersonKey:        l.personKey,
@@ -218,35 +473,12 @@ func writeIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, table s
 			SessionTags:      l.sessionTags,
 			SessionPolicy:    l.sessionPolicy,
 			MCPResource:      l.mcpResource,
+			RoleARN:          l.roleARN,
+			Anchor:           l.anchor,
 			TTL:              linkTTL(l.eventTime),
 		}
 		if err := ddblib.WriteIdentityLink(ctx, ddbClient, table, rec); err != nil {
 			log.Printf("WARNING: failed to write identity link %s: %v", pk, err)
-		}
-	}
-
-	for _, rg := range resolved {
-		if !rg.ok || rg.person.Tier != identity.TierIdentityCenter {
-			continue
-		}
-		key := rg.group.Key
-		if !strings.HasPrefix(key, "ak#") && !strings.HasPrefix(key, "rc#") {
-			continue
-		}
-		first := rg.group.Events[0]
-		roleARN := session.GetRoleARN(first)
-		if roleARN == "" {
-			roleARN = first.UserIdentity.ARN
-		}
-		rec := &types.DynamoDBIdentityLink{
-			PK:        "cred#" + key[3:],
-			PersonKey: rg.person.Key,
-			RoleARN:   roleARN,
-			Anchor:    rg.anchor,
-			TTL:       linkTTL(first.EventTime),
-		}
-		if err := ddblib.WriteIdentityLink(ctx, ddbClient, table, rec); err != nil {
-			log.Printf("WARNING: failed to write cred link %s: %v", rec.PK, err)
 		}
 	}
 }

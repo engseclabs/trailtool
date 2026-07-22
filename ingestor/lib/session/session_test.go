@@ -112,6 +112,16 @@ func TestExtractRoleNameFromARN(t *testing.T) {
 			want: "aws-service-role/lambda.amazonaws.com/AWSServiceRoleForLambda",
 		},
 		{
+			name: "sts assumed-role ARN (direct-SAML / lone ConsoleLogin)",
+			arn:  "arn:aws:sts::123456789012:assumed-role/SandboxAdminDirect/alex@example.com",
+			want: "SandboxAdminDirect",
+		},
+		{
+			name: "sts assumed-role ARN without session name",
+			arn:  "arn:aws:sts::123456789012:assumed-role/SandboxAdminDirect",
+			want: "SandboxAdminDirect",
+		},
+		{
 			name: "not a role ARN",
 			arn:  "arn:aws:iam::123456789012:user/MyUser",
 			want: "",

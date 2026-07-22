@@ -49,7 +49,7 @@ type GenerateResult struct {
 }
 
 // GeneratePolicyFromSession generates a least-privilege IAM policy for a specific session.
-func GeneratePolicyFromSession(sess *models.SessionAggregated, includeDenied bool) (*GenerateResult, error) {
+func GeneratePolicyFromSession(sess *models.Session, includeDenied bool) (*GenerateResult, error) {
 	// Convert session ResourceAccess slices to the ResourceAccessItem shape used by the core engine.
 	toItems := func(accesses []models.ResourceAccess) []models.ResourceAccessItem {
 		items := make([]models.ResourceAccessItem, len(accesses))
@@ -78,7 +78,7 @@ func GeneratePolicyFromSession(sess *models.SessionAggregated, includeDenied boo
 	if err != nil {
 		return nil, err
 	}
-	result.SessionID = sess.SessionID
+	result.SessionID = sess.Ref()
 	return result, nil
 }
 

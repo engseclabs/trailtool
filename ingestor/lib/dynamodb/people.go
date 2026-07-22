@@ -60,6 +60,12 @@ func MergePerson(existing, incoming *types.DynamoDBPerson) *types.DynamoDBPerson
 	if existing.LastSeen > merged.LastSeen {
 		merged.LastSeen = existing.LastSeen
 	}
+	// Lower tier number == more authoritative (1 = Identity Center, 5 = root).
+	// A later credential-linked record (TierLink) must not demote a stored
+	// tier-1 idc# person just because it arrived second.
+	if existing.Tier != 0 && (merged.Tier == 0 || existing.Tier < merged.Tier) {
+		merged.Tier = existing.Tier
+	}
 	merged.Email = firstNonEmpty(existing.Email, incoming.Email)
 	merged.DisplayName = firstNonEmpty(existing.DisplayName, incoming.DisplayName)
 	merged.EmailsSeen = MergeUniqueStrings(existing.EmailsSeen, incoming.EmailsSeen)

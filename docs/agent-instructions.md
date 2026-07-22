@@ -34,20 +34,18 @@ trailtool sessions list --role <name> --user <email>  # Filter by role name (sub
 trailtool sessions list --account <id>         # Filter by AWS account ID
 trailtool sessions list --after 2026-01-01T00:00:00Z --before 2026-01-02T00:00:00Z  # Time range
 trailtool sessions list --long                 # Show full role names (SSO roles shortened by default)
-trailtool sessions detail --at 2026-04-15T17:08           # Session detail by approximate start time
-trailtool sessions detail --at 2026-04-15T17:08 --user alice@example.com  # Disambiguate by user
-trailtool sessions detail --at latest                     # Most recent session
-trailtool sessions detail --at latest --user alice@example.com
-trailtool sessions detail --index 1 --user alice@example.com --days 7  # Detail by list position (1-based)
-trailtool sessions summarize --at 2026-04-15T17:08        # AI-generated session summary (requires Bedrock)
-trailtool sessions summarize --at latest --user alice@example.com
-trailtool sessions policy --at 2026-04-15T17:08           # Least-privilege policy for this session only
-trailtool sessions policy --at latest --user alice@example.com --include-denied --explain
+trailtool sessions detail --session k7m2qp                # Session detail by id (SID column, prefix ok)
+trailtool sessions detail --session latest                # Most recent session
+trailtool sessions detail --session latest --user alice@example.com  # Most recent for one user
+trailtool sessions summarize --session k7m2qp             # AI-generated session summary (requires Bedrock)
+trailtool sessions summarize --session latest --user alice@example.com
+trailtool sessions policy --session k7m2qp                # Least-privilege policy for this session only
+trailtool sessions policy --session latest --user alice@example.com --include-denied --explain
 ```
 
 **Filtering tips:** Combine flags to narrow results. `--role` does substring matching (e.g. `--role BreakGlass` matches `AWSReservedSSO_BreakGlassEmergency_...`). `--after`/`--before` take ISO8601 timestamps and override `--days` if both are set.
 
-**Session detail tips:** `--at` accepts an ISO8601 prefix (e.g. `2026-04-15T17`) that is matched against session start times — no need for an exact timestamp. Use `--at latest` to get the most recent session. Add `--user` to disambiguate when multiple users have sessions near the same time. Alternatively, use `--index N` (1-based) to pick by position from the same filtered list that `sessions list` returns — accepts the same `--user`, `--days`, `--role`, `--account`, `--after`, `--before` flags. `--at` and `--index` are mutually exclusive. The detail view shows role chaining: if a session assumed another role, it prints the parent session with a navigable `--at` command, and vice versa for child sessions.
+**Session detail tips:** `--session` takes the id shown in the SID column of `sessions list`. It's a stable, deterministic handle for one specific session — a short prefix (the 6 chars shown) is enough, and the CLI asks you to lengthen it in the rare case a prefix is ambiguous. Use `--session latest` to jump to the most recent session (add `--user` to scope "latest" to one person). The detail view shows role chaining: if a session assumed another role, it prints the parent session with a ready-to-run `--session` command, and vice versa for child sessions.
 
 **SSO role names:** The ROLE column in `sessions list` displays the short permission-set name (e.g. `AdministratorAccess`) rather than the full SSO path. Use `--long` to show the full role name. The full path and ARN are always shown in `sessions detail`.
 
@@ -118,7 +116,7 @@ Tighten IAM roles by generating policies based on actual usage observed in Cloud
 **Session-scoped (a specific recording window):**
 1. Run the workflow you want to capture (deploy, migration, agent run, etc.)
 2. `trailtool sessions list --user <email> --days 1` — find the session
-3. `trailtool sessions policy --at <start-time-prefix> --format json` — generate a policy covering only that session's API calls
+3. `trailtool sessions policy --session <sid> --format json` — generate a policy covering only that session's API calls (the SID is the id column from step 2)
 4. Use this as the tightest possible baseline for the specific task
 
 **Options (both variants):**
@@ -147,9 +145,9 @@ If you are an AI agent with credentials vended via `aws login`, you can look up 
 
 **Steps:**
 1. `trailtool sessions list --days 1 --format json` — find sessions with `"session_type": "login"` or `"chained": "← login"` in the output
-2. `trailtool sessions detail --session-key <key> --format json` — get your session detail; look for `login_granted_by_session_key` and `login_granted_by_email`
-3. Use the printed command to inspect the authorizing human session:
-   `trailtool sessions detail --at <time> --user <email>`
+2. `trailtool sessions detail --session <sid> --format json` — get your session detail; look for the `login_granted_by_session` attribution
+3. Use the printed drilldown command to inspect the authorizing human session:
+   `trailtool sessions detail --session <sid>`
 
 **Context:** This is useful for self-audit — understanding what credentials you are using, who authorized them, and what the authorizing session has done. It also lets you show a human reviewer the audit trail for a sensitive operation.
 
@@ -159,7 +157,7 @@ When someone uses emergency/break-glass access, compare what they said they woul
 
 **Steps:**
 1. `trailtool sessions list --user <email> --role <break-glass-role> --after <time> --before <time> --format json` — find the specific break-glass session using role name, user, and time range
-2. `trailtool sessions detail --at <start-time-prefix> --user <email> --format json` — get the full session: events, resources accessed, services used, denied actions
+2. `trailtool sessions detail --session <sid> --format json` — get the full session: events, resources accessed, services used, denied actions (the SID is the id column from step 1's list)
 3. Compare the session activity against the stated justification
 4. Flag discrepancies: actions that don't align with the justification, unexpected services accessed, or resources modified that weren't mentioned
 

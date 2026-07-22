@@ -176,12 +176,24 @@ Resources:
           AttributeType: S
         - AttributeName: start_time
           AttributeType: S
+        - AttributeName: customerId
+          AttributeType: S
+        - AttributeName: sid # short deterministic session id (identity.Sid)
+          AttributeType: S
       KeySchema:
         - AttributeName: pk
           KeyType: HASH
         - AttributeName: sk
           KeyType: RANGE
       GlobalSecondaryIndexes:
+        - IndexName: sid_index
+          KeySchema:
+            - AttributeName: customerId
+              KeyType: HASH
+            - AttributeName: sid
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
         - IndexName: role_index
           KeySchema:
             - AttributeName: role_key
@@ -269,7 +281,7 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:GetItem
                   - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem # win# session folding
+                  - dynamodb:DeleteItem # win# session folding (multi-window fold: atomic put+delete via TransactWriteItems, authorized by the item-level actions)
                   - dynamodb:Query
                   - dynamodb:BatchGetItem
                 Resource:

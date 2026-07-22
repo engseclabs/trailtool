@@ -77,7 +77,7 @@ Omit: user identity, timestamps, role names, location (already shown in UI)
 Output: Max 3 sentences or 4 bullets. Be direct and factual.`
 
 // SummarizeSession generates an AI summary of a session using Amazon Bedrock
-func SummarizeSession(ctx context.Context, session *models.SessionAggregated) (string, error) {
+func SummarizeSession(ctx context.Context, session *models.Session) (string, error) {
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to load AWS config: %w", err)
@@ -126,7 +126,7 @@ func SummarizeSession(ctx context.Context, session *models.SessionAggregated) (s
 	return textBlock.Value, nil
 }
 
-func buildSessionPrompt(session *models.SessionAggregated) string {
+func buildSessionPrompt(session *models.Session) string {
 	sessionType := session.DetectSessionType()
 
 	data := map[string]interface{}{
@@ -146,7 +146,7 @@ func buildSessionPrompt(session *models.SessionAggregated) string {
 	return string(jsonData)
 }
 
-func calculateComplexity(s *models.SessionAggregated) string {
+func calculateComplexity(s *models.Session) string {
 	uniqueActions := len(s.EventCounts)
 	totalEvents := s.EventsCount
 	if uniqueActions <= 5 && totalEvents < 20 {

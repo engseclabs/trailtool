@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/engseclabs/trailtool/ingestor/lib/identity"
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
 
@@ -125,6 +126,10 @@ func TestMCPAgentSessionAttribution(t *testing.T) {
 	}
 	if humanSess.SessionType != SessionTypeWeb {
 		t.Errorf("human SessionType = %q, want %q", humanSess.SessionType, SessionTypeWeb)
+	}
+	// Symmetric grant ref: the authorizing session records the agent session.
+	if len(humanSess.GrantedSessionRefs) != 1 || humanSess.GrantedSessionRefs[0] != agentRef {
+		t.Errorf("human GrantedSessionRefs = %v, want [%s]", humanSess.GrantedSessionRefs, agentRef)
 	}
 }
 
@@ -326,5 +331,160 @@ func TestMCPAgentFixture(t *testing.T) {
 	// CreateOAuth2Token grant is link-layer bookkeeping and must not inflate.
 	if agentSess.EventsCount != 2 {
 		t.Errorf("agent EventsCount = %d, want 2 (grant event must not inflate)", agentSess.EventsCount)
+	}
+}
+
+// TestTwoAgentsUnderOneConsoleSession is the sandbox regression: from one
+// browser console session a developer starts two MCP agents. Both grants
+// (CreateOAuth2Token) and both agents' API calls share the console session's
+// principalId + creationDate — and the grant events carry no access key — so
+// before the sig# split they collapsed into one credential group whose single
+// anchor swallowed the console session and both agents, and the grants
+// attributed the agents to an agent session instead of the human. This
+// verifies the console session and each agent land in distinct sessions, each
+// agent points back at the human, and the human lists both as granted.
+func TestTwoAgentsUnderOneConsoleSession(t *testing.T) {
+	const (
+		email        = "alex@engseclabs.com"
+		roleID       = "AROAUB266OVZCWROZTVQR"
+		roleARN      = "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_AdministratorAccess_78658cb1063311db"
+		accountID    = "278835131762"
+		creationDate = "2026-07-20T20:02:06Z" // shared by console + both agents
+		mcpResource  = "https://aws-mcp.us-east-1.api.aws/mcp"
+		arnA         = "arn:aws:signin:us-east-1:278835131762:session/758bfa40-dfc0-4094-8c2d-6a3a6bd78222"
+		arnB         = "arn:aws:signin:us-east-1:278835131762:session/7aa5faf9-bfc1-4518-8cdf-bb090ef4a2a2"
+		storeARN     = "arn:aws:identitystore::843363563907:identitystore/d-9a675246c6"
+		userID       = "11fb6570-3051-707e-a14f-d5a0d1f455fe"
+	)
+	principal := roleID + ":" + email
+	stsARN := "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_AdministratorAccess_78658cb1063311db/" + email
+	obo := &types.OnBehalfOf{UserID: userID, IdentityStoreARN: storeARN}
+
+	// A browser console event (flagged), establishing the web# session.
+	consoleEvent := types.CloudTrailRecord{
+		EventTime:   "2026-07-20T20:02:10Z",
+		EventName:   "DescribeRegions",
+		EventSource: "ec2.amazonaws.com",
+		UserAgent:   "Mozilla/5.0 (Macintosh) Safari/605.1.15",
+		UserIdentity: types.UserIdentity{
+			Type:           "AssumedRole",
+			PrincipalID:    principal,
+			ARN:            stsARN,
+			AccountID:      accountID,
+			OnBehalfOf:     obo,
+			SessionContext: makeSessionContext(creationDate, roleARN),
+		},
+	}
+	consoleEvent.UserIdentity.SessionContext.Attributes.SessionCredentialFromConsole = "true"
+
+	// Grant for each agent: no access key, carries the console creationDate,
+	// signInSessionArn only in additionalEventData.
+	grant := func(eventTime, arn string) types.CloudTrailRecord {
+		return types.CloudTrailRecord{
+			EventTime:   eventTime,
+			EventName:   "CreateOAuth2Token",
+			EventSource: "signin.amazonaws.com",
+			UserAgent:   "Bun/1.4.0",
+			UserIdentity: types.UserIdentity{
+				Type:           "AssumedRole",
+				PrincipalID:    principal,
+				ARN:            stsARN,
+				AccountID:      accountID,
+				OnBehalfOf:     obo,
+				SessionContext: makeSessionContext(creationDate, roleARN),
+			},
+			RequestParameters:   map[string]interface{}{"resource": mcpResource},
+			AdditionalEventData: map[string]interface{}{"signInSessionArn": arn},
+		}
+	}
+
+	// Agent API call: carries the arn in sessionContext AND the console
+	// creationDate; access key rotates per request.
+	agentCall := func(eventTime, arn, name, key string) types.CloudTrailRecord {
+		return types.CloudTrailRecord{
+			EventTime:   eventTime,
+			EventName:   name,
+			EventSource: "iam.amazonaws.com",
+			UserAgent:   "aws-mcp.amazonaws.com",
+			UserIdentity: types.UserIdentity{
+				Type:           "AssumedRole",
+				PrincipalID:    principal,
+				ARN:            stsARN,
+				AccountID:      accountID,
+				AccessKeyID:    key,
+				OnBehalfOf:     obo,
+				SessionContext: makeSessionContextWithSignIn(creationDate, roleARN, arn),
+			},
+		}
+	}
+
+	sessions, err := processForTest([]types.CloudTrailRecord{
+		consoleEvent,
+		grant("2026-07-20T20:02:13Z", arnA),
+		agentCall("2026-07-20T20:02:20Z", arnA, "ListRoles", "ASIAAGENTAROTKEY001"),
+		agentCall("2026-07-20T20:02:25Z", arnA, "ListUsers", "ASIAAGENTAROTKEY002"),
+		grant("2026-07-20T20:19:57Z", arnB),
+		agentCall("2026-07-20T20:20:05Z", arnB, "GetSAMLProvider", ""), // keyless agent event
+	})
+	if err != nil {
+		t.Fatalf("processForTest() error: %v", err)
+	}
+
+	personKey := identity.IdentityCenterPersonKey(storeARN, userID)
+	webRef := ref(personKey, "web#"+roleID+"#"+creationDate, roleID)
+	agentARef := ref(personKey, "sis#"+arnA, roleID)
+	agentBRef := ref(personKey, "sis#"+arnB, roleID)
+
+	if len(sessions) != 3 {
+		t.Fatalf("got %d sessions, want 3 (1 web + 2 agents); keys: %v", len(sessions), sessionKeys(sessions))
+	}
+
+	web, ok := sessions[webRef]
+	if !ok {
+		t.Fatalf("web session %q not found; keys: %v", webRef, sessionKeys(sessions))
+	}
+	if web.SessionType != SessionTypeWeb {
+		t.Errorf("console SessionType = %q, want web", web.SessionType)
+	}
+	// The human authorized both agents.
+	if len(web.GrantedSessionRefs) != 2 {
+		t.Errorf("web GrantedSessionRefs = %v, want both agent refs", web.GrantedSessionRefs)
+	}
+	for _, want := range []string{agentARef, agentBRef} {
+		found := false
+		for _, g := range web.GrantedSessionRefs {
+			if g == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("web GrantedSessionRefs missing %s; got %v", want, web.GrantedSessionRefs)
+		}
+	}
+
+	for _, tc := range []struct {
+		name, refKey string
+		events       int
+	}{
+		{"agentA", agentARef, 2},
+		{"agentB", agentBRef, 1},
+	} {
+		a, ok := sessions[tc.refKey]
+		if !ok {
+			t.Errorf("%s session %q not found", tc.name, tc.refKey)
+			continue
+		}
+		if a.SessionType != SessionTypeAgent {
+			t.Errorf("%s SessionType = %q, want agent", tc.name, a.SessionType)
+		}
+		if a.AgentAuthorizedBySession != webRef {
+			t.Errorf("%s AgentAuthorizedBySession = %q, want the human web session %q", tc.name, a.AgentAuthorizedBySession, webRef)
+		}
+		if a.EventsCount != tc.events {
+			t.Errorf("%s EventsCount = %d, want %d", tc.name, a.EventsCount, tc.events)
+		}
+		if a.MCPResource != mcpResource {
+			t.Errorf("%s MCPResource = %q, want %q", tc.name, a.MCPResource, mcpResource)
+		}
 	}
 }

@@ -83,6 +83,18 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	log.Printf("=== Processing Identity-First Aggregation ===")
 	log.Printf("Processing %d events for aggregation (namespace: %s)", len(events), ns)
 
+	// Cross-batch correlation: fetch the identity links earlier batches
+	// recorded for this batch's credentials and grants.
+	groups := identity.GroupEvents(events)
+	stored := fetchStoredLinks(ctx, ddbClient, cfg.Tables.IdentityLinks, groups)
+	return aggregateGroups(ctx, ddbClient, cfg, ns, groups, stored)
+}
+
+// aggregateGroups resolves the credential groups and aggregates their events
+// into entity records, writing to DynamoDB when a client is present. Split
+// from processInternal so tests can inject stored links and simulate
+// cross-batch delivery.
+func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, ns string, groups []identity.Group, stored map[string]*link) (map[string]*types.DynamoDBSession, error) {
 	// Aggregation maps for all nouns
 	roles := make(map[string]*types.DynamoDBRole)
 	services := make(map[string]*types.DynamoDBService)
@@ -114,9 +126,8 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	sessionResources := make(map[string]map[string]bool)
 
 	// Identity resolution: credential groups → person tiers → session anchors,
-	// with in-batch chain/login/MCP links resolving tier 2.
-	groups := identity.GroupEvents(events)
-	resolved, links := resolveGroups(groups)
+	// with in-batch and stored chain/login/MCP/cred links resolving tier 2.
+	resolved, links := resolveGroups(groups, stored)
 
 	// Chaining metadata for parent sessions ingested in a prior invocation:
 	// flushed as DynamoDB updates after all current-batch sessions are written.
@@ -127,6 +138,14 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		eventCount   int
 	}
 	var deferredParentUpdates []parentUpdate
+
+	// Grant refs for authorizing sessions ingested in a prior invocation
+	// (the symmetric side of aws login / MCP attribution).
+	type grantUpdate struct {
+		parentRef string
+		childRef  string
+	}
+	var deferredGrantUpdates []grantUpdate
 
 	for _, rg := range resolved {
 		var chainL, loginL, mcpL *link
@@ -223,6 +242,10 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 						if loginL != nil && sessionType == SessionTypeLogin {
 							sess.LoginGrantedBySession = loginL.parentSessionRef
 						}
+						// Grantee-side cross-batch ordering can miss attribution here when
+						// the grant's link is persisted after this session was written in an
+						// earlier batch — see "Grantee-side cross-batch login/MCP attribution
+						// gap" in TODO.md.
 						sessions[sessRef] = sess
 					}
 					accumulateSessionEvent(sess, event, resourceList)
@@ -258,27 +281,21 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 			// === Role ===
 			if roleARN != "" {
-				if err := processRoleEvent(roles, event, roleARN, eventDate); err != nil {
-					log.Printf("WARNING: Failed to process role event: %v", err)
-				}
+				processRoleEvent(roles, event, roleARN, eventDate)
 				addToSet(rolePeople, roleARN, personKey)
 				addToSet(roleSessions, roleARN, sessRef)
 				addToSet(roleAccounts, roleARN, accountID)
 			}
 
 			// === Service ===
-			if err := processServiceEvent(services, event, roleARN, eventDate); err != nil {
-				log.Printf("WARNING: Failed to process service event: %v", err)
-			}
+			processServiceEvent(services, event, roleARN, eventDate)
 			addToSet(servicePeople, event.EventSource, personKey)
 			addToSet(serviceSessions, event.EventSource, sessRef)
 			addToSet(serviceAccounts, event.EventSource, accountID)
 
 			// === Resources ===
 			for _, resource := range resourceList {
-				if err := processResourceEvent(resourceMap, event, resource, accountID, eventDate); err != nil {
-					log.Printf("WARNING: Failed to process resource event: %v", err)
-				}
+				processResourceEvent(resourceMap, event, resource, accountID, eventDate)
 
 				// Track ClickOps operations: console modifications by the human
 				// (never service fan-out with the human's credentials).
@@ -338,6 +355,24 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 					childRoleARN: childRoleARN,
 					eventCount:   childEvents,
 				})
+			}
+		}
+	}
+
+	// Symmetric grant refs: record each aws-login/MCP-attributed session on the
+	// session that authorized its credentials, mirroring role chaining's
+	// parent→child refs so "what did this session authorize?" is answerable
+	// from the parent. Same-batch parents update in memory; prior-batch parents
+	// get a deferred DynamoDB update.
+	for sessRef, sess := range sessions {
+		for _, grantRef := range []string{sess.AgentAuthorizedBySession, sess.LoginGrantedBySession} {
+			if grantRef == "" || grantRef == sessRef {
+				continue
+			}
+			if parentSess, inBatch := sessions[grantRef]; inBatch {
+				appendUnique(&parentSess.GrantedSessionRefs, sessRef)
+			} else {
+				deferredGrantUpdates = append(deferredGrantUpdates, grantUpdate{parentRef: grantRef, childRef: sessRef})
 			}
 		}
 	}
@@ -432,6 +467,7 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 	for _, sess := range sessions {
 		var err error
+		sess.Sid = identity.Sid(sess.PersonKey, sess.SK)
 		if strings.HasPrefix(sess.SK, "win#") {
 			err = ddblib.WriteWindowedSession(ctx, ddbClient, cfg.Tables.Sessions, sess, cfg.idleGap())
 		} else {
@@ -445,7 +481,7 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	// Persist identity links so later batches can resolve tier 2 and keep anchor
 	// continuity (the read side lands with the §5 link-layer port).
 	if cfg.Tables.IdentityLinks != "" {
-		writeIdentityLinks(ctx, ddbClient, cfg.Tables.IdentityLinks, resolved, links)
+		writeIdentityLinks(ctx, ddbClient, cfg.Tables.IdentityLinks, links)
 	}
 
 	// Flush deferred parent chaining updates (parents ingested in prior batches).
@@ -460,6 +496,22 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			if err := ddblib.UpdateParentSessionChaining(ctx, ddbClient, cfg.Tables.Sessions, ns,
 				u.parentRef, u.childRef, u.childRoleARN, u.eventCount); err != nil {
 				log.Printf("ERROR: Failed to update parent session chaining: %v", err)
+			}
+		}
+	}
+
+	// Flush deferred grant refs (authorizing sessions from prior batches).
+	if len(deferredGrantUpdates) > 0 && cfg.Tables.Sessions != "" {
+		seen := make(map[string]bool)
+		for _, u := range deferredGrantUpdates {
+			key := u.parentRef + "|" + u.childRef
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if err := ddblib.UpdateParentSessionGrants(ctx, ddbClient, cfg.Tables.Sessions, ns,
+				u.parentRef, u.childRef); err != nil {
+				log.Printf("ERROR: Failed to update authorizing session grants: %v", err)
 			}
 		}
 	}

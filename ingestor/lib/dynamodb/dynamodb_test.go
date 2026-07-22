@@ -243,6 +243,112 @@ func (s *fakeStore) session(t *testing.T, key string) *types.DynamoDBSession {
 	return &sess
 }
 
+// fakeLinkGetter is a scripted BatchGetItem client: it returns each queued
+// response in order, letting a test simulate DynamoDB returning some items plus
+// UnprocessedKeys on the first call and the rest on the next.
+type fakeLinkGetter struct {
+	table     string
+	responses []*dynamodb.BatchGetItemOutput
+	calls     int
+}
+
+func (f *fakeLinkGetter) BatchGetItem(_ context.Context, _ *dynamodb.BatchGetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.BatchGetItemOutput, error) {
+	i := f.calls
+	f.calls++
+	if i < len(f.responses) {
+		return f.responses[i], nil
+	}
+	return &dynamodb.BatchGetItemOutput{}, nil
+}
+
+func linkItem(t *testing.T, pk string) map[string]ddbtypes.AttributeValue {
+	t.Helper()
+	item, err := attributevalue.MarshalMap(&types.DynamoDBIdentityLink{PK: pk, PersonKey: "iamuser#" + pk})
+	if err != nil {
+		t.Fatalf("marshal link %q: %v", pk, err)
+	}
+	return item
+}
+
+// A BatchGetItem that returns UnprocessedKeys must be retried until drained;
+// records from the retried keys must still land in the result.
+func TestBatchGetIdentityLinksRetriesUnprocessedKeys(t *testing.T) {
+	const table = "links"
+	pkA, pkB := "cred#AAA", "cred#BBB"
+
+	getter := &fakeLinkGetter{
+		table: table,
+		responses: []*dynamodb.BatchGetItemOutput{
+			// First call: return A, defer B as unprocessed.
+			{
+				Responses: map[string][]map[string]ddbtypes.AttributeValue{
+					table: {linkItem(t, pkA)},
+				},
+				UnprocessedKeys: map[string]ddbtypes.KeysAndAttributes{
+					table: {Keys: []map[string]ddbtypes.AttributeValue{
+						{"pk": &ddbtypes.AttributeValueMemberS{Value: pkB}},
+					}},
+				},
+			},
+			// Second call (the retry): return B, nothing unprocessed.
+			{
+				Responses: map[string][]map[string]ddbtypes.AttributeValue{
+					table: {linkItem(t, pkB)},
+				},
+			},
+		},
+	}
+
+	result, err := BatchGetIdentityLinks(context.Background(), getter, table, []string{pkA, pkB})
+	if err != nil {
+		t.Fatalf("BatchGetIdentityLinks: %v", err)
+	}
+	if getter.calls != 2 {
+		t.Errorf("BatchGetItem called %d times, want 2 (initial + retry)", getter.calls)
+	}
+	if len(result) != 2 {
+		t.Fatalf("result has %d links, want 2: %v", len(result), result)
+	}
+	if result[pkA] == nil || result[pkB] == nil {
+		t.Errorf("missing a link: got %v, want both %s and %s", result, pkA, pkB)
+	}
+}
+
+// A denied ResourceAccess carries policy fields (PolicyARN/PolicyType/
+// ErrorMessage); those must survive a cross-batch merge, with counts summed.
+func TestMergeResourceAccessesPreservesPolicyFields(t *testing.T) {
+	denied := types.ResourceAccess{
+		Resource:     "s3:bucket:secret",
+		Service:      "s3.amazonaws.com",
+		EventName:    "GetObject",
+		Count:        1,
+		PolicyARN:    "arn:aws:iam::111111111111:policy/DenyAll",
+		PolicyType:   "SCP",
+		ErrorMessage: "explicit deny in SCP",
+	}
+	// Second batch: same denied access seen again (empty ErrorMessage this time).
+	again := denied
+	again.ErrorMessage = ""
+
+	merged := MergeResourceAccesses([]types.ResourceAccess{denied}, []types.ResourceAccess{again})
+	if len(merged) != 1 {
+		t.Fatalf("merged has %d entries, want 1 (same key): %+v", len(merged), merged)
+	}
+	got := merged[0]
+	if got.Count != 2 {
+		t.Errorf("Count = %d, want 2 (summed)", got.Count)
+	}
+	if got.PolicyARN != denied.PolicyARN {
+		t.Errorf("PolicyARN = %q, want %q", got.PolicyARN, denied.PolicyARN)
+	}
+	if got.PolicyType != denied.PolicyType {
+		t.Errorf("PolicyType = %q, want %q", got.PolicyType, denied.PolicyType)
+	}
+	if got.ErrorMessage != denied.ErrorMessage {
+		t.Errorf("ErrorMessage = %q, want %q (first non-empty)", got.ErrorMessage, denied.ErrorMessage)
+	}
+}
+
 func TestWriteWindowedSessionCreateThenExtend(t *testing.T) {
 	store := newFakeStore()
 	gap := 30 * time.Minute

@@ -6,6 +6,7 @@ package aggregator
 
 import (
 	"log"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -26,10 +27,17 @@ type resolvedGroup struct {
 // resolveGroups resolves every credential group to a person and anchor,
 // iterating so that links registered by resolved groups (an AssumeRole, an
 // OAuth grant) can resolve the groups that depend on them — chains within one
-// batch resolve regardless of event order. Cross-batch resolution through
-// trailtool-identity-links is the §5 link-layer port.
-func resolveGroups(groups []identity.Group) ([]resolvedGroup, map[string]*link) {
-	links := make(map[string]*link)
+// batch resolve regardless of event order. The stored map seeds the link
+// registry with records fetched from trailtool-identity-links, so tier 2 and
+// anchor continuity also work across batches (S3 files).
+//
+// Returns each group's resolution — a resolvedGroup carrying its person,
+// anchor, and ok flag, positionally aligned with groups — and the final link
+// registry (a copy of stored, extended by in-batch registrations), which the
+// caller reuses for link lookups and persists to trailtool-identity-links.
+func resolveGroups(groups []identity.Group, stored map[string]*link) ([]resolvedGroup, map[string]*link) {
+	links := make(map[string]*link, len(stored))
+	maps.Copy(links, stored)
 	resolved := make([]resolvedGroup, len(groups))
 
 	resolver := func(g identity.Group) (string, bool) {
@@ -39,9 +47,19 @@ func resolveGroups(groups []identity.Group) ([]resolvedGroup, map[string]*link) 
 		return "", false
 	}
 
+	// Service-driven (invokedBy-only) groups resolve after everything else:
+	// their anchor comes from the originating session's cred# continuity link,
+	// which the originating group registers when it resolves.
 	pending := make([]int, 0, len(groups))
 	for i := range groups {
-		pending = append(pending, i)
+		if !serviceDrivenOnly(groups[i]) {
+			pending = append(pending, i)
+		}
+	}
+	for i := range groups {
+		if serviceDrivenOnly(groups[i]) {
+			pending = append(pending, i)
+		}
 	}
 	for len(pending) > 0 {
 		progress := false
@@ -52,7 +70,7 @@ func resolveGroups(groups []identity.Group) ([]resolvedGroup, map[string]*link) 
 				still = append(still, i)
 				continue
 			}
-			anchor := identity.Anchor(groups[i])
+			anchor := continuityAnchor(links, groups[i], identity.Anchor(groups[i]))
 			resolved[i] = resolvedGroup{group: groups[i], person: person, ok: true, anchor: anchor}
 			registerLinks(links, groups[i], person, anchor)
 			progress = true
@@ -65,7 +83,29 @@ func resolveGroups(groups []identity.Group) ([]resolvedGroup, map[string]*link) 
 	for _, i := range pending {
 		resolved[i] = resolvedGroup{group: groups[i]}
 	}
+
+	// Final continuity pass: a group that resolved before its originating
+	// session registered the relevant link (file order is arbitrary) re-applies
+	// continuity once all links are known.
+	for i := range resolved {
+		if !resolved[i].ok {
+			continue
+		}
+		resolved[i].anchor = continuityAnchor(links, resolved[i].group, resolved[i].anchor)
+	}
 	return resolved, links
+}
+
+// serviceDrivenOnly reports whether every event in the group is service
+// fan-out (userIdentity.invokedBy set) — an AWS service calling with the
+// human's credentials, minting per-request access keys.
+func serviceDrivenOnly(g identity.Group) bool {
+	for _, e := range g.Events {
+		if e.UserIdentity.InvokedBy == "" {
+			return false
+		}
+	}
+	return len(g.Events) > 0
 }
 
 // dedupeByEventID drops repeated eventIDs within a batch: org trails duplicate
@@ -91,15 +131,23 @@ func dedupeByEventID(events []types.CloudTrailRecord) []types.CloudTrailRecord {
 	return out
 }
 
-// shouldSkipEvent filters console/OAuth bookkeeping that would otherwise create
+// shouldSkipEvent filters sign-in/OAuth bookkeeping that would otherwise create
 // spurious sessions or inflate counts: SwitchRole signin events, CreateOAuth2Token
-// grants (consumed by the link layer), and AWS Config's synthetic sessions.
+// grants (consumed by the link layer), AWS Config's synthetic sessions, and
+// AssumeRoleWithSAML federation calls — the sign-in service re-federates
+// through the IdP (roughly once a minute for an open console) to mint session
+// credentials, and those issuance pings are made by a role-less SAMLUser
+// principal, not by any session we track. The sessions they mint are tracked
+// through their own events.
 func shouldSkipEvent(event types.CloudTrailRecord) bool {
 	if strings.Contains(event.UserIdentity.PrincipalID, "ConfigResourceCompositionSession") {
 		return true
 	}
 	if event.EventSource == "signin.amazonaws.com" &&
 		(event.EventName == "SwitchRole" || event.EventName == "CreateOAuth2Token") {
+		return true
+	}
+	if event.EventSource == "sts.amazonaws.com" && event.EventName == "AssumeRoleWithSAML" {
 		return true
 	}
 	return false

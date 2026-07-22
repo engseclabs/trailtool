@@ -259,6 +259,12 @@ type DynamoDBSession struct {
 	PK string `dynamodbav:"pk"` // customerId#person_key — one Query lists a person's sessions
 	SK string `dynamodbav:"sk"` // anchor#roleID, or win#roleID#firstWrittenStart for the fallback
 
+	// Sid is a deterministic short id derived from the ref (person_key|sk) via
+	// identity.Sid. Sort key of the sid_index GSI (partition customerId), so the
+	// CLI resolves "--session <prefix>" with a begins_with Query. Sticky across
+	// merges, like SK.
+	Sid string `dynamodbav:"sid"`
+
 	CustomerID  string `dynamodbav:"customerId"`
 	PersonKey   string `dynamodbav:"person_key"`
 	Anchor      string `dynamodbav:"anchor"`       // sis#… | web#… | key#… | win#… (fallback)
@@ -317,6 +323,12 @@ type DynamoDBSession struct {
 	ChainedSessionRefs []string `dynamodbav:"chained_session_refs,omitempty"` // child session refs
 	ChainedRoles       []string `dynamodbav:"chained_roles,omitempty"`        // role ARNs assumed during this session
 	ChainedEventCount  int      `dynamodbav:"chained_event_count,omitempty"`  // events attributed to children (summary)
+
+	// GrantedSessionRefs is the symmetric parent side of the aws login / MCP
+	// attributions below: refs of the sessions whose credentials this session
+	// authorized via an OAuth grant. Mirrors role chaining's parent→child refs
+	// so "what did this session authorize?" is answerable from the parent.
+	GrantedSessionRefs []string `dynamodbav:"granted_session_refs,omitempty"`
 
 	// SessionTags/SessionPolicy come from the AssumeRole requestParameters that
 	// created this child session.

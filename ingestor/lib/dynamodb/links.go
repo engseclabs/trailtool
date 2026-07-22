@@ -40,10 +40,21 @@ func WriteIdentityLink(ctx context.Context, ddbClient SessionStore, tableName st
 
 // BatchGetIdentityLinks fetches identity link records for a set of PKs.
 // Returns a map of pk -> DynamoDBIdentityLink for found records.
-func BatchGetIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, tableName string, pks []string) (map[string]*types.DynamoDBIdentityLink, error) {
+func BatchGetIdentityLinks(ctx context.Context, ddbClient LinkGetter, tableName string, pks []string) (map[string]*types.DynamoDBIdentityLink, error) {
 	result := make(map[string]*types.DynamoDBIdentityLink)
 	if len(pks) == 0 {
 		return result, nil
+	}
+
+	collect := func(items []map[string]ddbtypes.AttributeValue) {
+		for _, item := range items {
+			var link types.DynamoDBIdentityLink
+			if err := attributevalue.UnmarshalMap(item, &link); err != nil {
+				log.Printf("WARNING: failed to unmarshal identity link: %v", err)
+				continue
+			}
+			result[link.PK] = &link
+		}
 	}
 
 	// DynamoDB BatchGetItem limit is 100 keys per request
@@ -62,22 +73,37 @@ func BatchGetIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, tabl
 			})
 		}
 
-		out, err := ddbClient.BatchGetItem(ctx, &dynamodb.BatchGetItemInput{
-			RequestItems: map[string]ddbtypes.KeysAndAttributes{
-				tableName: {Keys: keys},
-			},
-		})
-		if err != nil {
-			return result, fmt.Errorf("batch get identity links failed: %w", err)
+		// BatchGetItem returns any keys it couldn't service (throttling) in
+		// UnprocessedKeys; retry those with bounded exponential backoff so
+		// throttled records aren't silently dropped.
+		req := map[string]ddbtypes.KeysAndAttributes{
+			tableName: {Keys: keys},
 		}
-
-		for _, item := range out.Responses[tableName] {
-			var link types.DynamoDBIdentityLink
-			if err := attributevalue.UnmarshalMap(item, &link); err != nil {
-				log.Printf("WARNING: failed to unmarshal identity link: %v", err)
-				continue
+		const maxAttempts = 5
+		backoff := 50 * time.Millisecond
+		for attempt := 0; ; attempt++ {
+			out, err := ddbClient.BatchGetItem(ctx, &dynamodb.BatchGetItemInput{
+				RequestItems: req,
+			})
+			if err != nil {
+				return result, fmt.Errorf("batch get identity links failed: %w", err)
 			}
-			result[link.PK] = &link
+
+			collect(out.Responses[tableName])
+
+			unprocessed, ok := out.UnprocessedKeys[tableName]
+			if !ok || len(unprocessed.Keys) == 0 {
+				break
+			}
+			if attempt+1 >= maxAttempts {
+				log.Printf("WARNING: batch get identity links exhausted retries, dropping %d unprocessed keys", len(unprocessed.Keys))
+				break
+			}
+			req = map[string]ddbtypes.KeysAndAttributes{
+				tableName: unprocessed,
+			}
+			time.Sleep(backoff)
+			backoff *= 2
 		}
 	}
 
@@ -135,6 +161,56 @@ func UpdateParentSessionChaining(ctx context.Context, ddbClient SessionStore, ta
 	}
 
 	log.Printf("CHAIN_PARENT_UPDATE: updated parent=%s with child=%s role=%s", parentRef, childRef, childRoleARN)
+	return nil
+}
+
+// UpdateParentSessionGrants records a granted (aws login / MCP) session ref on
+// its authorizing session — the symmetric side of the child's
+// agent_authorized_by_session / login_granted_by_session — when the authorizer
+// was ingested in a prior Lambda invocation.
+func UpdateParentSessionGrants(ctx context.Context, ddbClient SessionStore, tableName, customerID, parentRef, childRef string) error {
+	personKey, sk, ok := strings.Cut(parentRef, "|")
+	if !ok || personKey == "" || sk == "" {
+		return fmt.Errorf("invalid authorizing session ref: %s", parentRef)
+	}
+	pk := customerID + "#" + personKey
+
+	getOut, err := ddbClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(tableName),
+		Key: map[string]ddbtypes.AttributeValue{
+			"pk": &ddbtypes.AttributeValueMemberS{Value: pk},
+			"sk": &ddbtypes.AttributeValueMemberS{Value: sk},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get authorizing session %s: %w", parentRef, err)
+	}
+	if len(getOut.Item) == 0 {
+		// Authorizer not yet in DDB — a later batch's merge will attribute it.
+		log.Printf("GRANT_PARENT_UPDATE: authorizing session not yet in DDB, skipping update for %s", parentRef)
+		return nil
+	}
+
+	var existing types.DynamoDBSession
+	if err := attributevalue.UnmarshalMap(getOut.Item, &existing); err != nil {
+		return fmt.Errorf("failed to unmarshal authorizing session %s: %w", parentRef, err)
+	}
+
+	existing.GrantedSessionRefs = MergeUniqueStrings(existing.GrantedSessionRefs, []string{childRef})
+	existing.Version++
+
+	item, err := attributevalue.MarshalMap(&existing)
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated authorizing session %s: %w", parentRef, err)
+	}
+	if _, err := ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(tableName),
+		Item:      item,
+	}); err != nil {
+		return fmt.Errorf("failed to write updated authorizing session %s: %w", parentRef, err)
+	}
+
+	log.Printf("GRANT_PARENT_UPDATE: updated authorizer=%s with granted=%s", parentRef, childRef)
 	return nil
 }
 

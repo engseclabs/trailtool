@@ -6,6 +6,8 @@
 package identity
 
 import (
+	"crypto/sha256"
+	"encoding/base32"
 	"strings"
 
 	"github.com/engseclabs/trailtool/ingestor/lib/session"
@@ -64,11 +66,30 @@ func RootPersonKey(accountID string) string {
 
 // CredentialGroupKey returns the credential-group key for one event:
 //
-//	rc#<principalId>#<creationDate>  console sessions — the console mints a fresh access
-//	                                 key per request, so the stable creationDate is the
-//	                                 credential; keying on the access key would shatter a
-//	                                 console session into single-event groups and defeat
-//	                                 the any-event-resolves-the-group C1 mitigation.
+//	sig#<signInSessionArn>           events made *under* a sign-in session (agent /
+//	                                 aws login traffic): the arn is the credential
+//	                                 boundary, checked first as the strongest and most
+//	                                 specific. Without this, agent traffic sharing a
+//	                                 console creationDate — and rotating a fresh access
+//	                                 key per request — would either fall into the console
+//	                                 rc# group or shatter across ak# groups, mixing the
+//	                                 human console session and one or more agent sessions.
+//	                                 The CLI-rollout case (a stable CLI credential that
+//	                                 also gets stamped with a signInSessionArn, §3.1) is
+//	                                 preserved by anchor continuity: its cross-batch
+//	                                 cred#<accessKeyId> link, keyed on the stable ASIA key
+//	                                 rather than the arn, still carries its key# anchor
+//	                                 forward (see continuityAnchor). Excludes the
+//	                                 CreateOAuth2Token grant, whose arn (in
+//	                                 additionalEventData) names the session it mints, not
+//	                                 the one it was made under.
+//	rc#<principalId>#<creationDate>  per-request-credential sessions: the console AND
+//	                                 forward-access sessions (invokedBy — CloudFormation
+//	                                 fan-out etc.) mint a fresh access key per request,
+//	                                 so the stable creationDate is the credential; keying
+//	                                 on the access key would shatter one session into
+//	                                 single-event groups and defeat the
+//	                                 any-event-resolves-the-group C1 mitigation.
 //	                                 Also the fallback for events with a creationDate but
 //	                                 no access key. principalId (roleID:sessionName), not
 //	                                 bare roleID: grouping runs before identity, so two
@@ -78,8 +99,15 @@ func RootPersonKey(accountID string) string {
 //	ev#<eventID>                     everything else — the event resolves alone
 //	""                               ungroupable (no credential and no eventID)
 func CredentialGroupKey(event types.CloudTrailRecord) string {
+	if !IsOAuthGrantEvent(event) {
+		if sc := event.UserIdentity.SessionContext; sc != nil && sc.SignInSessionArn != "" {
+			return "sig#" + sc.SignInSessionArn
+		}
+	}
 	creationDate := session.GetSessionCreationTime(event)
-	if creationDate != "" && (isConsoleSessionCredential(event) || event.UserIdentity.AccessKeyID == "") {
+	if creationDate != "" && (isConsoleSessionCredential(event) ||
+		event.UserIdentity.AccessKeyID == "" ||
+		event.UserIdentity.InvokedBy != "") {
 		return "rc#" + event.UserIdentity.PrincipalID + "#" + creationDate
 	}
 	if ak := event.UserIdentity.AccessKeyID; ak != "" {
@@ -91,15 +119,21 @@ func CredentialGroupKey(event types.CloudTrailRecord) string {
 	return ""
 }
 
-// isConsoleSessionCredential reports whether the event was made with console session
-// credentials, from CloudTrail's own flag (record-level or session-context attribute) —
-// deterministic, unlike user-agent classification.
+// isConsoleSessionCredential reports whether the event was made with console
+// session credentials: CloudTrail's own flag (record-level or session-context
+// attribute), or — the §10 sanctioned fallback — a browser user agent. The
+// fallback exists because the flag is not stamped on every console-session
+// event: sign-in bootstrap events (ConsoleLogin, GetSigninToken) and some
+// console framework calls carry a browser UA and the session's creationDate
+// but no flag, and must not shatter into per-key sessions.
 func isConsoleSessionCredential(event types.CloudTrailRecord) bool {
 	if event.SessionCredentialFromConsole == "true" {
 		return true
 	}
-	sc := event.UserIdentity.SessionContext
-	return sc != nil && sc.Attributes.SessionCredentialFromConsole == "true"
+	if sc := event.UserIdentity.SessionContext; sc != nil && sc.Attributes.SessionCredentialFromConsole == "true" {
+		return true
+	}
+	return session.ClassifySessionType(session.NormalizeUserAgent(event.UserAgent)) == "web-console"
 }
 
 // GroupEvents partitions a batch into credential groups, preserving first-seen
@@ -107,6 +141,10 @@ func isConsoleSessionCredential(event types.CloudTrailRecord) bool {
 func GroupEvents(events []types.CloudTrailRecord) []Group {
 	var groups []Group
 	index := make(map[string]int)
+	// console groups this batch, indexed by principalId, so a bare console
+	// sign-in event (which has no credential fields of its own) can be folded
+	// into the console session it initiates — see foldConsoleSignIn.
+	consoleByPrincipal := make(map[string]int)
 	for _, event := range events {
 		key := CredentialGroupKey(event)
 		if key == "" {
@@ -118,9 +156,57 @@ func GroupEvents(events []types.CloudTrailRecord) []Group {
 			continue
 		}
 		index[key] = len(groups)
+		if strings.HasPrefix(key, "rc#") && isConsoleSessionCredential(event) {
+			consoleByPrincipal[event.UserIdentity.PrincipalID] = len(groups)
+		}
 		groups = append(groups, Group{Key: key, Events: []types.CloudTrailRecord{event}})
 	}
-	return groups
+	return foldConsoleSignIn(groups, consoleByPrincipal)
+}
+
+// isConsoleSignInEvent reports whether the event is a console sign-in
+// (ConsoleLogin / AwsConsoleSignIn from signin.amazonaws.com). AWS stamps these
+// with a bare userIdentity — principalId and arn, but no sessionContext — so
+// they carry no creationDate, access key, or sessionCredentialFromConsole flag,
+// and can neither group into nor anchor onto the console session they open.
+func isConsoleSignInEvent(event types.CloudTrailRecord) bool {
+	return event.EventSource == "signin.amazonaws.com" &&
+		(event.EventName == "ConsoleLogin" || event.EventType == "AwsConsoleSignIn")
+}
+
+// foldConsoleSignIn moves a bare console sign-in event out of its ev#/singleton
+// group into the console session it initiated — the rc# console group sharing
+// its principalId — so the sign-in joins that web# session instead of falling
+// to the windowed fallback as a spurious one-event session. If no matching
+// console group exists in the batch (the sign-in's activity landed in another
+// file), the event stays in its own group and resolves normally.
+func foldConsoleSignIn(groups []Group, consoleByPrincipal map[string]int) []Group {
+	drop := make(map[int]bool)
+	for gi := range groups {
+		if len(groups[gi].Events) != 1 {
+			continue
+		}
+		e := groups[gi].Events[0]
+		if !isConsoleSignInEvent(e) {
+			continue
+		}
+		target, ok := consoleByPrincipal[e.UserIdentity.PrincipalID]
+		if !ok || target == gi {
+			continue
+		}
+		groups[target].Events = append(groups[target].Events, e)
+		drop[gi] = true
+	}
+	if len(drop) == 0 {
+		return groups
+	}
+	out := groups[:0:0]
+	for gi := range groups {
+		if !drop[gi] {
+			out = append(out, groups[gi])
+		}
+	}
+	return out
 }
 
 // Anchor resolves the session anchor for a credential group (§3.1): a session is
@@ -147,7 +233,7 @@ func Anchor(g Group) string {
 		// (in additionalEventData, and observed in sessionContext too) names the
 		// session it mints, not the session the grant was made under — letting it
 		// decide the group's anchor would re-key the authorizing human's session.
-		if isOAuthGrantEvent(event) {
+		if IsOAuthGrantEvent(event) {
 			continue
 		}
 		if sc := event.UserIdentity.SessionContext; sc != nil && sc.SignInSessionArn != "" {
@@ -165,6 +251,14 @@ func Anchor(g Group) string {
 		}
 	}
 	for _, event := range g.Events {
+		// A forward-access session's keys are per-request vends, not a session
+		// credential — they must never mint a key# anchor. The group instead
+		// adopts the originating session's anchor through its
+		// cred#<principalId>#<creationDate> continuity link (forward-access
+		// sessions inherit the originator's creationDate).
+		if event.UserIdentity.InvokedBy != "" {
+			continue
+		}
 		if ak := event.UserIdentity.AccessKeyID; strings.HasPrefix(ak, "ASIA") {
 			return "key#" + ak
 		}
@@ -172,9 +266,10 @@ func Anchor(g Group) string {
 	return ""
 }
 
-// isOAuthGrantEvent reports whether the event is a signin.amazonaws.com
-// CreateOAuth2Token grant (aws login PKCE or AWS MCP Server token mint).
-func isOAuthGrantEvent(event types.CloudTrailRecord) bool {
+// IsOAuthGrantEvent reports whether the event is a signin.amazonaws.com
+// CreateOAuth2Token grant (aws login PKCE or AWS MCP Server token mint). Grant
+// events are consumed by the link layer and never counted into sessions.
+func IsOAuthGrantEvent(event types.CloudTrailRecord) bool {
 	return event.EventSource == "signin.amazonaws.com" && event.EventName == "CreateOAuth2Token"
 }
 
@@ -196,6 +291,28 @@ func WindowSK(roleID, startTime string) string {
 // unambiguously.
 func SessionRef(personKey, sk string) string {
 	return personKey + "|" + sk
+}
+
+// SidLength is the number of base32 characters in a stored session id. 16 chars =
+// 80 bits: collision-free across any realistic dataset. Users never type the whole
+// thing — the CLI shows and accepts a short prefix (see SidDisplayMin) and resolves
+// it against the sid_index GSI with begins_with, Git-style. Storing full strength
+// keeps that prefix resolution safe as datasets grow.
+const SidLength = 16
+
+// SidDisplayMin is the shortest prefix the CLI shows by default; it widens per
+// list only when two rows would otherwise share a prefix.
+const SidDisplayMin = 6
+
+// Sid derives a deterministic, typable id for a session from its ref
+// (person_key|sk). It is the sort key of the sessions sid_index GSI (partition key
+// customerId), so "--session <prefix>" resolves via a single begins_with Query.
+// Deterministic means merges and re-ingests keep the same sid; lowercase base32
+// avoids shell-quoting and visually ambiguous characters.
+func Sid(personKey, sk string) string {
+	sum := sha256.Sum256([]byte(SessionRef(personKey, sk)))
+	enc := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])
+	return strings.ToLower(enc[:SidLength])
 }
 
 // ResolveGroup resolves one credential group to a person, taking the first tier

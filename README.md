@@ -67,11 +67,10 @@ trailtool people list
 # Sessions
 trailtool sessions list --user alice@example.com --days 7
 trailtool sessions list --user alice@example.com --days 7 --long  # show full role names
-trailtool sessions detail --at 2025-01-15T10:30
-trailtool sessions detail --index 1 --user alice@example.com --days 7  # by list position
-trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
-trailtool sessions detail --at latest
-trailtool sessions summarize --at 2025-01-15T10:30  # requires Bedrock
+trailtool sessions detail --session k7m2qp          # by id (SID column, prefix ok)
+trailtool sessions detail --session latest
+trailtool sessions detail --session latest --user alice@example.com
+trailtool sessions summarize --session k7m2qp        # requires Bedrock
 
 # Accounts
 trailtool accounts list
@@ -86,8 +85,8 @@ trailtool roles policy MyRole
 trailtool roles policy MyRole --include-denied --explain
 
 # Session-scoped policy (tighter: only what this session actually did)
-trailtool sessions policy --at latest
-trailtool sessions policy --at 2025-01-15T10:35 --user alice@example.com --explain
+trailtool sessions policy --session latest
+trailtool sessions policy --session k7m2qp --explain
 
 # Services
 trailtool services list
@@ -101,58 +100,33 @@ trailtool resources list --clickops --service iam      # ClickOps filtered by se
 trailtool resources list --service s3 --days 7
 ```
 
-### Role Chaining
-
-TrailTool automatically correlates `AssumeRole` calls back to the originating human session, for both console switch-role and programmatic (`aws sts assume-role`) flows. This lets you answer "who actually did this?" even when the CloudTrail actor is an assumed role with no obvious human attribution.
-
-```
-$ trailtool sessions list --days 1
-
-#  WHEN        USER                  ROLE         ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
-1  5 mins ago  alice@example.com     AdminAccess  123456789012   84      API      12m       → 2 role(s)
-2  5 mins ago  alice@example.com     DeployRole   123456789012   31      API      8m        ↑ child
-3  5 mins ago  alice@example.com     AuditRole    123456789012   12      API      3m        ↑ child
-```
-
-`→ N role(s)` means this human session assumed N roles. `↑ child` means this session was created via `AssumeRole` and is attributed back to its parent.
-
-```bash
-# See which roles a session assumed and how many events each generated
-trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
-
-# The detail view shows the full chain:
-# Assumed by: alice@example.com at 2025-01-15T10:30:00Z            (on child sessions)
-#   → trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
-#
-# Assumed Roles (2, 43 events):                                    (on parent sessions)
-#   2025-01-15T10:35:00Z  DeployRole  31 events  8m
-#     → trailtool sessions detail --at 2025-01-15T10:35 --user alice@example.com
-#   2025-01-15T10:36:00Z  AuditRole   12 events  3m
-#     → trailtool sessions detail --at 2025-01-15T10:36 --user alice@example.com
-```
-
-### `aws login` Session Detection
-
-When a developer runs `aws login` to vend credentials to an AI agent (Claude Code, VS Code Copilot, etc.), TrailTool detects the `CreateOAuth2Token` event on `signin.amazonaws.com` and correlates it back to the agent session that received those credentials. The agent session is tagged as `LOGIN` type and includes attribution back to the authorizing human session.
-
-```
-$ trailtool sessions list --days 1
-
-WHEN        USER                  ROLE         ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
-5 mins ago  alice@example.com     AdminAccess  123456789012   3       LOGIN    8m        ← login
-8 mins ago  alice@example.com     AdminAccess  123456789012   84      API      12m
-```
-
-`← login` means the session's credentials were vended via `aws login` by a human in another session. The detail view shows the attribution:
-
-```
-Credentials granted via aws login by: alice@example.com at 2025-01-15T10:30:00Z (8 minutes ago)
-  → trailtool sessions detail --at 2025-01-15T10:30 --user alice@example.com
-```
-
-This distinguishes agent-driven activity (credentials vended by a human developer via `aws login`) from background automation or long-running CLI sessions.
-
 All commands support `--format json` for machine-readable output.
+
+### Session aggregation
+
+CloudTrail is a stream of independent events; sessions are an overlay TrailTool derives from latent metadata AWS stamps on those events. The goal is to tie every event back to the initiating human (or, failing that, the role).
+
+TrailTool stitches events into sessions, gives each resulting session a **session type**, and records a **session chain** between sessions when there is role chaining, `aws login`, or AWS MCP Server correlation.
+
+For example:
+```
+$ trailtool sessions list --days 1
+
+SID     WHEN        USER               ROLE         ACCOUNT       EVENTS  TYPE   DURATION  CHAINED
+k7m2qp  5 mins ago  alice@example.com  AdminAccess  123456789012  84      CLI    12m       → assumed q9x4mn  → granted b7k9mp
+q9x4mn  5 mins ago  alice@example.com  DeployRole   123456789012  31      CLI    8m        ← assumed by k7m2qp
+b7k9mp  5 mins ago  alice@example.com  AdminAccess  123456789012  3       LOGIN  8m        ← granted by k7m2qp
+c3d5e7  5 mins ago  alice@example.com  AdminAccess  123456789012  9       AGENT  4m        ← granted by k7m2qp
+```
+
+
+| `TYPE` | Meaning |
+|--------|---------|
+| `CLI` | CLI/SDK credential session |
+| `WEB` | Console (browser) session |
+| `AGENT` | AWS MCP Server traffic |
+| `LOGIN` | Credentials vended to an agent via `aws login` |
+
 
 ## Using TrailTool with AI Coding Agents
 

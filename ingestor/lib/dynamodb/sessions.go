@@ -104,7 +104,8 @@ func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSessi
 
 	return &types.DynamoDBSession{
 		PK:          existing.PK,
-		SK:          existing.SK, // sticky
+		SK:          existing.SK,  // sticky
+		Sid:         existing.Sid, // sticky (derived from PK/SK, which don't change)
 		CustomerID:  existing.CustomerID,
 		PersonKey:   existing.PersonKey,
 		Anchor:      firstNonEmpty(existing.Anchor, incoming.Anchor),
@@ -147,6 +148,7 @@ func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSessi
 		ChainedSessionRefs: MergeUniqueStrings(existing.ChainedSessionRefs, incoming.ChainedSessionRefs),
 		ChainedRoles:       MergeUniqueStrings(existing.ChainedRoles, incoming.ChainedRoles),
 		ChainedEventCount:  existing.ChainedEventCount + incoming.ChainedEventCount,
+		GrantedSessionRefs: MergeUniqueStrings(existing.GrantedSessionRefs, incoming.GrantedSessionRefs),
 
 		SessionTags:   mergeSessionTags(existing.SessionTags, incoming.SessionTags),
 		SessionPolicy: firstNonEmpty(existing.SessionPolicy, incoming.SessionPolicy),
@@ -157,33 +159,48 @@ func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSessi
 	}
 }
 
-// MergeResourceAccesses merges two ResourceAccess slices, combining counts for duplicates
+// MergeResourceAccesses merges two ResourceAccess slices, combining counts for
+// duplicates. Used for both ResourceAccesses and DeniedResourceAccesses, so the
+// merge key includes PolicyARN and the policy fields (PolicyARN, PolicyType,
+// ErrorMessage) are carried through — otherwise denied entries would lose them
+// when sessions merge across batches. Non-denied entries have empty policy
+// fields, so this is a no-op for them.
 func MergeResourceAccesses(a, b []types.ResourceAccess) []types.ResourceAccess {
-	// Use map to aggregate by unique combination of Resource+Service+EventName
+	// Use map to aggregate by unique combination of Resource+Service+EventName+PolicyARN
 	accessMap := make(map[string]*types.ResourceAccess)
 
 	// Add all from first slice
 	for _, ra := range a {
-		key := fmt.Sprintf("%s:%s:%s", ra.Service, ra.EventName, ra.Resource)
+		key := fmt.Sprintf("%s:%s:%s:%s", ra.Service, ra.EventName, ra.Resource, ra.PolicyARN)
 		accessMap[key] = &types.ResourceAccess{
-			Resource:  ra.Resource,
-			Service:   ra.Service,
-			EventName: ra.EventName,
-			Count:     ra.Count,
+			Resource:     ra.Resource,
+			Service:      ra.Service,
+			EventName:    ra.EventName,
+			Count:        ra.Count,
+			PolicyARN:    ra.PolicyARN,
+			PolicyType:   ra.PolicyType,
+			ErrorMessage: ra.ErrorMessage,
 		}
 	}
 
 	// Merge from second slice
 	for _, ra := range b {
-		key := fmt.Sprintf("%s:%s:%s", ra.Service, ra.EventName, ra.Resource)
+		key := fmt.Sprintf("%s:%s:%s:%s", ra.Service, ra.EventName, ra.Resource, ra.PolicyARN)
 		if existing, exists := accessMap[key]; exists {
 			existing.Count += ra.Count
+			// Keep the first non-empty error message we saw.
+			if existing.ErrorMessage == "" && ra.ErrorMessage != "" {
+				existing.ErrorMessage = ra.ErrorMessage
+			}
 		} else {
 			accessMap[key] = &types.ResourceAccess{
-				Resource:  ra.Resource,
-				Service:   ra.Service,
-				EventName: ra.EventName,
-				Count:     ra.Count,
+				Resource:     ra.Resource,
+				Service:      ra.Service,
+				EventName:    ra.EventName,
+				Count:        ra.Count,
+				PolicyARN:    ra.PolicyARN,
+				PolicyType:   ra.PolicyType,
+				ErrorMessage: ra.ErrorMessage,
 			}
 		}
 	}

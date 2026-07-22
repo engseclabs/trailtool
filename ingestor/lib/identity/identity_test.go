@@ -88,6 +88,40 @@ func TestCredentialGroupKey(t *testing.T) {
 			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
 		},
 		{
+			name: "forward-access fan-out (invokedBy) groups by creationDate, not its per-request key",
+			event: func() types.CloudTrailRecord {
+				e := ssoEvent("ASIAPERREQVEND1", "alice@example.com", false)
+				e.UserIdentity.InvokedBy = "cloudformation.amazonaws.com"
+				e.UserIdentity.SessionContext = &types.SessionContext{}
+				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:58:00Z"
+				return e
+			}(),
+			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
+		},
+		{
+			name: "signInSessionArn wins over the shared console creationDate (agent traffic)",
+			event: func() types.CloudTrailRecord {
+				e := ssoEvent("ASIAAGENTROT1", "alice@example.com", true)
+				e.UserIdentity.SessionContext = &types.SessionContext{SignInSessionArn: "arn:aws:signin:us-east-1:1:session/agent-x"}
+				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:58:00Z"
+				return e
+			}(),
+			want: "sig#arn:aws:signin:us-east-1:1:session/agent-x",
+		},
+		{
+			name: "the CreateOAuth2Token grant is NOT grouped by the arn it mints",
+			event: func() types.CloudTrailRecord {
+				e := ssoEvent("", "alice@example.com", false)
+				e.EventSource = "signin.amazonaws.com"
+				e.EventName = "CreateOAuth2Token"
+				e.UserIdentity.SessionContext = &types.SessionContext{}
+				e.UserIdentity.SessionContext.SignInSessionArn = "arn:aws:signin:us-east-1:1:session/minted"
+				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:58:00Z"
+				return e
+			}(),
+			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
+		},
+		{
 			name: "no credential falls back to eventID",
 			event: types.CloudTrailRecord{
 				EventID:      "aaaa-bbbb",
@@ -526,5 +560,29 @@ func TestPersonKeyPrefixesDisjoint(t *testing.T) {
 		if !prefixes[p] {
 			t.Errorf("missing keyspace prefix %q, have %v", p, prefixes)
 		}
+	}
+}
+
+// Sid must match core/models.SidForRef exactly — the two live in separate module
+// trees that can't import each other, so the same golden value is pinned in both
+// (see core/models/sid_test.go, which additionally pins the raw-ref hash). A
+// mismatch means the ingestor writes a sid the CLI can't recompute.
+func TestSidGolden(t *testing.T) {
+	const (
+		personKey = "email#alice@example.com"
+		sk        = "win#arn:aws:iam::123456789012:role/Admin#2026-04-15T17:08:23Z"
+		want      = "wi753omd65ue3fcn"
+	)
+	got := Sid(personKey, sk)
+	if got != want {
+		t.Errorf("Sid(%q, %q) = %q, want %q", personKey, sk, got, want)
+	}
+	if len(got) != SidLength {
+		t.Errorf("Sid length = %d, want %d", len(got), SidLength)
+	}
+	// Deterministic across calls (survives merges/re-ingests): a second call with
+	// the same inputs reproduces the pinned golden value above.
+	if again := Sid(personKey, sk); again != want {
+		t.Errorf("Sid not deterministic: second call = %q, want %q", again, want)
 	}
 }

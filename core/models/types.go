@@ -1,40 +1,78 @@
 package models
 
+import (
+	"crypto/sha256"
+	"encoding/base32"
+	"strings"
+)
 
-// Person represents an aggregated person record from the people-aggregated table
+// Person represents a person record from the trailtool-people table, keyed by
+// the tier-prefixed person key (idc#…, email#…, iamuser#…, root#…) resolved by
+// the ingestor's identity tiers.
 type Person struct {
-	Email          string `json:"email" dynamodbav:"email"`
-	DisplayName    string `json:"display_name,omitempty" dynamodbav:"display_name"`
-	FirstSeen      string `json:"first_seen" dynamodbav:"first_seen"`
-	LastSeen       string `json:"last_seen" dynamodbav:"last_seen"`
-	SessionsCount  int    `json:"sessions_count" dynamodbav:"sessions_count"`
-	AccountsCount  int    `json:"accounts_count" dynamodbav:"accounts_count"`
-	RolesCount     int    `json:"roles_count" dynamodbav:"roles_count"`
-	ServicesCount  int    `json:"services_count" dynamodbav:"services_count"`
-	ResourcesCount int    `json:"resources_count" dynamodbav:"resources_count"`
-	EventsCount    int    `json:"events_count" dynamodbav:"events_count"`
+	PersonKey      string   `json:"person_key" dynamodbav:"person_key"`
+	Tier           int      `json:"tier,omitempty" dynamodbav:"tier"`
+	Email          string   `json:"email,omitempty" dynamodbav:"email"`
+	EmailsSeen     []string `json:"emails_seen,omitempty" dynamodbav:"emails_seen"`
+	DisplayName    string   `json:"display_name,omitempty" dynamodbav:"display_name"`
+	FirstSeen      string   `json:"first_seen" dynamodbav:"first_seen"`
+	LastSeen       string   `json:"last_seen" dynamodbav:"last_seen"`
+	SessionsCount  int      `json:"sessions_count" dynamodbav:"sessions_count"`
+	AccountsCount  int      `json:"accounts_count" dynamodbav:"accounts_count"`
+	RolesCount     int      `json:"roles_count" dynamodbav:"roles_count"`
+	ServicesCount  int      `json:"services_count" dynamodbav:"services_count"`
+	ResourcesCount int      `json:"resources_count" dynamodbav:"resources_count"`
+	EventsCount    int      `json:"events_count" dynamodbav:"events_count"`
 }
 
-// SessionAggregated represents an aggregated session record from the sessions-aggregated table
-type SessionAggregated struct {
-	SessionID         string           `json:"session_id" dynamodbav:"session_id"`
-	SessionType       string           `json:"session_type,omitempty" dynamodbav:"session_type"`
-	SessionStart      string           `json:"session_start" dynamodbav:"session_start"` // Composite sort key: "startTime#sessionID"
-	StartTime         string           `json:"start_time" dynamodbav:"start_time"`
-	EndTime           string           `json:"end_time" dynamodbav:"end_time"`
-	DurationMinutes   int              `json:"duration_minutes" dynamodbav:"duration_minutes"`
-	PersonEmail       string           `json:"person_email" dynamodbav:"person_email"`
-	AccountID         string           `json:"account_id" dynamodbav:"account_id"`
-	RoleARN           string           `json:"role_arn" dynamodbav:"role_arn"`
-	RoleName          string           `json:"role_name" dynamodbav:"role_name"`
-	EventsCount       int              `json:"events_count" dynamodbav:"events_count"`
-	ServicesCount     int              `json:"services_count" dynamodbav:"services_count"`
-	ResourcesCount    int              `json:"resources_count" dynamodbav:"resources_count"`
-	SourceIPs         []string         `json:"source_ips" dynamodbav:"source_ips"`
-	UserAgents        []string         `json:"user_agents" dynamodbav:"user_agents"`
-	EventCounts       map[string]int   `json:"event_counts" dynamodbav:"event_counts"`
-	ResourcesAccessed map[string]int   `json:"resources_accessed" dynamodbav:"resources_accessed"`
-	ResourceAccesses  []ResourceAccess `json:"resource_accesses,omitempty" dynamodbav:"resource_accesses"`
+// DisplayLabel returns the friendliest identifier for the person: display
+// name, then primary email, then the person key itself.
+func (p *Person) DisplayLabel() string {
+	if p.DisplayName != "" {
+		return p.DisplayName
+	}
+	if p.Email != "" {
+		return p.Email
+	}
+	return p.PersonKey
+}
+
+// Session represents a session record from the trailtool-sessions table: all
+// events sharing one (person_key, roleID, anchor). The sort key is the anchor
+// (sis#/web#/key#, or win# for the windowed fallback), not a timestamp.
+type Session struct {
+	PK string `json:"-" dynamodbav:"pk"`  // customerId#person_key
+	SK string `json:"sk" dynamodbav:"sk"` // anchor#roleID | win#roleID#start
+
+	// Sid is the short deterministic session id (sort key of the sid_index GSI).
+	// The CLI shows a prefix of it and resolves "--session <prefix>" against the
+	// index. Written by the ingestor; empty on records ingested before sids.
+	Sid string `json:"sid,omitempty" dynamodbav:"sid"`
+
+	PersonKey   string `json:"person_key" dynamodbav:"person_key"`
+	Anchor      string `json:"anchor,omitempty" dynamodbav:"anchor"`
+	SessionType string `json:"session_type,omitempty" dynamodbav:"session_type"` // cli | web | agent | login
+
+	StartTime       string `json:"start_time" dynamodbav:"start_time"`
+	EndTime         string `json:"end_time" dynamodbav:"end_time"`
+	DurationMinutes int    `json:"duration_minutes" dynamodbav:"duration_minutes"`
+
+	AccountID string `json:"account_id" dynamodbav:"account_id"`
+	RoleARN   string `json:"role_arn" dynamodbav:"role_arn"`
+	RoleID    string `json:"role_id,omitempty" dynamodbav:"role_id"`
+	RoleName  string `json:"role_name" dynamodbav:"role_name"`
+
+	EventsCount int `json:"events_count" dynamodbav:"events_count"`
+	// ServiceDrivenEventCount counts events an AWS service made with the
+	// human's credentials (userIdentity.invokedBy set).
+	ServiceDrivenEventCount int              `json:"service_driven_event_count,omitempty" dynamodbav:"service_driven_event_count"`
+	ServicesCount           int              `json:"services_count" dynamodbav:"services_count"`
+	ResourcesCount          int              `json:"resources_count" dynamodbav:"resources_count"`
+	SourceIPs               []string         `json:"source_ips" dynamodbav:"source_ips"`
+	UserAgents              []string         `json:"user_agents" dynamodbav:"user_agents"`
+	EventCounts             map[string]int   `json:"event_counts" dynamodbav:"event_counts"`
+	ResourcesAccessed       map[string]int   `json:"resources_accessed" dynamodbav:"resources_accessed"`
+	ResourceAccesses        []ResourceAccess `json:"resource_accesses,omitempty" dynamodbav:"resource_accesses"`
 
 	// Access Denied tracking
 	DeniedEventCount        int              `json:"denied_event_count,omitempty" dynamodbav:"denied_event_count"`
@@ -49,32 +87,38 @@ type SessionAggregated struct {
 	SummaryModel       string `json:"summary_model,omitempty" dynamodbav:"summary_model,omitempty"`
 	SummaryTokensUsed  int    `json:"summary_tokens_used,omitempty" dynamodbav:"summary_tokens_used,omitempty"`
 
-	// Display enrichment
-	PersonDisplayName string `json:"person_display_name,omitempty"`
-	AccountName       string `json:"account_name,omitempty"`
+	// Display enrichment (not stored)
+	PersonLabel string `json:"person_label,omitempty" dynamodbav:"-"`
+	AccountName string `json:"account_name,omitempty" dynamodbav:"-"`
 
 	// ClickOps tracking
 	ClickOpsEventCount  int            `json:"clickops_event_count,omitempty" dynamodbav:"clickops_event_count"`
 	ClickOpsEventCounts map[string]int `json:"clickops_event_counts,omitempty" dynamodbav:"clickops_event_counts"`
 
-	// Role chaining — parent session fields
+	// SignInSessionArn is recorded whenever the session's events carried one.
+	SignInSessionArn string `json:"sign_in_session_arn,omitempty" dynamodbav:"sign_in_session_arn"`
+
+	// Role chaining — child fields. AssumedFromSession is a session ref
+	// ("person_key|sk") pointing at the parent session that ran AssumeRole.
+	AssumedFromSession string `json:"assumed_from_session,omitempty" dynamodbav:"assumed_from_session"`
+	AssumedFromRoleARN string `json:"assumed_from_role_arn,omitempty" dynamodbav:"assumed_from_role_arn"`
+
+	// Role chaining — parent fields.
+	ChainedSessionRefs []string `json:"chained_session_refs,omitempty" dynamodbav:"chained_session_refs"`
 	ChainedRoles       []string `json:"chained_roles,omitempty" dynamodbav:"chained_roles"`
 	ChainedEventCount  int      `json:"chained_event_count,omitempty" dynamodbav:"chained_event_count"`
-	ChainedSessionKeys []string `json:"chained_session_keys,omitempty" dynamodbav:"chained_session_keys"`
-	// Role chaining — child session fields
-	ParentSessionKey string `json:"parent_session_key,omitempty" dynamodbav:"parent_session_key"`
-	ParentEmail      string `json:"parent_email,omitempty" dynamodbav:"parent_email"`
 
-	// aws login attribution — set on the child session vended via CreateOAuth2Token
-	LoginGrantedBySessionKey string `json:"login_granted_by_session_key,omitempty" dynamodbav:"login_granted_by_session_key"`
-	LoginGrantedByEmail      string `json:"login_granted_by_email,omitempty" dynamodbav:"login_granted_by_email"`
+	// GrantedSessionRefs is the parent side of aws login / MCP attribution:
+	// refs of sessions whose credentials this session authorized via an OAuth
+	// grant.
+	GrantedSessionRefs []string `json:"granted_session_refs,omitempty" dynamodbav:"granted_session_refs"`
 
-	// AWS MCP Server OAuth attribution — set on agent-traffic sessions correlated via
-	// aws:SignInSessionArn to a CreateOAuth2Token grant for the AWS MCP Server resource.
-	SignInSessionArn         string `json:"sign_in_session_arn,omitempty" dynamodbav:"sign_in_session_arn"`
+	// aws login attribution — ref of the authorizing human session.
+	LoginGrantedBySession string `json:"login_granted_by_session,omitempty" dynamodbav:"login_granted_by_session"`
+
+	// AWS MCP Server OAuth attribution (session_type "agent").
 	MCPResource              string `json:"mcp_resource,omitempty" dynamodbav:"mcp_resource"`
 	AgentAuthorizedBySession string `json:"agent_authorized_by_session,omitempty" dynamodbav:"agent_authorized_by_session"`
-	AgentAuthorizedByEmail   string `json:"agent_authorized_by_email,omitempty" dynamodbav:"agent_authorized_by_email"`
 
 	// SessionTags holds the session tags from the AssumeRole requestParameters.tags
 	// that created this child session. Non-nil only on chained sessions.
@@ -85,17 +129,42 @@ type SessionAggregated struct {
 	SessionPolicy string `json:"session_policy,omitempty" dynamodbav:"session_policy,omitempty"`
 }
 
+// Ref returns the session's stable reference ("person_key|sk") — the format
+// chained/login/MCP attribution fields use to point at other sessions.
+func (s *Session) Ref() string {
+	return s.PersonKey + "|" + s.SK
+}
+
+// sidLength mirrors identity.SidLength on the ingestor side. The two trees don't
+// import each other (see core vs ingestor separation), so the algorithm is
+// duplicated deliberately — like Ref() / SessionRef(). Keep them in sync.
+const sidLength = 16
+
+// SidForRef derives the deterministic session id from a ref ("person_key|sk").
+// Used to print "--session <sid>" drilldown hints without re-fetching the target
+// session, and it must produce the same value the ingestor stored.
+func SidForRef(ref string) string {
+	sum := sha256.Sum256([]byte(ref))
+	enc := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])
+	return strings.ToLower(enc[:sidLength])
+}
+
+// SidForRef on the concrete session, from its own ref.
+func (s *Session) SidForRef() string {
+	return SidForRef(s.Ref())
+}
+
 // DetectSessionType returns a display label for the session type.
-func (s *SessionAggregated) DetectSessionType() string {
+func (s *Session) DetectSessionType() string {
 	switch s.SessionType {
 	case "agent":
 		return "AGENT"
 	case "login":
 		return "LOGIN"
-	case "web-console":
+	case "web":
 		return "WEB"
-	case "cli-sdk":
-		return "CLI/SDK"
+	case "cli":
+		return "CLI"
 	default:
 		return "API"
 	}
@@ -103,17 +172,17 @@ func (s *SessionAggregated) DetectSessionType() string {
 
 // Role represents an aggregated role record from the roles-aggregated table
 type Role struct {
-	ARN            string            `json:"arn" dynamodbav:"arn"`
-	Name           string            `json:"name" dynamodbav:"name"`
-	AccountID      string            `json:"account_id" dynamodbav:"account_id"`
-	LastSeen       string            `json:"last_seen" dynamodbav:"last_seen"`
-	FirstSeen      string            `json:"first_seen" dynamodbav:"first_seen"`
-	TotalEvents    int               `json:"total_events" dynamodbav:"total_events"`
-	ServicesUsed   []string          `json:"services_used" dynamodbav:"services_used"`
-	ServicesCount  map[string]int    `json:"services_count" dynamodbav:"services_count"`
-	ResourcesUsed  []string          `json:"resources_used" dynamodbav:"resources_used"`
-	ResourcesCount map[string]int    `json:"resources_count" dynamodbav:"resources_count"`
-	TopEventNames  map[string]int    `json:"top_event_names" dynamodbav:"top_event_names"`
+	ARN              string               `json:"arn" dynamodbav:"arn"`
+	Name             string               `json:"name" dynamodbav:"name"`
+	AccountID        string               `json:"account_id" dynamodbav:"account_id"`
+	LastSeen         string               `json:"last_seen" dynamodbav:"last_seen"`
+	FirstSeen        string               `json:"first_seen" dynamodbav:"first_seen"`
+	TotalEvents      int                  `json:"total_events" dynamodbav:"total_events"`
+	ServicesUsed     []string             `json:"services_used" dynamodbav:"services_used"`
+	ServicesCount    map[string]int       `json:"services_count" dynamodbav:"services_count"`
+	ResourcesUsed    []string             `json:"resources_used" dynamodbav:"resources_used"`
+	ResourcesCount   map[string]int       `json:"resources_count" dynamodbav:"resources_count"`
+	TopEventNames    map[string]int       `json:"top_event_names" dynamodbav:"top_event_names"`
 	ResourceAccesses []ResourceAccessItem `json:"resource_accesses,omitempty" dynamodbav:"resource_accesses,omitempty"`
 
 	// Access Denied tracking
@@ -165,12 +234,12 @@ type ResourceAccessItem struct {
 
 // ClickOpsAccess represents a ClickOps (web console) modification to a resource
 type ClickOpsAccess struct {
-	SessionID   string `json:"session_id" dynamodbav:"session_id"`
-	PersonEmail string `json:"person_email" dynamodbav:"person_email"`
-	EventName   string `json:"event_name" dynamodbav:"event_name"`
-	AccessTime  string `json:"access_time" dynamodbav:"access_time"`
-	EventCount  int    `json:"event_count" dynamodbav:"event_count"`
-	AccountID   string `json:"account_id" dynamodbav:"account_id"`
+	SessionRef string `json:"session_ref" dynamodbav:"session_ref"` // person_key|sk of the session
+	PersonKey  string `json:"person_key" dynamodbav:"person_key"`
+	EventName  string `json:"event_name" dynamodbav:"event_name"`
+	AccessTime string `json:"access_time" dynamodbav:"access_time"`
+	EventCount int    `json:"event_count" dynamodbav:"event_count"`
+	AccountID  string `json:"account_id" dynamodbav:"account_id"`
 }
 
 // Resource represents an aggregated resource record from the resources-aggregated table

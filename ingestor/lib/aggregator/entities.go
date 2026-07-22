@@ -80,7 +80,7 @@ func processAccountEvent(accounts map[string]*types.DynamoDBAccount, accountID, 
 }
 
 // processRoleEvent aggregates an event for a role.
-func processRoleEvent(roles map[string]*types.DynamoDBRole, event types.CloudTrailRecord, roleARN string, eventDate string) error {
+func processRoleEvent(roles map[string]*types.DynamoDBRole, event types.CloudTrailRecord, roleARN string, eventDate string) {
 	role, exists := roles[roleARN]
 	if !exists {
 		role = &types.DynamoDBRole{
@@ -200,11 +200,10 @@ func processRoleEvent(roles map[string]*types.DynamoDBRole, event types.CloudTra
 	}
 
 	role.LastSeen = eventDate
-	return nil
 }
 
 // processServiceEvent aggregates an event for a service.
-func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event types.CloudTrailRecord, roleARN string, eventDate string) error {
+func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event types.CloudTrailRecord, roleARN string, eventDate string) {
 	eventSource := event.EventSource
 	svc, exists := serviceMap[eventSource]
 	if !exists {
@@ -239,8 +238,6 @@ func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event typ
 		}
 		appendUnique(&svc.RolesUsing, roleARN)
 	}
-
-	return nil
 }
 
 // findMatchingCloudTrailResource attempts to match a simplified resource identifier
@@ -267,7 +264,7 @@ func findMatchingCloudTrailResource(event types.CloudTrailRecord, resourceIdenti
 }
 
 // processResourceEvent aggregates an event for a resource.
-func processResourceEvent(resourceMap map[string]*types.DynamoDBResource, event types.CloudTrailRecord, resourceIdentifier string, accountID string, eventDate string) error {
+func processResourceEvent(resourceMap map[string]*types.DynamoDBResource, event types.CloudTrailRecord, resourceIdentifier string, accountID string, eventDate string) {
 	resource, exists := resourceMap[resourceIdentifier]
 	if !exists {
 		parts := strings.Split(resourceIdentifier, ":")
@@ -330,6 +327,4 @@ func processResourceEvent(resourceMap map[string]*types.DynamoDBResource, event 
 		resource.ServicesUsed = []string{}
 	}
 	appendUnique(&resource.ServicesUsed, event.EventSource)
-
-	return nil
 }

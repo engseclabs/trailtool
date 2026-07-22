@@ -32,3 +32,25 @@ Config: `.goreleaser.yaml`, `.github/workflows/release.yaml`.
 
 - `cmd/trailtool/` — CLI entrypoint and commands
 - `docs/agent-instructions.md` — agent-facing instructions (copied into consumer repos as CLAUDE.md)
+
+#### Credential groups
+
+A credential group is the set of events sharing one credential boundary, keyed on whatever stable field AWS provides (checked in this order).
+
+| Key | Events it groups |
+|-----|------------------|
+| `sig#<signInSessionArn>` | everything made under one sign-in session (survives credential rotation) |
+| `rc#<principalId>#<creationDate>` | per-request-credential sessions — console and forward-access (`invokedBy`) — which mint a fresh key per request |
+| `ak#<accessKeyId>` | ordinary CLI/SDK access-key traffic |
+| `ev#<eventID>` | anything else — the event resolves alone |
+
+#### Session anchors
+
+The anchor is the session's stable identity (i.e. `USER`).
+
+| Anchor | Session boundary |
+|--------|------------------|
+| `sis#<signInSessionArn>` | a literal AWS sign-in session (MCP agents, `aws login`, and AWS's ongoing rollout to ordinary sessions) |
+| `web#<roleID>#<creationDate>` | one console sign-in, stable across its per-request access keys |
+| `key#<accessKeyId>` | one temporary credential = one session (CLI/SDK, chained roles, SAML); a refresh is deliberately a new session |
+| *(none)* | windowed fallback - the only time-based path |
