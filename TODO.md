@@ -1,5 +1,55 @@
 # TODO
 
+## Ingest durability & consistency gaps — accepted for now (ingestor)
+
+Four gaps surfaced by code review of the CLI 1.0 branch. Each is documented as an
+accepted limitation rather than fixed in this PR; the notes capture why and what a
+real fix would cost. The related IAM and tier/TTL findings from the same review
+*were* fixed (see the branch diff: `dynamodb:TransactWriteItems` added to both
+templates, `MergePerson` tier precedence, identity-link TTL refresh).
+
+- **Write failures are logged, not propagated — file still marked ingested.**
+  `aggregator.Process` (`ingestor/lib/aggregator/aggregator.go`, the write loop
+  ~L446–534) `log.Printf`s every failed role/service/resource/person/session/link
+  write and returns `nil`. The caller (`ingestor/lib/ingest/ingest.go` ~L191) then
+  calls `MarkFileIngested`, so a throttled / IAM-denied / transient failure yields
+  permanent, silently incomplete data. **Why not just return the error:** the
+  merges are additive and non-idempotent (`EventsCount = existing + incoming`,
+  `SourceIPs` union, …) and idempotency is per-file, not per-write — so failing
+  the whole file on any error means EventBridge redelivery *double-counts* the
+  writes that already succeeded. A correct fix needs per-file all-or-nothing or
+  per-write idempotency, not just error propagation. Deferred pending that design.
+
+- **Anchored `WriteSession` uses unconditional read-merge-put.**
+  `ingestor/lib/dynamodb/sessions.go` (~L24) reads, merges, and puts with no
+  version condition, so two concurrent Lambda invocations writing the same
+  anchored session can lost-update one another. Accepted per the function's own
+  header comment: a concurrent double-merge has the same exposure as a redelivered
+  partial batch, which the pipeline already tolerates. The `win#` path *does* use
+  version-conditional writes + retry, so the machinery exists if we later decide
+  anchored sessions need it too.
+
+- **Windowed (`win#`) sessions can split after ~2×IDLE_GAP.**
+  `queryAdjacentWindows` (`ingestor/lib/dynamodb/windows.go` ~L155) bounds the
+  adjacency query to ±2×idleGap around the incoming run's sticky first-written SK.
+  A long-running session whose earliest SK drifts outside that range for a later
+  batch can't see its adjacent existing window and starts a second session (e.g.
+  30-min gap, events at t0/t30/t60/t70 → a spurious second session at t70). A fix
+  means widening/paginating the adjacency query or a reconciliation pass.
+
+- **Cross-batch chain linking depends on arrival order.**
+  `resolveGroups` (`ingestor/lib/aggregator/groups.go` ~L60–81) drops groups that
+  never resolve from the session axis. If chained activity arrives *before* its
+  `AssumeRole` file, the activity is omitted and the later link doesn't trigger
+  reconsideration (EventBridge/Lambda give no ordering guarantee). Same shape as
+  the grantee-side gap documented below — a real fix needs a deferred-
+  reconsideration / back-patch mechanism keyed on the link.
+
+- **Decision (2026-07-22):** documented, not fixed in the CLI 1.0 PR. The first
+  two are durability/consistency tradeoffs with a known accepted exposure; the
+  latter two are out-of-order-delivery reconciliation gaps deferred until there's
+  evidence they matter in practice or a broader need for the underlying machinery.
+
 ## Grantee-side cross-batch login/MCP attribution gap (ingestor)
 
 An `aws login` / MCP grantee session can miss its attribution (shown as a plain

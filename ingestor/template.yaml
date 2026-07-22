@@ -220,6 +220,7 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:UpdateItem
                   - dynamodb:DeleteItem # win# session folding
+                  - dynamodb:TransactWriteItems # win# multi-window fold (atomic put+delete)
                   - dynamodb:Query
                   - dynamodb:BatchGetItem
                 Resource:

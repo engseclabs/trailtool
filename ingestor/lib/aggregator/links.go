@@ -48,7 +48,8 @@ type link struct {
 	roleARN          string   // cred# links: the credential group's role
 	anchor           string   // cred# links: the anchor decided when first resolved
 	eventTime        string   // grant/AssumeRole event time, for the TTL
-	stored           bool     // fetched from trailtool-identity-links; never re-written
+	stored           bool     // fetched from trailtool-identity-links; not re-written unless re-observed
+	observed         bool     // re-observed this batch — refresh its TTL even if stored
 	pks              []string // identity-links PKs this link is stored under
 }
 
@@ -346,9 +347,20 @@ func registerLinks(links map[string]*link, g identity.Group, person identity.Per
 		// credential: the flagged console traffic's web# link must win over
 		// the key# link its unflagged ConsoleLogin bootstrap registered.
 		for _, pk := range cl.pks {
-			if cur, exists := links[pk]; !exists ||
+			cur, exists := links[pk]
+			if !exists ||
 				(cur.kind == linkCred && anchorRank(cl.anchor) > anchorRank(cur.anchor)) {
 				links[pk] = cl
+				continue
+			}
+			// Re-observed at the same (or weaker) rank: the stored link stays,
+			// but seeing the credential again this batch must refresh its TTL so
+			// active credentials don't expire. Carry the newer event time forward.
+			if cur.kind == linkCred {
+				cur.observed = true
+				if cl.eventTime != "" && cl.eventTime > cur.eventTime {
+					cur.eventTime = cl.eventTime
+				}
 			}
 		}
 	}
@@ -449,8 +461,8 @@ func writeIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, table s
 	}
 
 	for pk, l := range links {
-		if l.stored {
-			continue // fetched from the table this batch — nothing new to record
+		if l.stored && !l.observed {
+			continue // fetched but not re-observed this batch — nothing to record
 		}
 		rec := &types.DynamoDBIdentityLink{
 			PK:               pk,
