@@ -191,7 +191,7 @@ func candidateLinkKeys(g identity.Group) []string {
 	for _, e := range g.Events {
 		// Only sessionContext marks an event as made under the sign-in session;
 		// a grant's own ARN names the session it mints, not its caller's.
-		if IsOAuthGrantEvent(e) {
+		if identity.IsOAuthGrantEvent(e) {
 			continue
 		}
 		if sc := e.UserIdentity.SessionContext; sc != nil && sc.SignInSessionArn != "" {
@@ -408,7 +408,7 @@ func registerLinks(links map[string]*link, g identity.Group, person identity.Per
 				person.Key, parentRef, l.assumedRoleARN, l.pks)
 		}
 
-		if IsOAuthGrantEvent(event) {
+		if identity.IsOAuthGrantEvent(event) {
 			resource := ExtractOAuthResource(event)
 			if IsMCPServerResource(resource) {
 				signInSessionArn := ExtractSignInSessionArn(event)

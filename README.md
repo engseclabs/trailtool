@@ -102,56 +102,76 @@ trailtool resources list --clickops --service iam      # ClickOps filtered by se
 trailtool resources list --service s3 --days 7
 ```
 
-### Role Chaining
+### Attribution: answering "who actually did this?"
 
-TrailTool automatically correlates `AssumeRole` calls back to the originating human session, for both console switch-role and programmatic (`aws sts assume-role`) flows. This lets you answer "who actually did this?" even when the CloudTrail actor is an assumed role with no obvious human attribution.
+Assumed roles, vended credentials, and MCP servers all sever the link between a
+CloudTrail actor and the human behind it. TrailTool stitches that link back
+together by correlating the grant events — `AssumeRole` and `CreateOAuth2Token`
+— to the human session that authorized them. Each side of the relationship
+cross-references the other by short SID in the `CHAINED` column, so the two rows
+line up regardless of list order or filters.
+
+Three grant paths are correlated, each verified end-to-end against real
+CloudTrail:
+
+| Path | How the actor gets credentials | Session `TYPE` |
+|------|-------------------------------|----------------|
+| **Role chaining** | `AssumeRole` — console switch-role and programmatic `aws sts assume-role` | `API` |
+| **`aws login`** | A developer runs `aws login` to vend credentials to an AI agent (Claude Code, VS Code Copilot, etc.) | `LOGIN` |
+| **AWS MCP Server** | An agent obtains credentials through the AWS MCP Server's OAuth flow | `AGENT` |
 
 ```
 $ trailtool sessions list --days 1
 
-SID     WHEN        USER                  ROLE         ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
-k7m2qp  5 mins ago  alice@example.com     AdminAccess  123456789012   84      API      12m       → 2 role(s)
-q9x4mn  5 mins ago  alice@example.com     DeployRole   123456789012   31      API      8m        ↑ child
-a1b2c3  5 mins ago  alice@example.com     AuditRole    123456789012   12      API      3m        ↑ child
+SID     WHEN        USER               ROLE         ACCOUNT       EVENTS  TYPE   DURATION  CHAINED
+k7m2qp  5 mins ago  alice@example.com  AdminAccess  123456789012  84      API    12m       → assumed q9x4mn  → granted b7k9mp
+q9x4mn  5 mins ago  alice@example.com  DeployRole   123456789012  31      API    8m        ← assumed by k7m2qp
+b7k9mp  5 mins ago  alice@example.com  AdminAccess  123456789012  3       LOGIN  8m        ← granted by k7m2qp
+c3d5e7  5 mins ago  alice@example.com  AdminAccess  123456789012  9       AGENT  4m        ← granted by k7m2qp
 ```
 
-`→ N role(s)` means this human session assumed N roles. `↑ child` means this session was created via `AssumeRole` and is attributed back to its parent.
+The `CHAINED` marks read directionally — the verb carries the meaning and the
+arrow reinforces it:
+
+- `→ assumed <sid>` — this session assumed a role, creating session `<sid>` (or `→ assumed N roles` when there are several).
+- `← assumed by <sid>` — this session *is* an assumed-role session, created by `<sid>`.
+- `→ granted <sid>` — this session vended credentials (via `aws login` or an MCP grant) to session `<sid>`.
+- `← granted by <sid>` — this session's credentials were vended by `<sid>`.
+
+The detail view expands the relationship and gives a ready-to-run command for
+the other end:
 
 ```bash
-# See which roles a session assumed and how many events each generated
 trailtool sessions detail --session k7m2qp
-
-# The detail view shows the full chain:
-# Assumed by: alice@example.com at 2025-01-15T10:30:00Z            (on child sessions)
-#   → trailtool sessions detail --session q9x4mn
-#
-# Assumed Roles (2, 43 events):                                    (on parent sessions)
-#   2025-01-15T10:35:00Z  DeployRole  31 events  8m
-#     → trailtool sessions detail --session a1b2c3
-#   2025-01-15T10:36:00Z  AuditRole   12 events  3m
-#     → trailtool sessions detail --session d4e5f6
 ```
 
-### `aws login` Session Detection
-
-When a developer runs `aws login` to vend credentials to an AI agent (Claude Code, VS Code Copilot, etc.), TrailTool detects the `CreateOAuth2Token` event on `signin.amazonaws.com` and correlates it back to the agent session that received those credentials. The agent session is tagged as `LOGIN` type and includes attribution back to the authorizing human session.
-
 ```
-$ trailtool sessions list --days 1
+# Parent (grantor) side — roles it assumed:
+Assumed Roles (1, 14 events):
+  2026-07-22T18:19:56Z  DeployRole  31 events  8m  [5 mins ago]
+    → trailtool sessions detail --session q9x4mn
 
-SID     WHEN        USER                  ROLE         ACCOUNT        EVENTS  TYPE     DURATION  CHAINED
-b7k9mp  5 mins ago  alice@example.com     AdminAccess  123456789012   3       LOGIN    8m        ← login
-k7m2qp  8 mins ago  alice@example.com     AdminAccess  123456789012   84      API      12m
-```
+# Parent (grantor) side — credentials it vended (aws login + MCP grants):
+Authorized Sessions (2):
+  2026-07-22T18:21:33Z  AGENT  AdminAccess  3 events  4m  [5 mins ago]
+    → trailtool sessions detail --session c3d5e7
+  2026-07-22T18:22:30Z  LOGIN  AdminAccess  2 events  3m  [5 mins ago]
+    → trailtool sessions detail --session b7k9mp
 
-`← login` means the session's credentials were vended via `aws login` by a human in another session. The detail view shows the attribution:
+# aws login child:
+Credentials granted via aws login by: alice@example.com at 2026-07-22T18:20:18Z [8 minutes ago]
+  → trailtool sessions detail --session k7m2qp
 
-```
-Credentials granted via aws login by: alice@example.com at 2025-01-15T10:30:00Z (8 minutes ago)
+# AWS MCP Server child:
+AWS MCP Server: https://aws-mcp.us-east-1.api.aws/mcp
+OAuth grant authorized by: alice@example.com at 2026-07-22T18:20:18Z [5 mins ago]
   → trailtool sessions detail --session k7m2qp
 ```
 
-This distinguishes agent-driven activity (credentials vended by a human developer via `aws login`) from background automation or long-running CLI sessions.
+Together these turn actor-anonymous activity — an assumed role, an agent's
+vended credentials, or MCP traffic — back into "alice ran this," and separate
+human-driven agent activity from background automation and long-running CLI
+sessions.
 
 All commands support `--format json` for machine-readable output.
 

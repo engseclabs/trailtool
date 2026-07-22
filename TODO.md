@@ -45,6 +45,23 @@ templates, `MergePerson` tier precedence, identity-link TTL refresh).
   the grantee-side gap documented below — a real fix needs a deferred-
   reconsideration / back-patch mechanism keyed on the link.
 
+  Two distinct symptoms depending on whether a *lower* tier can fire without the
+  link:
+  1. **Dropped activity** — a group that matches no tier without tier 2 (the
+     chain link) is omitted entirely, as above.
+  2. **Duplicated session** — when the chained role's session-name carries an
+     email, tier 3 (`email#`) fires *without* the link, so the group is not
+     dropped: it resolves to `email#…` instead of the parent's `idc#…`. Because a
+     session ref is `person_key|sk` and only the person key differs, the *same*
+     console/chained session is written as two rows under two people. This is
+     more visible than a drop (a phantom duplicate) and `MergePerson`
+     (`ingestor/lib/dynamodb/people.go`) never heals it — it reconciles records
+     sharing one person key, never `email#` into `idc#`. Observed 2026-07-22 in
+     sandbox: console session on `RoleChaining1` (chained from CLI parent
+     `qk7s7q`, an `idc#…#11fb6570-…` session) split into `3hvmhe` (`idc#`, events
+     with `onBehalfOf`) and `kqbomk` (`email#alex@engseclabs.com`, events
+     without) — identical anchor/SK `web#AROAUB266OVZPC3ZFTYIY#2026-07-22T18:19:51Z`.
+
 - **Decision (2026-07-22):** documented, not fixed in the CLI 1.0 PR. The first
   two are durability/consistency tradeoffs with a known accepted exposure; the
   latter two are out-of-order-delivery reconciliation gaps deferred until there's

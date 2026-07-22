@@ -6,6 +6,7 @@ package aggregator
 
 import (
 	"log"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -29,11 +30,14 @@ type resolvedGroup struct {
 // batch resolve regardless of event order. The stored map seeds the link
 // registry with records fetched from trailtool-identity-links, so tier 2 and
 // anchor continuity also work across batches (S3 files).
+//
+// Returns each group's resolution — a resolvedGroup carrying its person,
+// anchor, and ok flag, positionally aligned with groups — and the final link
+// registry (a copy of stored, extended by in-batch registrations), which the
+// caller reuses for link lookups and persists to trailtool-identity-links.
 func resolveGroups(groups []identity.Group, stored map[string]*link) ([]resolvedGroup, map[string]*link) {
 	links := make(map[string]*link, len(stored))
-	for pk, l := range stored {
-		links[pk] = l
-	}
+	maps.Copy(links, stored)
 	resolved := make([]resolvedGroup, len(groups))
 
 	resolver := func(g identity.Group) (string, bool) {

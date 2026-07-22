@@ -99,7 +99,7 @@ func RootPersonKey(accountID string) string {
 //	ev#<eventID>                     everything else — the event resolves alone
 //	""                               ungroupable (no credential and no eventID)
 func CredentialGroupKey(event types.CloudTrailRecord) string {
-	if !isOAuthGrantEvent(event) {
+	if !IsOAuthGrantEvent(event) {
 		if sc := event.UserIdentity.SessionContext; sc != nil && sc.SignInSessionArn != "" {
 			return "sig#" + sc.SignInSessionArn
 		}
@@ -233,7 +233,7 @@ func Anchor(g Group) string {
 		// (in additionalEventData, and observed in sessionContext too) names the
 		// session it mints, not the session the grant was made under — letting it
 		// decide the group's anchor would re-key the authorizing human's session.
-		if isOAuthGrantEvent(event) {
+		if IsOAuthGrantEvent(event) {
 			continue
 		}
 		if sc := event.UserIdentity.SessionContext; sc != nil && sc.SignInSessionArn != "" {
@@ -266,9 +266,10 @@ func Anchor(g Group) string {
 	return ""
 }
 
-// isOAuthGrantEvent reports whether the event is a signin.amazonaws.com
-// CreateOAuth2Token grant (aws login PKCE or AWS MCP Server token mint).
-func isOAuthGrantEvent(event types.CloudTrailRecord) bool {
+// IsOAuthGrantEvent reports whether the event is a signin.amazonaws.com
+// CreateOAuth2Token grant (aws login PKCE or AWS MCP Server token mint). Grant
+// events are consumed by the link layer and never counted into sessions.
+func IsOAuthGrantEvent(event types.CloudTrailRecord) bool {
 	return event.EventSource == "signin.amazonaws.com" && event.EventName == "CreateOAuth2Token"
 }
 
