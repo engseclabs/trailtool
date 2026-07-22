@@ -40,10 +40,21 @@ func WriteIdentityLink(ctx context.Context, ddbClient SessionStore, tableName st
 
 // BatchGetIdentityLinks fetches identity link records for a set of PKs.
 // Returns a map of pk -> DynamoDBIdentityLink for found records.
-func BatchGetIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, tableName string, pks []string) (map[string]*types.DynamoDBIdentityLink, error) {
+func BatchGetIdentityLinks(ctx context.Context, ddbClient LinkGetter, tableName string, pks []string) (map[string]*types.DynamoDBIdentityLink, error) {
 	result := make(map[string]*types.DynamoDBIdentityLink)
 	if len(pks) == 0 {
 		return result, nil
+	}
+
+	collect := func(items []map[string]ddbtypes.AttributeValue) {
+		for _, item := range items {
+			var link types.DynamoDBIdentityLink
+			if err := attributevalue.UnmarshalMap(item, &link); err != nil {
+				log.Printf("WARNING: failed to unmarshal identity link: %v", err)
+				continue
+			}
+			result[link.PK] = &link
+		}
 	}
 
 	// DynamoDB BatchGetItem limit is 100 keys per request
@@ -62,22 +73,37 @@ func BatchGetIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, tabl
 			})
 		}
 
-		out, err := ddbClient.BatchGetItem(ctx, &dynamodb.BatchGetItemInput{
-			RequestItems: map[string]ddbtypes.KeysAndAttributes{
-				tableName: {Keys: keys},
-			},
-		})
-		if err != nil {
-			return result, fmt.Errorf("batch get identity links failed: %w", err)
+		// BatchGetItem returns any keys it couldn't service (throttling) in
+		// UnprocessedKeys; retry those with bounded exponential backoff so
+		// throttled records aren't silently dropped.
+		req := map[string]ddbtypes.KeysAndAttributes{
+			tableName: {Keys: keys},
 		}
-
-		for _, item := range out.Responses[tableName] {
-			var link types.DynamoDBIdentityLink
-			if err := attributevalue.UnmarshalMap(item, &link); err != nil {
-				log.Printf("WARNING: failed to unmarshal identity link: %v", err)
-				continue
+		const maxAttempts = 5
+		backoff := 50 * time.Millisecond
+		for attempt := 0; ; attempt++ {
+			out, err := ddbClient.BatchGetItem(ctx, &dynamodb.BatchGetItemInput{
+				RequestItems: req,
+			})
+			if err != nil {
+				return result, fmt.Errorf("batch get identity links failed: %w", err)
 			}
-			result[link.PK] = &link
+
+			collect(out.Responses[tableName])
+
+			unprocessed, ok := out.UnprocessedKeys[tableName]
+			if !ok || len(unprocessed.Keys) == 0 {
+				break
+			}
+			if attempt+1 >= maxAttempts {
+				log.Printf("WARNING: batch get identity links exhausted retries, dropping %d unprocessed keys", len(unprocessed.Keys))
+				break
+			}
+			req = map[string]ddbtypes.KeysAndAttributes{
+				tableName: unprocessed,
+			}
+			time.Sleep(backoff)
+			backoff *= 2
 		}
 	}
 

@@ -18,6 +18,13 @@ type SessionStore interface {
 	TransactWriteItems(ctx context.Context, params *dynamodb.TransactWriteItemsInput, optFns ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
 }
 
+// LinkGetter is the subset of the DynamoDB client used by BatchGetIdentityLinks,
+// abstracted so the UnprocessedKeys retry loop is unit-testable.
+// *dynamodb.Client satisfies it.
+type LinkGetter interface {
+	BatchGetItem(ctx context.Context, params *dynamodb.BatchGetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.BatchGetItemOutput, error)
+}
+
 // mergeSessionTags returns the non-nil session tags map, preferring existing over new.
 // If both are non-nil, existing wins (the first write has the authoritative tags).
 func mergeSessionTags(existing, new map[string]string) map[string]string {

@@ -219,8 +219,7 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:GetItem
                   - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem # win# session folding
-                  - dynamodb:TransactWriteItems # win# multi-window fold (atomic put+delete)
+                  - dynamodb:DeleteItem # win# session folding (multi-window fold: atomic put+delete via TransactWriteItems, authorized by the item-level actions)
                   - dynamodb:Query
                   - dynamodb:BatchGetItem
                 Resource:

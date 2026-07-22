@@ -100,13 +100,15 @@ trailtool resources list --clickops --service iam      # ClickOps filtered by se
 trailtool resources list --service s3 --days 7
 ```
 
+All commands support `--format json` for machine-readable output.
+
 ### Session aggregation
 
 CloudTrail is a stream of independent events; sessions are an overlay TrailTool derives from latent metadata AWS stamps on those events. The goal is to tie every event back to the initiating human (or, failing that, the role).
 
-TrailTool stitches events into sessions, gives each resulting session a **session type**, and records a **session chain** between when there is role chaining, `aws login`, or AWS MCP Server correlation.
+TrailTool stitches events into sessions, gives each resulting session a **session type**, and records a **session chain** between sessions when there is role chaining, `aws login`, or AWS MCP Server correlation.
 
-For example, see:
+For example:
 ```
 $ trailtool sessions list --days 1
 

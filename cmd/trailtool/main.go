@@ -154,6 +154,10 @@ func statusCmd() *cobra.Command {
 				} else {
 					fmt.Println("Data access: OK")
 				}
+			} else {
+				fmt.Println("Data access: FAIL")
+				fmt.Fprintf(os.Stderr, "  Could not connect to the data store: %v\n", err)
+				ok = false
 			}
 
 			if !ok {
@@ -441,7 +445,7 @@ func printRefNav(ctx context.Context, s *store.Store, heading, ref string, label
 	fmt.Printf("  → trailtool sessions detail --session %s\n", sidForRefShort(ref))
 }
 
-// sidDisplayWidth returns the shortest prefix length (≥ models.SidDisplayMin) at
+// sidDisplayWidth returns the shortest prefix length (≥ sidDisplayMin) at
 // which every session's sid stays unique within the given list, so every SID the
 // CLI prints is copy-pasteable and unambiguous against what's on screen. Sessions
 // without a stored sid (pre-sid records) are ignored for width purposes.

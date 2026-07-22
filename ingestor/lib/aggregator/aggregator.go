@@ -281,27 +281,21 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 			// === Role ===
 			if roleARN != "" {
-				if err := processRoleEvent(roles, event, roleARN, eventDate); err != nil {
-					log.Printf("WARNING: Failed to process role event: %v", err)
-				}
+				processRoleEvent(roles, event, roleARN, eventDate)
 				addToSet(rolePeople, roleARN, personKey)
 				addToSet(roleSessions, roleARN, sessRef)
 				addToSet(roleAccounts, roleARN, accountID)
 			}
 
 			// === Service ===
-			if err := processServiceEvent(services, event, roleARN, eventDate); err != nil {
-				log.Printf("WARNING: Failed to process service event: %v", err)
-			}
+			processServiceEvent(services, event, roleARN, eventDate)
 			addToSet(servicePeople, event.EventSource, personKey)
 			addToSet(serviceSessions, event.EventSource, sessRef)
 			addToSet(serviceAccounts, event.EventSource, accountID)
 
 			// === Resources ===
 			for _, resource := range resourceList {
-				if err := processResourceEvent(resourceMap, event, resource, accountID, eventDate); err != nil {
-					log.Printf("WARNING: Failed to process resource event: %v", err)
-				}
+				processResourceEvent(resourceMap, event, resource, accountID, eventDate)
 
 				// Track ClickOps operations: console modifications by the human
 				// (never service fan-out with the human's credentials).

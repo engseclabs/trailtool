@@ -2,11 +2,10 @@
 
 ## Ingest durability & consistency gaps — accepted for now (ingestor)
 
-Four gaps surfaced by code review of the CLI 1.0 branch. Each is documented as an
-accepted limitation rather than fixed in this PR; the notes capture why and what a
-real fix would cost. The related IAM and tier/TTL findings from the same review
-*were* fixed (see the branch diff: `dynamodb:TransactWriteItems` added to both
-templates, `MergePerson` tier precedence, identity-link TTL refresh).
+Four documented, accepted limitations of the 1.0 ingest path. Each captures why
+it's accepted and what a real fix would cost. The related IAM and tier/TTL
+findings were already fixed (template IAM policy cleanup, `MergePerson` tier
+precedence, identity-link TTL refresh).
 
 - **Write failures are logged, not propagated — file still marked ingested.**
   `aggregator.Process` (`ingestor/lib/aggregator/aggregator.go`, the write loop
@@ -62,7 +61,7 @@ templates, `MergePerson` tier precedence, identity-link TTL refresh).
      with `onBehalfOf`) and `kqbomk` (`email#alex@engseclabs.com`, events
      without) — identical anchor/SK `web#AROAUB266OVZPC3ZFTYIY#2026-07-22T18:19:51Z`.
 
-- **Decision (2026-07-22):** documented, not fixed in the CLI 1.0 PR. The first
+- **Decision (2026-07-22):** documented, not fixed. The first
   two are durability/consistency tradeoffs with a known accepted exposure; the
   latter two are out-of-order-delivery reconciliation gaps deferred until there's
   evidence they matter in practice or a broader need for the underlying machinery.
@@ -146,6 +145,5 @@ matching console session by principalId — the same mechanism used for
   and that the sign-in token's access key appears on no other event.
 - Whether the same fix (or a separate one) also resolves symptom 1.
 
-**Out of scope for the current PR** (sid / `--session` selector). These are
-pre-existing ingestor behaviors surfaced during verification, not caused by the
-sid change.
+These are ingestor behaviors observed during 1.0 sandbox verification; they are
+independent of the CLI's sid/`--session` work.
