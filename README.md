@@ -8,14 +8,12 @@ TrailTool aggregates CloudTrail logs to simplify analysis for AI agents. It comb
 
 With TrailTool, you can:
 
-- Investigate and summarize web/CLI sessions clarifying access patterns
-- Track activity across role assumptions — see which human session assumed which roles and what they did
+- Investigate and summarize AWS access by people, agents, and code
+- Track activity across role assumptions
 - Generate least-privilege IAM policies from actual usage
-- Detect ClickOps resources created or modified via console instead of IaC
+- Detect malicious or unwanted (e.g. ClickOps) behavior
 
 For more details about how to use TrailTool, see https://engseclabs.com/blog/cloudtrail-for-ai-agents/.
-
-A hosted version with more features (e.g. UI, API, MCP) is available - see [trailtool.io](https://trailtool.io).
 
 ## Quick Start
 
@@ -102,78 +100,31 @@ trailtool resources list --clickops --service iam      # ClickOps filtered by se
 trailtool resources list --service s3 --days 7
 ```
 
-### Attribution: answering "who actually did this?"
+### Session aggregation
 
-Assumed roles, vended credentials, and MCP servers all sever the link between a
-CloudTrail actor and the human behind it. TrailTool stitches that link back
-together by correlating the grant events — `AssumeRole` and `CreateOAuth2Token`
-— to the human session that authorized them. Each side of the relationship
-cross-references the other by short SID in the `CHAINED` column, so the two rows
-line up regardless of list order or filters.
+CloudTrail is a stream of independent events; sessions are an overlay TrailTool derives from latent metadata AWS stamps on those events. The goal is to tie every event back to the initiating human (or, failing that, the role).
 
-Three grant paths are correlated, each verified end-to-end against real
-CloudTrail:
+TrailTool stitches events into sessions, gives each resulting session a **session type**, and records a **session chain** between when there is role chaining, `aws login`, or AWS MCP Server correlation.
 
-| Path | How the actor gets credentials | Session `TYPE` |
-|------|-------------------------------|----------------|
-| **Role chaining** | `AssumeRole` — console switch-role and programmatic `aws sts assume-role` | `API` |
-| **`aws login`** | A developer runs `aws login` to vend credentials to an AI agent (Claude Code, VS Code Copilot, etc.) | `LOGIN` |
-| **AWS MCP Server** | An agent obtains credentials through the AWS MCP Server's OAuth flow | `AGENT` |
-
+For example, see:
 ```
 $ trailtool sessions list --days 1
 
 SID     WHEN        USER               ROLE         ACCOUNT       EVENTS  TYPE   DURATION  CHAINED
-k7m2qp  5 mins ago  alice@example.com  AdminAccess  123456789012  84      API    12m       → assumed q9x4mn  → granted b7k9mp
-q9x4mn  5 mins ago  alice@example.com  DeployRole   123456789012  31      API    8m        ← assumed by k7m2qp
+k7m2qp  5 mins ago  alice@example.com  AdminAccess  123456789012  84      CLI    12m       → assumed q9x4mn  → granted b7k9mp
+q9x4mn  5 mins ago  alice@example.com  DeployRole   123456789012  31      CLI    8m        ← assumed by k7m2qp
 b7k9mp  5 mins ago  alice@example.com  AdminAccess  123456789012  3       LOGIN  8m        ← granted by k7m2qp
 c3d5e7  5 mins ago  alice@example.com  AdminAccess  123456789012  9       AGENT  4m        ← granted by k7m2qp
 ```
 
-The `CHAINED` marks read directionally — the verb carries the meaning and the
-arrow reinforces it:
 
-- `→ assumed <sid>` — this session assumed a role, creating session `<sid>` (or `→ assumed N roles` when there are several).
-- `← assumed by <sid>` — this session *is* an assumed-role session, created by `<sid>`.
-- `→ granted <sid>` — this session vended credentials (via `aws login` or an MCP grant) to session `<sid>`.
-- `← granted by <sid>` — this session's credentials were vended by `<sid>`.
+| `TYPE` | Meaning |
+|--------|---------|
+| `CLI` | CLI/SDK credential session |
+| `WEB` | Console (browser) session |
+| `AGENT` | AWS MCP Server traffic |
+| `LOGIN` | Credentials vended to an agent via `aws login` |
 
-The detail view expands the relationship and gives a ready-to-run command for
-the other end:
-
-```bash
-trailtool sessions detail --session k7m2qp
-```
-
-```
-# Parent (grantor) side — roles it assumed:
-Assumed Roles (1, 14 events):
-  2026-07-22T18:19:56Z  DeployRole  31 events  8m  [5 mins ago]
-    → trailtool sessions detail --session q9x4mn
-
-# Parent (grantor) side — credentials it vended (aws login + MCP grants):
-Authorized Sessions (2):
-  2026-07-22T18:21:33Z  AGENT  AdminAccess  3 events  4m  [5 mins ago]
-    → trailtool sessions detail --session c3d5e7
-  2026-07-22T18:22:30Z  LOGIN  AdminAccess  2 events  3m  [5 mins ago]
-    → trailtool sessions detail --session b7k9mp
-
-# aws login child:
-Credentials granted via aws login by: alice@example.com at 2026-07-22T18:20:18Z [8 minutes ago]
-  → trailtool sessions detail --session k7m2qp
-
-# AWS MCP Server child:
-AWS MCP Server: https://aws-mcp.us-east-1.api.aws/mcp
-OAuth grant authorized by: alice@example.com at 2026-07-22T18:20:18Z [5 mins ago]
-  → trailtool sessions detail --session k7m2qp
-```
-
-Together these turn actor-anonymous activity — an assumed role, an agent's
-vended credentials, or MCP traffic — back into "alice ran this," and separate
-human-driven agent activity from background automation and long-running CLI
-sessions.
-
-All commands support `--format json` for machine-readable output.
 
 ## Using TrailTool with AI Coding Agents
 
