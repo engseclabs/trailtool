@@ -290,21 +290,7 @@ func sessionsListCmd() *cobra.Command {
 				sess := &sessions[i]
 				st := sess.DetectSessionType()
 				duration := fmt.Sprintf("%dm", sess.DurationMinutes)
-				var marks []string
-				if sess.AgentAuthorizedBySession != "" && sess.AgentAuthorizedBySession != sess.Ref() {
-					marks = append(marks, "← agent")
-				} else if sess.LoginGrantedBySession != "" {
-					marks = append(marks, "← login")
-				} else if sess.AssumedFromSession != "" {
-					marks = append(marks, "↑ child")
-				}
-				if n := len(sess.ChainedRoles); n > 0 {
-					marks = append(marks, fmt.Sprintf("→ %d role(s)", n))
-				}
-				if n := len(sess.GrantedSessionRefs); n > 0 {
-					marks = append(marks, fmt.Sprintf("→ %d agent(s)", n))
-				}
-				chained := strings.Join(marks, " ")
+				chained := chainedMarks(sess)
 				displayRole := sess.RoleName
 				if !long {
 					displayRole = shortRoleName(sess.RoleName)
@@ -328,6 +314,46 @@ func sessionsListCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&reverse, "reverse", false, "Show newest sessions first (default is oldest first)")
 
 	return cmd
+}
+
+// chainedMarks renders the CHAINED column: the session's relationships to other
+// sessions, each naming the other end by its short SID so the two rows of an edge
+// cross-reference regardless of list ordering or filters. A "←" mark points at the
+// session that created this one; a "→" mark points at what this session created.
+// The verb ("assumed"/"granted") carries the direction, so the glyph is redundant
+// reinforcement rather than the sole cue. A session may be both a parent and a
+// child (a chained session that further chains), so marks accumulate.
+func chainedMarks(sess *models.Session) string {
+	var marks []string
+
+	// Incoming edges — how this session was created.
+	if ref := sess.AgentAuthorizedBySession; ref != "" && ref != sess.Ref() {
+		marks = append(marks, "← granted by "+sidForRefShort(ref))
+	} else if ref := sess.LoginGrantedBySession; ref != "" {
+		marks = append(marks, "← granted by "+sidForRefShort(ref))
+	}
+	if ref := sess.AssumedFromSession; ref != "" {
+		marks = append(marks, "← assumed by "+sidForRefShort(ref))
+	}
+
+	// Outgoing edges — what this session created. When there's exactly one target
+	// we name it by SID; for several we fall back to a count (the detail view lists
+	// them). ChainedSessionRefs is preferred over ChainedRoles because a ref
+	// resolves to a concrete child session; ChainedRoles is the ref-less fallback.
+	if refs := sess.ChainedSessionRefs; len(refs) == 1 {
+		marks = append(marks, "→ assumed "+sidForRefShort(refs[0]))
+	} else if n := len(refs); n > 1 {
+		marks = append(marks, fmt.Sprintf("→ assumed %d roles", n))
+	} else if n := len(sess.ChainedRoles); n > 0 {
+		marks = append(marks, fmt.Sprintf("→ assumed %d roles", n))
+	}
+	if refs := sess.GrantedSessionRefs; len(refs) == 1 {
+		marks = append(marks, "→ granted "+sidForRefShort(refs[0]))
+	} else if n := len(refs); n > 1 {
+		marks = append(marks, fmt.Sprintf("→ granted %d sessions", n))
+	}
+
+	return strings.Join(marks, "  ")
 }
 
 var ssoRoleRe = regexp.MustCompile(`^aws-reserved/sso\.amazonaws\.com/[^/]+/AWSReservedSSO_([^_]+)_[0-9a-f]+$`)
