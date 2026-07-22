@@ -242,24 +242,10 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 						if loginL != nil && sessionType == SessionTypeLogin {
 							sess.LoginGrantedBySession = loginL.parentSessionRef
 						}
-						// KNOWN LIMITATION (grantee-side cross-batch ordering): mcp#/login#
-						// attribution is applied only here, at grantee-session creation,
-						// reading the fully-registered in-batch links plus links persisted
-						// by *prior* batches (fetchStoredLinks). Co-batch delivery is fine —
-						// resolveGroups registers every in-batch link before any session is
-						// created — but when the vended session is ingested in a batch
-						// *before* the grant's link is written, it is created link-less and
-						// typed cli, and nothing revisits it. The deferredParentUpdates /
-						// deferredGrantUpdates paths back-patch the parent/granter side, but
-						// there is no symmetric grantee back-patch: the grant event never
-						// names the vended access key, so the grantee's SK
-						// (key#<accessKeyId>#<roleID>) is not derivable from the link, and
-						// reaching an already-written grantee would need a GSI on its
-						// (person, roleID, creationDate) fingerprint. Judged not worth the
-						// standing infra for a rare, attribution-only miss — a one-event
-						// `aws login` grantee (e.g. its ListBuckets smoke test) delivered
-						// ahead of the grant shows as a plain cli session. See the
-						// sandbox-login-attribution-ordering-gap note.
+						// Grantee-side cross-batch ordering can miss attribution here when
+						// the grant's link is persisted after this session was written in an
+						// earlier batch — see "Grantee-side cross-batch login/MCP attribution
+						// gap" in TODO.md.
 						sessions[sessRef] = sess
 					}
 					accumulateSessionEvent(sess, event, resourceList)

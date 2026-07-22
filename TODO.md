@@ -1,5 +1,42 @@
 # TODO
 
+## Grantee-side cross-batch login/MCP attribution gap (ingestor)
+
+An `aws login` / MCP grantee session can miss its attribution (shown as a plain
+`cli` session with no `login_granted_by_session`, instead of typed `login`) when
+the grant's identity link is persisted in a batch *after* the vended session was
+already written.
+
+- **Root cause:** attribution is applied only at grantee-session creation
+  (`ingestor/lib/aggregator/aggregator.go`, where `LoginGrantedBySession` /
+  `AgentAuthorizedBySession` are set), reading the fully-registered in-batch
+  links plus links persisted by *prior* batches (`fetchStoredLinks`). Co-batch
+  delivery is already handled — `resolveGroups` registers every in-batch link to
+  a fixpoint before any session is created. The failure is strictly cross-batch:
+  the grantee's file is ingested before the grant's link exists, so it is created
+  link-less and nothing revisits it. Example: session `ngtklx`, a one-event
+  `aws login` smoke test (`s3:ListBuckets`) delivered ahead of its
+  `CreateOAuth2Token` grant; the `login#…` link exists in `trailtool-identity-links`
+  and `ngtklx`'s event carries the matching `creationDate` + `principalId`, but it
+  is still typed `cli`.
+
+- **Why not the obvious fixes:**
+  - *Store the grantee SK on the link when co-resolved* — a no-op. Co-batch
+    already works (see above); this cannot reach a grantee written in an earlier
+    batch.
+  - *Deferred grantee back-patch keyed on the link* — the grant event never names
+    the vended access key (`responseElements` is null), so the grantee's SK
+    (`key#<accessKeyId>#<roleID>`) is not derivable from the link. Reaching an
+    already-written grantee would require a **GSI on its
+    `(person, roleID, creationDate)` fingerprint** — the only complete
+    deterministic fix, but heavy standing infra (GSI cost + backfill) for a rare,
+    attribution-only miss.
+
+- **Decision (2026-07-21):** documented, not fixed. Deferred pending either a
+  broader need for fingerprint lookups or evidence the gap is common in practice.
+  Symmetric to the existing `deferredParentUpdates` / `deferredGrantUpdates`
+  paths, which only back-patch the parent/granter side.
+
 ## Sign-in bootstrap events misclassified (ingestor)
 
 Console sign-in bootstrap events from `signin.amazonaws.com` are not being
