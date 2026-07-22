@@ -80,10 +80,15 @@ Resources:
       EnableLogFileValidation: true
 
   # DynamoDB Tables
-  RolesAggregatedTable:
+  #
+  # 1.0 cutover: these clean-named tables replace the pre-1.0 *-aggregated
+  # tables. The rename is what lets CloudFormation apply the new key schemas —
+  # deploying over a pre-1.0 stack DELETES the old tables and their data
+  # (deliberate; history rebuilds from CloudTrail going forward).
+  RolesTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: trailtool-roles-aggregated
+      TableName: trailtool-roles
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: customerId
@@ -96,10 +101,10 @@ Resources:
         - AttributeName: arn
           KeyType: RANGE
 
-  ServicesAggregatedTable:
+  ServicesTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: trailtool-services-aggregated
+      TableName: trailtool-services
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: customerId
@@ -112,10 +117,10 @@ Resources:
         - AttributeName: event_source
           KeyType: RANGE
 
-  ResourcesAggregatedTable:
+  ResourcesTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: trailtool-resources-aggregated
+      TableName: trailtool-resources
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: customerId
@@ -128,53 +133,76 @@ Resources:
         - AttributeName: identifier
           KeyType: RANGE
 
-  PeopleAggregatedTable:
+  PeopleTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: trailtool-people-aggregated
+      TableName: trailtool-people
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: customerId
+          AttributeType: S
+        - AttributeName: person_key
           AttributeType: S
         - AttributeName: email
           AttributeType: S
       KeySchema:
         - AttributeName: customerId
           KeyType: HASH
-        - AttributeName: email
-          KeyType: RANGE
-
-  SessionsAggregatedTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: trailtool-sessions-aggregated
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: customerId
-          AttributeType: S
-        - AttributeName: session_start
-          AttributeType: S
-        - AttributeName: person_email
-          AttributeType: S
-      KeySchema:
-        - AttributeName: customerId
-          KeyType: HASH
-        - AttributeName: session_start
+        - AttributeName: person_key
           KeyType: RANGE
       GlobalSecondaryIndexes:
-        - IndexName: person_email_index
+        - IndexName: email_index
           KeySchema:
             - AttributeName: customerId
               KeyType: HASH
-            - AttributeName: person_email
+            - AttributeName: email
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
 
-  AccountsAggregatedTable:
+  SessionsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: trailtool-accounts-aggregated
+      TableName: trailtool-sessions
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk # customerId#person_key
+          AttributeType: S
+        - AttributeName: sk # anchor#roleID | win#roleID#start
+          AttributeType: S
+        - AttributeName: role_key # customerId#role_id
+          AttributeType: S
+        - AttributeName: account_key # customerId#account_id
+          AttributeType: S
+        - AttributeName: start_time
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: role_index
+          KeySchema:
+            - AttributeName: role_key
+              KeyType: HASH
+            - AttributeName: start_time
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: account_index
+          KeySchema:
+            - AttributeName: account_key
+              KeyType: HASH
+            - AttributeName: start_time
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  AccountsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: trailtool-accounts
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: customerId
@@ -187,16 +215,31 @@ Resources:
         - AttributeName: account_id
           KeyType: RANGE
 
-  ChainLinksTable:
+  IdentityLinksTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: trailtool-chain-links
+      TableName: trailtool-identity-links
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
-        - AttributeName: access_key_id
+        - AttributeName: pk # cred#… | chain#… | login#… | mcp#…
           AttributeType: S
       KeySchema:
-        - AttributeName: access_key_id
+        - AttributeName: pk
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  IngestedFilesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: trailtool-ingested-files
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: object_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: object_key
           KeyType: HASH
       TimeToLiveSpecification:
         AttributeName: ttl
@@ -226,17 +269,20 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:GetItem
                   - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem # win# session folding
                   - dynamodb:Query
                   - dynamodb:BatchGetItem
                 Resource:
-                  - !GetAtt RolesAggregatedTable.Arn
-                  - !GetAtt ServicesAggregatedTable.Arn
-                  - !GetAtt ResourcesAggregatedTable.Arn
-                  - !GetAtt PeopleAggregatedTable.Arn
-                  - !GetAtt SessionsAggregatedTable.Arn
-                  - !Sub "${SessionsAggregatedTable.Arn}/index/*"
-                  - !GetAtt AccountsAggregatedTable.Arn
-                  - !GetAtt ChainLinksTable.Arn
+                  - !GetAtt RolesTable.Arn
+                  - !GetAtt ServicesTable.Arn
+                  - !GetAtt ResourcesTable.Arn
+                  - !GetAtt PeopleTable.Arn
+                  - !Sub "${PeopleTable.Arn}/index/*"
+                  - !GetAtt SessionsTable.Arn
+                  - !Sub "${SessionsTable.Arn}/index/*"
+                  - !GetAtt AccountsTable.Arn
+                  - !GetAtt IdentityLinksTable.Arn
+                  - !GetAtt IngestedFilesTable.Arn
         - PolicyName: S3ReadPolicy
           PolicyDocument:
             Version: '2012-10-17'
@@ -256,13 +302,15 @@ Resources:
       Role: !GetAtt TrailToolIngestorRole.Arn
       Environment:
         Variables:
-          ROLES_AGGREGATED_TABLE: !Ref RolesAggregatedTable
-          SERVICES_AGGREGATED_TABLE: !Ref ServicesAggregatedTable
-          RESOURCES_AGGREGATED_TABLE: !Ref ResourcesAggregatedTable
-          PEOPLE_AGGREGATED_TABLE: !Ref PeopleAggregatedTable
-          SESSIONS_AGGREGATED_TABLE: !Ref SessionsAggregatedTable
-          ACCOUNTS_AGGREGATED_TABLE: !Ref AccountsAggregatedTable
-          CHAIN_LINKS_TABLE: !Ref ChainLinksTable
+          ROLES_TABLE: !Ref RolesTable
+          SERVICES_TABLE: !Ref ServicesTable
+          RESOURCES_TABLE: !Ref ResourcesTable
+          PEOPLE_TABLE: !Ref PeopleTable
+          SESSIONS_TABLE: !Ref SessionsTable
+          ACCOUNTS_TABLE: !Ref AccountsTable
+          IDENTITY_LINKS_TABLE: !Ref IdentityLinksTable
+          INGESTED_FILES_TABLE: !Ref IngestedFilesTable
+          IDLE_GAP: 30m # windowed-fallback sessions only (long-lived keys, root)
       Description: Processes CloudTrail logs from S3 and writes aggregated data to DynamoDB
 
   # EventBridge Rule to trigger on S3 object creation
@@ -321,9 +369,9 @@ Outputs:
     Value: !GetAtt TrailToolIngestorFunction.Arn
 
   SessionsTableName:
-    Description: Name of the sessions aggregated DynamoDB table
-    Value: !Ref SessionsAggregatedTable
+    Description: Name of the sessions DynamoDB table
+    Value: !Ref SessionsTable
 
   RolesTableName:
-    Description: Name of the roles aggregated DynamoDB table
-    Value: !Ref RolesAggregatedTable
+    Description: Name of the roles DynamoDB table
+    Value: !Ref RolesTable

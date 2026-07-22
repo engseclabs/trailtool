@@ -8,20 +8,24 @@ TrailTool aggregates CloudTrail logs to simplify analysis for AI agents. It comb
 
 With TrailTool, you can:
 
-- Investigate and summarize web/CLI sessions clarifying access patterns
-- Track activity across role assumptions — see which human session assumed which roles and what they did
+- Investigate and summarize AWS access by people, agents, and code
+- Track activity across role assumptions
 - Generate least-privilege IAM policies from actual usage
-- Detect ClickOps resources created or modified via console instead of IaC
+- Detect malicious or unwanted (e.g. ClickOps) behavior
 
 For more details about how to use TrailTool, see https://engseclabs.com/blog/cloudtrail-for-ai-agents/.
-
-A hosted version with more features (e.g. UI, API, MCP) is available - see [trailtool.io](https://trailtool.io).
 
 ## Quick Start
 
 ### Deploy the Ingestor
 
 *Requires [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)*
+
+> **Upgrading from a pre-1.0 deployment?** The 1.0 ingestor replaces the old
+> `trailtool-*-aggregated` DynamoDB tables with clean-named tables
+> (`trailtool-sessions`, `trailtool-people`, …) under a new, identity-first
+> schema. Redeploying **deletes the pre-1.0 tables and all their data** — there
+> is no migration. History rebuilds from CloudTrail going forward.
 
 ### New CloudTrail
 

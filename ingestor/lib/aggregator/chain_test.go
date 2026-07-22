@@ -217,8 +217,6 @@ func TestExtractSessionTags(t *testing.T) {
 	}
 }
 
-
-
 func TestIsMCPServerResource(t *testing.T) {
 	tests := []struct {
 		name     string

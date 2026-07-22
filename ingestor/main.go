@@ -22,7 +22,11 @@ func handler(ctx context.Context, event json.RawMessage) error {
 	return ingest.HandleLambdaEvent(ctx,
 		dynamodb.NewFromConfig(cfg),
 		s3.NewFromConfig(cfg),
-		ingest.Config{Tables: ingest.TablesFromEnv("trailtool")},
+		ingest.Config{
+			Tables:        ingest.TablesFromEnv("trailtool"),
+			IngestedFiles: ingest.IngestedFilesTableFromEnv("trailtool"),
+			IdleGap:       ingest.IdleGapFromEnv(),
+		},
 		event,
 	)
 }

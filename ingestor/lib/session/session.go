@@ -334,39 +334,6 @@ func GetSessionCreationTime(event types.CloudTrailRecord) string {
 	return raw
 }
 
-// GenerateSessionKey creates a session key based on session type
-// Console sessions: use exact IAM creation time (precise, no credential refreshes)
-// CLI sessions: use 4-hour time windows (handles SSO credential refreshes)
-func GenerateSessionKey(email, roleID, userAgent, eventTime string) (sessionKey, startTime string) {
-	sessionType := ClassifySessionType(userAgent)
-
-	if sessionType == "" {
-		return "", "" // Unrecognized session type
-	}
-
-	if sessionType == "web-console" {
-		// Console: Use exact IAM session creation time
-		// This is already available from the event's sessionContext
-		return "", "" // Caller will use IAM creation time
-	}
-
-	// CLI/SDK: Use 4-hour time windows to group across credential refreshes
-	// Parse event time
-	parsedTime, err := time.Parse(time.RFC3339, eventTime)
-	if err != nil {
-		log.Printf("WARNING: Could not parse event time %s: %v", eventTime, err)
-		return "", ""
-	}
-
-	// Truncate to 4-hour window (0-4, 4-8, 8-12, 12-16, 16-20, 20-24)
-	windowStart := parsedTime.Truncate(4 * time.Hour)
-	windowStartStr := windowStart.Format(time.RFC3339)
-
-	// Session key includes window start instead of IAM creation time
-	sessionKey = fmt.Sprintf("%s:%s:%s", email, roleID, windowStartStr)
-	return sessionKey, windowStartStr
-}
-
 // IsAWSIP checks if an IP appears to be in a published AWS range via simple prefix matching.
 // NOTE: This is a heuristic for UI labeling only. For production, download and cache
 // https://ip-ranges.amazonaws.com/ip-ranges.json and perform CIDR checks.

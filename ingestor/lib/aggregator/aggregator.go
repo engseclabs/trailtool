@@ -1,11 +1,16 @@
 // Package aggregator processes CloudTrail events into aggregated entities
 // (roles, services, resources, people, sessions, accounts) and writes them
 // to DynamoDB.
+//
+// Sessions are identity-first: events are partitioned into credential groups,
+// each group resolves to a person (identity tiers) and a deterministic session
+// anchor (sign-in ARN, console creationDate, or the temporary access key itself).
+// Time-window guessing survives only as the last-resort fallback for principals
+// with no credential boundary (long-lived IAM keys, root).
 package aggregator
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -13,23 +18,26 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
 	ddblib "github.com/engseclabs/trailtool/ingestor/lib/dynamodb"
+	"github.com/engseclabs/trailtool/ingestor/lib/identity"
 	"github.com/engseclabs/trailtool/ingestor/lib/resources"
 	"github.com/engseclabs/trailtool/ingestor/lib/session"
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
 
-// chainLinkTTLHours is the STS maximum credential lifetime used as the TTL for chain link records.
-const chainLinkTTLHours = 12
+// DefaultIdleGap bounds the windowed session fallback: consecutive events
+// further apart than this start a new win# session. It applies only to
+// principals AWS gives no credential boundary for (long-lived IAM keys, root).
+const DefaultIdleGap = 30 * time.Minute
 
 // Tables holds the DynamoDB table names for each aggregated entity.
 type Tables struct {
-	Roles      string
-	Services   string
-	Resources  string
-	People     string
-	Sessions   string
-	Accounts   string
-	ChainLinks string
+	Roles         string
+	Services      string
+	Resources     string
+	People        string
+	Sessions      string
+	Accounts      string
+	IdentityLinks string
 }
 
 // Config controls the aggregation behaviour.
@@ -39,6 +47,9 @@ type Config struct {
 	// Namespace is an opaque partition key stored alongside every record.
 	// Open-source deployments leave this empty (defaults to "default").
 	Namespace string
+
+	// IdleGap overrides DefaultIdleGap for the windowed fallback.
+	IdleGap time.Duration
 }
 
 func (c Config) namespace() string {
@@ -46,6 +57,13 @@ func (c Config) namespace() string {
 		return c.Namespace
 	}
 	return "default"
+}
+
+func (c Config) idleGap() time.Duration {
+	if c.IdleGap > 0 {
+		return c.IdleGap
+	}
+	return DefaultIdleGap
 }
 
 // Process aggregates a batch of CloudTrail events and writes the results to
@@ -57,10 +75,12 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 }
 
 // processInternal performs aggregation and DynamoDB writes, returning the
-// in-memory sessions map. Extracted for testability.
-func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events []types.CloudTrailRecord) (map[string]*types.DynamoDBSessionAggregated, error) {
+// in-memory sessions map keyed by session ref ("person_key|sk"). Extracted for
+// testability.
+func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events []types.CloudTrailRecord) (map[string]*types.DynamoDBSession, error) {
 	ns := cfg.namespace()
-	log.Printf("=== Processing Noun-Based Aggregation ===")
+	events = dedupeByEventID(events)
+	log.Printf("=== Processing Identity-First Aggregation ===")
 	log.Printf("Processing %d events for aggregation (namespace: %s)", len(events), ns)
 
 	// Aggregation maps for all nouns
@@ -68,7 +88,7 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	services := make(map[string]*types.DynamoDBService)
 	resourceMap := make(map[string]*types.DynamoDBResource)
 	people := make(map[string]*types.DynamoDBPerson)
-	sessions := make(map[string]*types.DynamoDBSessionAggregated)
+	sessions := make(map[string]*types.DynamoDBSession) // keyed by session ref person_key|sk
 	accounts := make(map[string]*types.DynamoDBAccount)
 
 	// Tracking sets for unique counts
@@ -93,693 +113,231 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	sessionServices := make(map[string]map[string]bool)
 	sessionResources := make(map[string]map[string]bool)
 
-	// === Login pre-pass: Detect aws login (PKCE OAuth2) credential grant events ===
-	// CreateOAuth2Token on signin.amazonaws.com indicates a developer ran `aws login`.
-	// Unlike `aws sso login`, no GetRoleCredentials event fires — credentials are vended
-	// directly inside the CreateOAuth2Token response.
-	//
-	// Correlation key: "login:roleID:startTime" — roleID and startTime are both present on
-	// the CreateOAuth2Token event (via principalId and sessionContext.creationDate) and on
-	// every subsequent agent event (same principalId, same sessionContext.creationDate).
-	// This mirrors the console switch-role key shape ("console_switch_role:roleID:startTime").
-	//
-	// loginGrant holds the metadata needed to annotate the child (agent) session.
-	type loginGrant struct {
-		parentSessionMapKey string // session map key of the human session that ran aws login
-		parentEmail         string
-	}
-	// Index by "login:roleID:startTime" for O(1) lookup in Pass 2.
-	loginGrants := make(map[string]*loginGrant)
+	// Identity resolution: credential groups → person tiers → session anchors,
+	// with in-batch chain/login/MCP links resolving tier 2.
+	groups := identity.GroupEvents(events)
+	resolved, links := resolveGroups(groups)
 
-	for _, event := range events {
-		if event.EventSource != "signin.amazonaws.com" || event.EventName != "CreateOAuth2Token" {
-			continue
-		}
-		// AWS MCP Server OAuth grants are handled by the MCP pre-pass below (correlated by
-		// signInSessionArn), not by roleID+creationDate windowing. Skip them here so an MCP
-		// token doesn't register a spurious `aws login` grant.
-		if IsMCPServerResource(ExtractOAuthResource(event)) {
-			continue
-		}
-
-		email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
-		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
-		startTime := session.GetSessionCreationTime(event)
-		if email == "" || roleID == "" || startTime == "" {
-			continue
-		}
-
-		roleARN := session.GetRoleARN(event)
-		if roleARN == "" {
-			roleARN = event.UserIdentity.ARN
-		}
-
-		parentSessionMapKey := fmt.Sprintf("%s:%s:%s", email, roleID, startTime)
-		loginKey := "login:" + roleID + ":" + startTime
-
-		loginGrants[loginKey] = &loginGrant{
-			parentSessionMapKey: parentSessionMapKey,
-			parentEmail:         email,
-		}
-		log.Printf("LOGIN_GRANT: email=%s roleID=%s startTime=%s loginKey=%s parentKey=%s",
-			email, roleID, startTime, loginKey, parentSessionMapKey)
-
-		// Persist to DynamoDB so the grant survives cross-batch delivery
-		// (CreateOAuth2Token and agent events often land in different S3 files).
-		if cfg.Tables.ChainLinks != "" {
-			eventT, err := time.Parse(time.RFC3339, event.EventTime)
-			if err != nil {
-				log.Printf("WARNING: login pre-pass: could not parse event time %s: %v", event.EventTime, err)
-				continue
-			}
-			grantLink := &types.DynamoDBChainLink{
-				AccessKeyID:         loginKey,
-				ParentSessionMapKey: parentSessionMapKey,
-				ParentEmail:         email,
-				ParentRoleARN:       roleARN,
-				TTL:                 eventT.Add(chainLinkTTLHours * time.Hour).Unix(),
-			}
-			if err := ddblib.WriteChainLinkToDynamoDB(ctx, ddbClient, cfg.Tables.ChainLinks, grantLink); err != nil {
-				log.Printf("WARNING: failed to write login grant to DynamoDB: %v", err)
-			}
-		}
-	}
-
-	// === MCP OAuth pre-pass: Detect AWS MCP Server OAuth grants (agent traffic) ===
-	// When an agent connects to the AWS MCP Server, CreateOAuth2Token on signin.amazonaws.com
-	// mints an OAuth access token whose requestParameters.resource is the MCP Server. The grant
-	// carries a signInSessionArn, and — per the AWS MCP Server release — every subsequent AWS API
-	// call made with that token carries the same aws:SignInSessionArn context. We key each grant
-	// by signInSessionArn so Pass 2 can tag correlated API activity as "agent" traffic.
-	//
-	// This is distinct from the older `aws login` PKCE flow (keyed by roleID+creationDate above):
-	// MCP tokens are minted via client_credentials / refresh_token and are not tied to the
-	// authorizing session's creationDate, so signInSessionArn is the reliable correlation key.
-	type mcpGrant struct {
-		authorizingSessionMapKey string // human session that authorized the MCP grant
-		authorizingEmail         string
-		resource                 string // the AWS MCP Server resource the grant targeted
-	}
-	// Index by signInSessionArn for O(1) lookup in Pass 2.
-	mcpGrants := make(map[string]*mcpGrant)
-
-	for _, event := range events {
-		if event.EventSource != "signin.amazonaws.com" || event.EventName != "CreateOAuth2Token" {
-			continue
-		}
-		resource := ExtractOAuthResource(event)
-		if !IsMCPServerResource(resource) {
-			continue // not an MCP Server grant — leave to the aws login pre-pass
-		}
-		signInSessionArn := ExtractSignInSessionArn(event)
-		if signInSessionArn == "" {
-			log.Printf("MCP_GRANT_SKIP: CreateOAuth2Token for %s has no signInSessionArn", resource)
-			continue
-		}
-
-		email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
-		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
-		startTime := session.GetSessionCreationTime(event)
-		var authorizingSessionMapKey string
-		if email != "" && roleID != "" && startTime != "" {
-			authorizingSessionMapKey = fmt.Sprintf("%s:%s:%s", email, roleID, startTime)
-		}
-
-		mcpGrants[signInSessionArn] = &mcpGrant{
-			authorizingSessionMapKey: authorizingSessionMapKey,
-			authorizingEmail:         email,
-			resource:                 resource,
-		}
-		log.Printf("MCP_GRANT: signInSessionArn=%s resource=%s authorizedBy=%s",
-			signInSessionArn, resource, authorizingSessionMapKey)
-
-		// Persist to DynamoDB so the grant survives cross-batch delivery — the API calls
-		// carrying aws:SignInSessionArn often land in a different S3 file than this grant.
-		if cfg.Tables.ChainLinks != "" {
-			eventT, err := time.Parse(time.RFC3339, event.EventTime)
-			if err != nil {
-				log.Printf("WARNING: MCP pre-pass: could not parse event time %s: %v", event.EventTime, err)
-				continue
-			}
-			grantLink := &types.DynamoDBChainLink{
-				AccessKeyID:         "mcp_grant:" + signInSessionArn,
-				ParentSessionMapKey: authorizingSessionMapKey,
-				ParentEmail:         email,
-				MCPResource:         resource,
-				TTL:                 eventT.Add(chainLinkTTLHours * time.Hour).Unix(),
-			}
-			if err := ddblib.WriteChainLinkToDynamoDB(ctx, ddbClient, cfg.Tables.ChainLinks, grantLink); err != nil {
-				log.Printf("WARNING: failed to write MCP grant to DynamoDB: %v", err)
-			}
-		}
-	}
-
-	// === Pass 1: Discover AssumeRole events from known sessions ===
-	// Build a map of issued access key IDs → parent session map keys for this batch.
-	// Also write chain link records to DynamoDB so cross-file chains work in future batches.
-	newChainLinks := make(map[string]*types.DynamoDBChainLink) // issuedKeyID -> chain link
-
-	// deferredParentUpdates holds chaining metadata for parent sessions that are NOT in the
-	// current in-memory sessions map (i.e. ingested in a prior Lambda invocation).
-	// We flush these to DynamoDB after writing all current-batch sessions so that a
-	// same-batch parent is fully written before we try to update it.
+	// Chaining metadata for parent sessions ingested in a prior invocation:
+	// flushed as DynamoDB updates after all current-batch sessions are written.
 	type parentUpdate struct {
-		parentSessionMapKey string
-		childSessionMapKey  string
-		childRoleARN        string
+		parentRef    string
+		childRef     string
+		childRoleARN string
+		eventCount   int
 	}
 	var deferredParentUpdates []parentUpdate
 
-	for _, event := range events {
-		if event.EventName != "AssumeRole" {
-			continue
-		}
-		if strings.Contains(event.UserIdentity.PrincipalID, "ConfigResourceCompositionSession") {
-			continue
-		}
-
-		email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
-		tags := ExtractSessionTags(event)
-
-		if email == "" {
-			continue // only attribute human-initiated AssumeRole
-		}
-
-		issuedKeyID := ExtractIssuedAccessKeyID(event)
-		if issuedKeyID == "" {
-			continue
-		}
-
-		assumedRoleARN := ExtractAssumedRoleARN(event)
-		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
-		roleARN := session.GetRoleARN(event)
-		if roleARN == "" {
-			roleARN = event.UserIdentity.ARN
-		}
-
-		// Build the parent session map key.
-		// For the AssumeRole event itself we always prefer the IAM session creation time
-		// from sessionContext — this matches how the parent session was keyed in Pass 2
-		// regardless of whether it was a console or CLI session.
-		// We only fall back to CLI 4-hour windowing when no creation time is available.
-		var parentSessionMapKey string
-		if email != "" && roleID != "" {
-			creationTime := session.GetSessionCreationTime(event)
-			if creationTime != "" {
-				parentSessionMapKey = fmt.Sprintf("%s:%s:%s", email, roleID, creationTime)
-			} else {
-				normalizedUA := session.NormalizeUserAgent(event.UserAgent)
-				cliKey, _ := session.GenerateSessionKey(email, roleID, normalizedUA, event.EventTime)
-				if cliKey != "" {
-					parentSessionMapKey = cliKey
-				}
-			}
-		}
-		if parentSessionMapKey == "" {
-			continue
-		}
-
-		// Parse event time and compute TTL
-		eventT, err := time.Parse(time.RFC3339, event.EventTime)
-		if err != nil {
-			log.Printf("WARNING: chain link: could not parse event time %s: %v", event.EventTime, err)
-			continue
-		}
-		ttl := eventT.Add(chainLinkTTLHours * time.Hour).Unix()
-
-		// Programmatic CLI/SDK AssumeRole: key by "cli_switch_role:accessKeyID".
-		// The issued access key is stable across all events in the child session.
-		cliSwitchKey := "cli_switch_role:" + issuedKeyID
-		link := &types.DynamoDBChainLink{
-			AccessKeyID:         cliSwitchKey,
-			ParentSessionMapKey: parentSessionMapKey,
-			ParentEmail:         email,
-			ParentRoleARN:       roleARN,
-			AssumedRoleARN:      assumedRoleARN,
-			TTL:                 ttl,
-		}
-		if len(tags) > 0 {
-			link.SessionTags = tags
-		}
-		if policy := ExtractSessionPolicy(event); policy != "" {
-			link.SessionPolicy = policy
-		}
-		newChainLinks[cliSwitchKey] = link
-
-		if cfg.Tables.ChainLinks != "" {
-			if err := ddblib.WriteChainLinkToDynamoDB(ctx, ddbClient, cfg.Tables.ChainLinks, link); err != nil {
-				log.Printf("WARNING: failed to write chain link: %v", err)
+	for _, rg := range resolved {
+		var chainL, loginL, mcpL *link
+		var winSlots map[int]windowSlot
+		if rg.ok {
+			chainL = lookupLinkKind(links, rg.group, linkChain)
+			loginL = lookupLinkKind(links, rg.group, linkLogin)
+			mcpL = lookupLinkKind(links, rg.group, linkMCP)
+			if rg.anchor == "" {
+				winSlots = planWindows(rg.group.Events, cfg.idleGap())
 			}
 		}
 
-		// Console switch-role: the assumed role's events use a fresh credential per
-		// request rather than a single stable access key. Key by
-		// "console_switch_role:roleID:startTime" so Pass 2 can match by role+startTime.
-		childRoleID := ExtractAssumedRoleID(event)
-		if childRoleID != "" {
-			consoleSwitchKey := "console_switch_role:" + childRoleID + ":" + event.EventTime
-			consoleLink := &types.DynamoDBChainLink{
-				AccessKeyID:         consoleSwitchKey,
-				ParentSessionMapKey: parentSessionMapKey,
-				ParentEmail:         email,
-				ParentRoleARN:       roleARN,
-				AssumedRoleARN:      assumedRoleARN,
-				TTL:                 ttl,
+		childEvents := 0
+		childRef := ""
+
+		for i, event := range rg.group.Events {
+			if shouldSkipEvent(event) {
+				continue
 			}
-			newChainLinks[consoleSwitchKey] = consoleLink
-			if cfg.Tables.ChainLinks != "" {
-				if err := ddblib.WriteChainLinkToDynamoDB(ctx, ddbClient, cfg.Tables.ChainLinks, consoleLink); err != nil {
-					log.Printf("WARNING: failed to write console switch-role chain link: %v", err)
-				}
+			eventTime := event.EventTime
+			if len(eventTime) < 10 {
+				log.Printf("WARNING: skipping event with malformed eventTime %q (%s:%s)", eventTime, event.EventSource, event.EventName)
+				continue
 			}
-		}
-	}
+			eventDate := eventTime[:10] // YYYY-MM-DD
 
-	// === Pre-pass 2: Batch-load chain links from DynamoDB ===
-	// Collect lookup keys for events that may be chained:
-	//   - "cli_switch_role:accessKeyID"       (programmatic AssumeRole)
-	//   - "console_switch_role:roleID:startTime" (console switch-role)
-	//   - "login:roleID:startTime"             (aws login PKCE grant)
-	var unkeyedAccessKeyIDs []string
-	seen := make(map[string]bool)
-	for _, event := range events {
-		// CLI/SDK switch-role lookup: cli_switch_role:accessKeyID
-		keyID := event.UserIdentity.AccessKeyID
-		if keyID != "" {
-			cliSwitchKey := "cli_switch_role:" + keyID
-			if !seen[cliSwitchKey] {
-				if _, inBatch := newChainLinks[cliSwitchKey]; !inBatch {
-					seen[cliSwitchKey] = true
-					unkeyedAccessKeyIDs = append(unkeyedAccessKeyIDs, cliSwitchKey)
-				}
-			}
-		}
-		rID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
-		st := session.GetSessionCreationTime(event)
-		if rID != "" && st != "" {
-			// Console switch-role lookup: console_switch_role:roleID:startTime
-			consoleSwitchKey := "console_switch_role:" + rID + ":" + st
-			if !seen[consoleSwitchKey] {
-				if _, inBatch := newChainLinks[consoleSwitchKey]; !inBatch {
-					seen[consoleSwitchKey] = true
-					unkeyedAccessKeyIDs = append(unkeyedAccessKeyIDs, consoleSwitchKey)
-				}
-			}
-			// Login grant lookup: login:roleID:startTime
-			loginKey := "login:" + rID + ":" + st
-			if !seen[loginKey] {
-				if _, inBatch := newChainLinks[loginKey]; !inBatch {
-					seen[loginKey] = true
-					unkeyedAccessKeyIDs = append(unkeyedAccessKeyIDs, loginKey)
-				}
-			}
-		}
-		// MCP grant lookup: mcp_grant:signInSessionArn. Present on API calls made with the
-		// MCP OAuth access token (aws:SignInSessionArn context in sessionContext).
-		if arn := ExtractSignInSessionArn(event); arn != "" {
-			mcpKey := "mcp_grant:" + arn
-			if !seen[mcpKey] {
-				if _, inBatch := mcpGrants[arn]; !inBatch {
-					seen[mcpKey] = true
-					unkeyedAccessKeyIDs = append(unkeyedAccessKeyIDs, mcpKey)
-				}
-			}
-		}
-	}
-
-	// Batch-fetch from DynamoDB (only if we have something to look up)
-	var ddbChainLinks map[string]*types.DynamoDBChainLink
-	if len(unkeyedAccessKeyIDs) > 0 && cfg.Tables.ChainLinks != "" {
-		var fetchErr error
-		ddbChainLinks, fetchErr = ddblib.BatchGetChainLinks(ctx, ddbClient, cfg.Tables.ChainLinks, unkeyedAccessKeyIDs)
-		if fetchErr != nil {
-			log.Printf("WARNING: batch get chain links failed: %v", fetchErr)
-			ddbChainLinks = make(map[string]*types.DynamoDBChainLink)
-		}
-	} else {
-		ddbChainLinks = make(map[string]*types.DynamoDBChainLink)
-	}
-
-	// resolveChainLink returns the chain link for a given access key ID, checking
-	// both the batch-local map and the DynamoDB-fetched map.
-	resolveChainLink := func(keyID string) *types.DynamoDBChainLink {
-		if link, ok := newChainLinks[keyID]; ok {
-			return link
-		}
-		if link, ok := ddbChainLinks[keyID]; ok {
-			return link
-		}
-		return nil
-	}
-
-	// === Pass 2: Aggregate all events ===
-	for _, event := range events {
-		eventTime := event.EventTime
-		eventDate := eventTime[:10] // YYYY-MM-DD
-
-		// Skip synthetic sessions that aren't real human activity
-		if strings.Contains(event.UserIdentity.PrincipalID, "ConfigResourceCompositionSession") {
-			continue
-		}
-
-		// Skip SwitchRole signin events — these are console bookkeeping generated when a
-		// user switches roles in the browser. They don't represent real API activity and
-		// lack sessionContext.creationDate, which would cause them to create a spurious
-		// unlinked session record instead of being attributed to the chained session.
-		if event.EventName == "SwitchRole" && event.EventSource == "signin.amazonaws.com" {
-			continue
-		}
-
-		// Skip CreateOAuth2Token events — these were already handled in the login pre-pass
-		// to detect aws login sessions. Processing them here would inflate EventsCount and
-		// could mistakenly trigger login attribution via the authorizing session's creationDate.
-		if event.EventName == "CreateOAuth2Token" && event.EventSource == "signin.amazonaws.com" {
-			continue
-		}
-
-		// Extract core identifiers
-		email := session.ExtractEmailFromPrincipalID(event.UserIdentity.PrincipalID)
-		roleARN := session.GetRoleARN(event)
-		if roleARN == "" {
-			roleARN = event.UserIdentity.ARN
-		}
-
-		roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
-
-		// Role chain attribution: check whether this event belongs to a chained (assumed) session.
-		// Two lookup strategies:
-		//   1. CLI/SDK: match by "cli_switch_role:accessKeyID" (stable per AssumeRole call)
-		//   2. Console switch-role: match by "console_switch_role:roleID:startTime" since the
-		//      console issues a new short-lived credential per request, not a single session key.
-		var chainedFromLink *types.DynamoDBChainLink
-		if event.UserIdentity.AccessKeyID != "" {
-			chainedFromLink = resolveChainLink("cli_switch_role:" + event.UserIdentity.AccessKeyID)
-		}
-		if chainedFromLink == nil && roleID != "" {
-			startTime := session.GetSessionCreationTime(event)
-			if startTime != "" {
-				chainedFromLink = resolveChainLink("console_switch_role:" + roleID + ":" + startTime)
-			}
-		}
-		if chainedFromLink != nil {
-			log.Printf("CHAIN_ATTR: access_key=%s role=%s -> parent_session=%s assumed_role=%s event=%s:%s",
-				event.UserIdentity.AccessKeyID, roleID, chainedFromLink.ParentSessionMapKey,
-				chainedFromLink.AssumedRoleARN, event.EventSource, event.EventName)
-		}
-
-		// Account ID fallback chain
-		accountID := session.ExtractAccountIDFromARN(roleARN)
-		if accountID == "" {
-			accountID = event.UserIdentity.AccountID
-		}
-		if accountID == "" && event.UserIdentity.ARN != "" {
-			accountID = session.ExtractAccountIDFromARN(event.UserIdentity.ARN)
-		}
-
-		// Build session keys
-		// rawSessionCreationTime is the actual sessionContext.creationDate (startTime) from
-		// the event. For CLI sessions, sessionCreationTime is windowed to a 4-hour boundary;
-		// rawSessionCreationTime is the unwindowed value used for login grant key lookup.
-		rawSessionCreationTime := session.GetSessionCreationTime(event)
-		var sessionMapKey, truncatedSessionID, sessionCreationTime string
-		if email != "" && roleID != "" {
-			normalizedUserAgent := session.NormalizeUserAgent(event.UserAgent)
-			cliSessionKey, cliStartTime := session.GenerateSessionKey(email, roleID, normalizedUserAgent, eventTime)
-
-			if cliSessionKey != "" {
-				sessionMapKey = cliSessionKey
-				sessionCreationTime = cliStartTime
-				truncatedSessionID = fmt.Sprintf("%s:%s", email, roleID)
-			} else {
-				sessionCreationTime = rawSessionCreationTime
-				if sessionCreationTime != "" {
-					truncatedSessionID = fmt.Sprintf("%s:%s", email, roleID)
-					sessionMapKey = fmt.Sprintf("%s:%s:%s", email, roleID, sessionCreationTime)
-				}
-			}
-		}
-
-		eventSource := event.EventSource
-
-		// Role chain attribution: route chained events into a dedicated child session record.
-		// The child session is keyed by the issued access key ID.
-		// The parent session gets updated with summary counts and a reference to the child session key.
-		if chainedFromLink != nil {
-			// Child session key: always use a natural key.
-			// Console switch-role: sessionMapKey is already set (email:roleID:creationTime).
-			// Programmatic AssumeRole: no email in events, but we have roleID and eventTime.
-			var childSessionMapKey, childSessionID string
-			if sessionMapKey != "" {
-				// Console switch-role: use the natural session key.
-				childSessionMapKey = sessionMapKey
-				childSessionID = truncatedSessionID
-			} else {
-				// Programmatic AssumeRole: key by the issued access key ID — stable across all
-				// events in the session (unlike event time which changes per event).
-				childSessionMapKey = chainedFromLink.AccessKeyID
-				childSessionID = childSessionMapKey
+			personKey := ""
+			if rg.ok {
+				personKey = rg.person.Key
 			}
 
-			// Child session's role identity comes from the chain link
-			childRoleARN := chainedFromLink.AssumedRoleARN
-			childRoleName := session.ExtractRoleNameFromARN(childRoleARN)
-			childAccountID := session.ExtractAccountIDFromARN(childRoleARN)
-			if childAccountID == "" {
-				childAccountID = accountID // fall back to event's account
+			// Extract core identifiers
+			roleARN := session.GetRoleARN(event)
+			if roleARN == "" {
+				roleARN = event.UserIdentity.ARN
 			}
-			childEmail := chainedFromLink.ParentEmail
-			parentSessionKey := chainedFromLink.ParentSessionMapKey
+			// Chained sessions carry the assumed role's IAM ARN from the link,
+			// not the sts assumed-role ARN stamped on the events.
+			if chainL != nil && chainL.assumedRoleARN != "" {
+				roleARN = chainL.assumedRoleARN
+			}
+			roleID := session.ExtractRoleIDFromPrincipalID(event.UserIdentity.PrincipalID)
 
-			normalizedUA := session.NormalizeUserAgent(event.UserAgent)
+			// Account ID fallback chain
+			accountID := session.ExtractAccountIDFromARN(roleARN)
+			if accountID == "" {
+				accountID = event.UserIdentity.AccountID
+			}
+			if accountID == "" && event.UserIdentity.ARN != "" {
+				accountID = session.ExtractAccountIDFromARN(event.UserIdentity.ARN)
+			}
+
 			resourceList := resources.ExtractResources(event)
 
-			// For console switch-role, use the real session creation time and type.
-			// For programmatic AssumeRole, use the event time as the start.
-			childStartTime := eventTime
-			childSessionType := "cli-sdk"
-			if sessionCreationTime != "" {
-				childStartTime = sessionCreationTime
-				childSessionType = session.ClassifySessionType(normalizedUA)
-				if childSessionType == "" {
-					childSessionType = "web-console"
-				}
-			}
-
-			// Process the event into the child session
-			processChainedSessionEvent(sessions, ns, childSessionMapKey, childSessionID,
-				childEmail, childRoleARN, childRoleName, childAccountID,
-				parentSessionKey, childStartTime, eventTime, event.SourceIPAddress, normalizedUA,
-				childSessionType, eventSource, event.EventName, event.ErrorCode, event.ErrorMessage, resourceList, eventDate,
-				chainedFromLink.SessionTags, chainedFromLink.SessionPolicy)
-			addToSet(sessionServices, childSessionMapKey, eventSource)
-			addToSet(sessionResources, childSessionMapKey, childRoleARN)
-
-			// Update parent session: bump chained counters and register child session key.
-			// If the parent is in-memory (same batch), update directly.
-			// Otherwise, defer a DynamoDB UpdateItem so it gets applied after all sessions are written.
-			if parentSess, exists := sessions[parentSessionKey]; exists {
-				parentSess.ChainedEventCount++
-				// Track assumed role ARN
-				foundRole := false
-				for _, r := range parentSess.ChainedRoles {
-					if r == childRoleARN {
-						foundRole = true
-						break
+			// === Session axis ===
+			var sess *types.DynamoDBSession
+			sessRef := ""
+			if rg.ok {
+				sk := ""
+				sessionType := ""
+				if rg.anchor != "" {
+					sk = identity.SessionSK(rg.anchor, roleID)
+					sessionType = anchoredSessionType(rg.anchor, mcpL, loginL)
+				} else if slot, found := winSlots[i]; found {
+					sk = slot.sk
+					sessionType = slot.channel
+					if mcpL != nil {
+						sessionType = SessionTypeAgent
+					} else if loginL != nil && sessionType != SessionTypeWeb {
+						sessionType = SessionTypeLogin
 					}
 				}
-				if !foundRole {
-					parentSess.ChainedRoles = append(parentSess.ChainedRoles, childRoleARN)
-				}
-				// Track child session key (for UI linking)
-				foundKey := false
-				for _, k := range parentSess.ChainedSessionKeys {
-					if k == childSessionMapKey {
-						foundKey = true
-						break
-					}
-				}
-				if !foundKey {
-					parentSess.ChainedSessionKeys = append(parentSess.ChainedSessionKeys, childSessionMapKey)
-				}
-			} else {
-				// Parent was ingested in a prior batch — schedule a DDB update after writes.
-				deferredParentUpdates = append(deferredParentUpdates, parentUpdate{
-					parentSessionMapKey: parentSessionKey,
-					childSessionMapKey:  childSessionMapKey,
-					childRoleARN:        childRoleARN,
-				})
-			}
-
-			// Skip rest of normal processing for this event — it belongs to the child session
-			continue
-		}
-
-		if event.ErrorCode != "" {
-			log.Printf("EVENT_ERROR: event=%s:%s errorCode=%s email=%s", eventSource, event.EventName, event.ErrorCode, email)
-		}
-
-		// Process person
-		if email != "" {
-			processPersonEvent(people, email, accountID, roleARN, eventSource, eventDate)
-			addToSet(personAccounts, email, accountID)
-			addToSet(personRoles, email, roleARN)
-			addToSet(personServices, email, eventSource)
-			addToSet(personSessions, email, sessionMapKey)
-		}
-
-		// Process session
-		if sessionMapKey != "" && accountID != "" && roleARN != "" {
-			normalizedUserAgent := session.NormalizeUserAgent(event.UserAgent)
-			resourceList := resources.ExtractResources(event)
-
-			// MCP agent detection: resolve any AWS MCP Server OAuth grant for this event's
-			// aws:SignInSessionArn up front. When matched, force SessionType "agent" so the
-			// session is created even if the MCP server's user agent is unrecognized — the
-			// signInSessionArn, not the user agent, is the authoritative agent-traffic signal.
-			var mcpMatch *mcpGrant
-			var mcpArn string
-			if arn := ExtractSignInSessionArn(event); arn != "" {
-				if g, ok := mcpGrants[arn]; ok {
-					mcpMatch = g
-				} else if link := resolveChainLink("mcp_grant:" + arn); link != nil && link.MCPResource != "" {
-					mcpMatch = &mcpGrant{
-						authorizingSessionMapKey: link.ParentSessionMapKey,
-						authorizingEmail:         link.ParentEmail,
-						resource:                 link.MCPResource,
-					}
-				}
-				if mcpMatch != nil {
-					mcpArn = arn
-				}
-			}
-			forcedSessionType := ""
-			if mcpMatch != nil {
-				forcedSessionType = "agent"
-			}
-
-			processSessionEvent(sessions, people, ns, sessionMapKey, truncatedSessionID, email, roleID, accountID, roleARN, session.ExtractRoleNameFromARN(roleARN),
-				sessionCreationTime, eventTime, event.SourceIPAddress, normalizedUserAgent, eventSource, event.EventName, event.ErrorCode, event.ErrorMessage, resourceList, eventDate, forcedSessionType)
-			addToSet(sessionServices, sessionMapKey, eventSource)
-
-			// Login grant attribution: look up "login:roleID:startTime" in the in-memory
-			// grants (same batch) or the DynamoDB-fetched chain links (cross-batch).
-			// The key is exact — no fuzzy time matching needed.
-			if roleID != "" && rawSessionCreationTime != "" {
-				loginKey := "login:" + roleID + ":" + rawSessionCreationTime
-				var grant *loginGrant
-				if g, ok := loginGrants[loginKey]; ok {
-					grant = g
-				} else if link := resolveChainLink(loginKey); link != nil {
-					grant = &loginGrant{
-						parentSessionMapKey: link.ParentSessionMapKey,
-						parentEmail:         link.ParentEmail,
-					}
-				}
-				if grant != nil {
-					if sess, exists := sessions[sessionMapKey]; exists && sess.LoginGrantedBySessionKey == "" {
-						sess.SessionType = "login"
-						sess.LoginGrantedBySessionKey = grant.parentSessionMapKey
-						sess.LoginGrantedByEmail = grant.parentEmail
-						log.Printf("LOGIN_ATTR: session=%s loginKey=%s grantedBy=%s",
-							sessionMapKey, loginKey, grant.parentSessionMapKey)
-					}
-				}
-			}
-
-			// MCP agent attribution: annotate the session (resolved above) with the AWS MCP
-			// Server OAuth grant details. SessionType was already forced to "agent" so this
-			// overrides any "login" tag — MCP is the more specific classification.
-			if mcpMatch != nil {
-				if sess, exists := sessions[sessionMapKey]; exists && sess.SignInSessionArn == "" {
-					sess.SessionType = "agent"
-					sess.SignInSessionArn = mcpArn
-					sess.MCPResource = mcpMatch.resource
-					sess.AgentAuthorizedBySession = mcpMatch.authorizingSessionMapKey
-					sess.AgentAuthorizedByEmail = mcpMatch.authorizingEmail
-					log.Printf("MCP_ATTR: session=%s signInSessionArn=%s resource=%s authorizedBy=%s",
-						sessionMapKey, mcpArn, mcpMatch.resource, mcpMatch.authorizingSessionMapKey)
-				}
-			}
-		} else if sessionMapKey != "" {
-			log.Printf("SKIPPED_SESSION: email=%s roleID=%s accountID=%s roleARN=%s eventSource=%s eventName=%s",
-				email, roleID, accountID, roleARN, eventSource, event.EventName)
-		}
-
-		// Process account
-		if accountID != "" {
-			processAccountEvent(accounts, accountID, email, sessionMapKey, roleARN, eventSource, eventDate)
-			addToSet(accountPeople, accountID, email)
-			addToSet(accountSessions, accountID, sessionMapKey)
-			addToSet(accountRoles, accountID, roleARN)
-			addToSet(accountServices, accountID, eventSource)
-		}
-
-		// Process role
-		if roleARN != "" {
-			if err := processRoleEvent(roles, event, roleARN, eventDate); err != nil {
-				log.Printf("WARNING: Failed to process role event: %v", err)
-			}
-			addToSet(rolePeople, roleARN, email)
-			addToSet(roleSessions, roleARN, sessionMapKey)
-			addToSet(roleAccounts, roleARN, accountID)
-		}
-
-		// Process service
-		if err := processServiceEvent(services, event, roleARN, eventDate); err != nil {
-			log.Printf("WARNING: Failed to process service event: %v", err)
-		}
-		addToSet(servicePeople, eventSource, email)
-		addToSet(serviceSessions, eventSource, sessionMapKey)
-		addToSet(serviceAccounts, eventSource, accountID)
-
-		// Process resources
-		resourceList := resources.ExtractResources(event)
-		for _, resource := range resourceList {
-			if err := processResourceEvent(resourceMap, event, resource, accountID, eventDate); err != nil {
-				log.Printf("WARNING: Failed to process resource event: %v", err)
-			}
-
-			// Track ClickOps operations
-			if sessionMapKey != "" {
-				if sess, exists := sessions[sessionMapKey]; exists {
-					if sess.SessionType == "web-console" && session.IsClickOpsOperation(event.EventName) {
-						if resourceEntry, exists := resourceMap[resource]; exists {
-							found := false
-							for i := range resourceEntry.ClickOpsAccesses {
-								access := &resourceEntry.ClickOpsAccesses[i]
-								if access.SessionID == truncatedSessionID && access.EventName == event.EventName {
-									access.EventCount++
-									found = true
-									break
-								}
-							}
-							if !found {
-								log.Printf("DEBUG: Adding ClickOps access for resource=%s event=%s sessionCreationTime='%s' eventDate='%s'", resource, event.EventName, sessionCreationTime, eventDate)
-								resourceEntry.ClickOpsAccesses = append(resourceEntry.ClickOpsAccesses, types.ClickOpsAccess{
-									SessionID:   truncatedSessionID,
-									PersonEmail: email,
-									EventName:   event.EventName,
-									AccessTime:  sessionCreationTime,
-									EventCount:  1,
-									AccountID:   accountID,
-								})
-							}
-							resourceEntry.ClickOpsCount++
+				if sk != "" {
+					sessRef = identity.SessionRef(personKey, sk)
+					var exists bool
+					sess, exists = sessions[sessRef]
+					if !exists {
+						anchor := rg.anchor
+						if anchor == "" {
+							anchor = sk // win# sessions: the sticky window key is the anchor
 						}
+						sess = newSession(ns, personKey, sk, anchor, sessionType, roleARN, roleID, accountID)
+						if chainL != nil {
+							sess.AssumedFromSession = chainL.parentSessionRef
+							sess.AssumedFromRoleARN = chainL.parentRoleARN
+							sess.SessionTags = chainL.sessionTags
+							sess.SessionPolicy = chainL.sessionPolicy
+						}
+						if mcpL != nil {
+							sess.MCPResource = mcpL.mcpResource
+							sess.AgentAuthorizedBySession = mcpL.parentSessionRef
+						}
+						if loginL != nil && sessionType == SessionTypeLogin {
+							sess.LoginGrantedBySession = loginL.parentSessionRef
+						}
+						sessions[sessRef] = sess
+					}
+					accumulateSessionEvent(sess, event, resourceList)
+					addToSet(sessionServices, sessRef, event.EventSource)
+					if chainL != nil {
+						childEvents++
+						childRef = sessRef
 					}
 				}
 			}
 
-			addToSet(resourcePeople, resource, email)
-			addToSet(resourceSessions, resource, sessionMapKey)
-			if email != "" {
-				addToSet(personResources, email, resource)
+			if event.ErrorCode != "" {
+				log.Printf("EVENT_ERROR: event=%s:%s errorCode=%s person=%s", event.EventSource, event.EventName, event.ErrorCode, personKey)
 			}
-			if sessionMapKey != "" {
-				addToSet(sessionResources, sessionMapKey, resource)
+
+			// === Person ===
+			if rg.ok {
+				processPersonEvent(people, rg.person, event, eventDate)
+				addToSet(personAccounts, personKey, accountID)
+				addToSet(personRoles, personKey, roleARN)
+				addToSet(personServices, personKey, event.EventSource)
+				addToSet(personSessions, personKey, sessRef)
 			}
+
+			// === Account ===
 			if accountID != "" {
-				addToSet(accountResources, accountID, resource)
+				processAccountEvent(accounts, accountID, eventDate)
+				addToSet(accountPeople, accountID, personKey)
+				addToSet(accountSessions, accountID, sessRef)
+				addToSet(accountRoles, accountID, roleARN)
+				addToSet(accountServices, accountID, event.EventSource)
+			}
+
+			// === Role ===
+			if roleARN != "" {
+				if err := processRoleEvent(roles, event, roleARN, eventDate); err != nil {
+					log.Printf("WARNING: Failed to process role event: %v", err)
+				}
+				addToSet(rolePeople, roleARN, personKey)
+				addToSet(roleSessions, roleARN, sessRef)
+				addToSet(roleAccounts, roleARN, accountID)
+			}
+
+			// === Service ===
+			if err := processServiceEvent(services, event, roleARN, eventDate); err != nil {
+				log.Printf("WARNING: Failed to process service event: %v", err)
+			}
+			addToSet(servicePeople, event.EventSource, personKey)
+			addToSet(serviceSessions, event.EventSource, sessRef)
+			addToSet(serviceAccounts, event.EventSource, accountID)
+
+			// === Resources ===
+			for _, resource := range resourceList {
+				if err := processResourceEvent(resourceMap, event, resource, accountID, eventDate); err != nil {
+					log.Printf("WARNING: Failed to process resource event: %v", err)
+				}
+
+				// Track ClickOps operations: console modifications by the human
+				// (never service fan-out with the human's credentials).
+				if sess != nil && sess.SessionType == SessionTypeWeb &&
+					event.UserIdentity.InvokedBy == "" && session.IsClickOpsOperation(event.EventName) {
+					if resourceEntry, ok := resourceMap[resource]; ok {
+						found := false
+						for j := range resourceEntry.ClickOpsAccesses {
+							access := &resourceEntry.ClickOpsAccesses[j]
+							if access.SessionRef == sessRef && access.EventName == event.EventName {
+								access.EventCount++
+								found = true
+								break
+							}
+						}
+						if !found {
+							resourceEntry.ClickOpsAccesses = append(resourceEntry.ClickOpsAccesses, types.ClickOpsAccess{
+								SessionRef: sessRef,
+								PersonKey:  personKey,
+								EventName:  event.EventName,
+								AccessTime: sess.StartTime,
+								EventCount: 1,
+								AccountID:  accountID,
+							})
+						}
+						resourceEntry.ClickOpsCount++
+					}
+				}
+
+				addToSet(resourcePeople, resource, personKey)
+				addToSet(resourceSessions, resource, sessRef)
+				if personKey != "" {
+					addToSet(personResources, personKey, resource)
+				}
+				if sessRef != "" {
+					addToSet(sessionResources, sessRef, resource)
+				}
+				if accountID != "" {
+					addToSet(accountResources, accountID, resource)
+				}
+			}
+		}
+
+		// Parent bookkeeping for chained child sessions: bump chained counters
+		// and register the child ref on the parent session. Same-batch parents
+		// update in memory; prior-batch parents get a deferred DynamoDB update.
+		if chainL != nil && childRef != "" && childEvents > 0 && chainL.parentSessionRef != "" {
+			childRoleARN := chainL.assumedRoleARN
+			if parentSess, exists := sessions[chainL.parentSessionRef]; exists {
+				parentSess.ChainedEventCount += childEvents
+				appendUnique(&parentSess.ChainedRoles, childRoleARN)
+				appendUnique(&parentSess.ChainedSessionRefs, childRef)
+			} else {
+				deferredParentUpdates = append(deferredParentUpdates, parentUpdate{
+					parentRef:    chainL.parentSessionRef,
+					childRef:     childRef,
+					childRoleARN: childRoleARN,
+					eventCount:   childEvents,
+				})
 			}
 		}
 	}
@@ -799,12 +357,12 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		resource.PeopleCount = setLen(resourcePeople, rid)
 		resource.SessionsCount = setLen(resourceSessions, rid)
 	}
-	for email, person := range people {
-		person.AccountsCount = setLen(personAccounts, email)
-		person.RolesCount = setLen(personRoles, email)
-		person.ServicesCount = setLen(personServices, email)
-		person.ResourcesCount = setLen(personResources, email)
-		person.SessionsCount = setLen(personSessions, email)
+	for personKey, person := range people {
+		person.AccountsCount = setLen(personAccounts, personKey)
+		person.RolesCount = setLen(personRoles, personKey)
+		person.ServicesCount = setLen(personServices, personKey)
+		person.ResourcesCount = setLen(personResources, personKey)
+		person.SessionsCount = setLen(personSessions, personKey)
 	}
 	for sid, sess := range sessions {
 		sess.ServicesCount = setLen(sessionServices, sid)
@@ -818,22 +376,26 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		account.ResourcesCount = setLen(accountResources, aid)
 	}
 
-	// Rewrite ChainedSessionKeys from map keys to full session_start values so the
-	// CLI can do direct lookups without guessing the start time.
 	for _, sess := range sessions {
-		if len(sess.ChainedSessionKeys) == 0 {
-			continue
+		if sess.StartTime != "" && sess.EndTime != "" {
+			startTime, _ := time.Parse(time.RFC3339, sess.StartTime)
+			endTime, _ := time.Parse(time.RFC3339, sess.EndTime)
+			sess.DurationMinutes = int(endTime.Sub(startTime).Minutes())
 		}
-		resolved := make([]string, 0, len(sess.ChainedSessionKeys))
-		for _, mapKey := range sess.ChainedSessionKeys {
-			if child, ok := sessions[mapKey]; ok && child.SessionStart != "" {
-				resolved = append(resolved, child.SessionStart)
-			} else {
-				resolved = append(resolved, mapKey) // keep as-is if child not in this batch
-			}
-		}
-		sess.ChainedSessionKeys = resolved
 	}
+
+	// Log summary
+	log.Printf("=== Aggregation Summary ===")
+	log.Printf("Found %d unique people, %d sessions, %d roles, %d services, %d resources, %d accounts",
+		len(people), len(sessions), len(roles), len(services), len(resourceMap), len(accounts))
+	typeCounts := make(map[string]int)
+	for _, sess := range sessions {
+		typeCounts[sess.SessionType]++
+		log.Printf("Session: type=%s person=%s sk=%s role=%s account=%s events=%d start=%s",
+			sess.SessionType, sess.PersonKey, sess.SK, sess.RoleName, sess.AccountID, sess.EventsCount, sess.StartTime)
+	}
+	log.Printf("Session breakdown: cli=%d web=%d agent=%d login=%d",
+		typeCounts[SessionTypeCLI], typeCounts[SessionTypeWeb], typeCounts[SessionTypeAgent], typeCounts[SessionTypeLogin])
 
 	// Write aggregated data to DynamoDB (skip when client is nil, e.g. in tests)
 	if ddbClient == nil {
@@ -842,18 +404,6 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 	for _, role := range roles {
 		role.CustomerID = ns
-		eventNames := make([]string, 0, len(role.TopEventNames))
-		for k := range role.TopEventNames {
-			eventNames = append(eventNames, k)
-		}
-		deniedEventNames := make([]string, 0, len(role.TopDeniedEventNames))
-		for k := range role.TopDeniedEventNames {
-			deniedEventNames = append(deniedEventNames, k)
-		}
-		log.Printf("ROLE_WRITE_ATTEMPT: customerId=%s arn=%s events=%d top_event_names=%d services_count=%d resources_count=%d event_names=%v",
-			role.CustomerID, role.ARN, role.TotalEvents, len(role.TopEventNames), len(role.ServicesCount), len(role.ResourcesCount), eventNames)
-		log.Printf("ROLE_WRITE_DENIED: arn=%s total_denied_events=%d denied_event_names=%v denied_resources_count=%d",
-			role.ARN, role.TotalDeniedEvents, deniedEventNames, len(role.DeniedResourceAccesses))
 		if err := ddblib.WriteRoleToDynamoDB(ctx, ddbClient, cfg.Tables.Roles, role); err != nil {
 			log.Printf("ERROR: Failed to write role: %v", err)
 		}
@@ -873,33 +423,6 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		}
 	}
 
-	// Log summary
-	log.Printf("=== Aggregation Summary ===")
-	log.Printf("Found %d unique people, %d sessions, %d roles, %d services, %d resources, %d accounts",
-		len(people), len(sessions), len(roles), len(services), len(resourceMap), len(accounts))
-
-	cliSessions := 0
-	webSessions := 0
-	for _, sess := range sessions {
-		if sess.SessionType == "cli-sdk" {
-			cliSessions++
-		} else if sess.SessionType == "web-console" {
-			webSessions++
-		}
-	}
-	log.Printf("Session breakdown: %d CLI/SDK sessions, %d web console sessions", cliSessions, webSessions)
-
-	for _, sess := range sessions {
-		log.Printf("Session: type=%s email=%s role=%s account=%s events=%d startTime=%s",
-			sess.SessionType, sess.PersonEmail, sess.RoleName, sess.AccountID, sess.EventsCount, sess.StartTime)
-	}
-	for _, role := range roles {
-		log.Printf("Role: arn=%s account=%s events=%d", role.ARN, role.AccountID, role.TotalEvents)
-	}
-	for _, account := range accounts {
-		log.Printf("Account: id=%s events=%d people=%d sessions=%d", account.AccountID, account.EventsCount, account.PeopleCount, account.SessionsCount)
-	}
-
 	for _, person := range people {
 		person.CustomerID = ns
 		if err := ddblib.WritePersonToDynamoDB(ctx, ddbClient, cfg.Tables.People, person); err != nil {
@@ -908,29 +431,34 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	}
 
 	for _, sess := range sessions {
-		if sess.StartTime != "" && sess.EndTime != "" {
-			startTime, _ := time.Parse(time.RFC3339, sess.StartTime)
-			endTime, _ := time.Parse(time.RFC3339, sess.EndTime)
-			sess.DurationMinutes = int(endTime.Sub(startTime).Minutes())
+		var err error
+		if strings.HasPrefix(sess.SK, "win#") {
+			err = ddblib.WriteWindowedSession(ctx, ddbClient, cfg.Tables.Sessions, sess, cfg.idleGap())
+		} else {
+			err = ddblib.WriteSession(ctx, ddbClient, cfg.Tables.Sessions, sess)
 		}
-		sess.CustomerID = ns
-		if err := ddblib.WriteSessionToDynamoDB(ctx, ddbClient, cfg.Tables.Sessions, sess); err != nil {
-			log.Printf("ERROR: Failed to write session: %v", err)
+		if err != nil {
+			log.Printf("ERROR: Failed to write session %s: %v", sess.SK, err)
 		}
 	}
 
-	// Flush deferred parent chaining updates (parent sessions ingested in prior batches).
+	// Persist identity links so later batches can resolve tier 2 and keep anchor
+	// continuity (the read side lands with the §5 link-layer port).
+	if cfg.Tables.IdentityLinks != "" {
+		writeIdentityLinks(ctx, ddbClient, cfg.Tables.IdentityLinks, resolved, links)
+	}
+
+	// Flush deferred parent chaining updates (parents ingested in prior batches).
 	if len(deferredParentUpdates) > 0 && cfg.Tables.Sessions != "" {
-		// Deduplicate: only send one update per (parent, child) pair.
 		seen := make(map[string]bool)
 		for _, u := range deferredParentUpdates {
-			key := u.parentSessionMapKey + "|" + u.childSessionMapKey
+			key := u.parentRef + "|" + u.childRef
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
 			if err := ddblib.UpdateParentSessionChaining(ctx, ddbClient, cfg.Tables.Sessions, ns,
-				u.parentSessionMapKey, u.childSessionMapKey, u.childRoleARN); err != nil {
+				u.parentRef, u.childRef, u.childRoleARN, u.eventCount); err != nil {
 				log.Printf("ERROR: Failed to update parent session chaining: %v", err)
 			}
 		}
@@ -946,660 +474,4 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	log.Printf("Processed %d roles, %d services, %d resources, %d people, %d sessions, %d accounts",
 		len(roles), len(services), len(resourceMap), len(people), len(sessions), len(accounts))
 	return sessions, nil
-}
-
-// addToSet adds value to a nested set map. Skips empty values.
-func addToSet(m map[string]map[string]bool, key, value string) {
-	if key == "" || value == "" {
-		return
-	}
-	if m[key] == nil {
-		m[key] = make(map[string]bool)
-	}
-	m[key][value] = true
-}
-
-// setLen returns the size of a set in the map, or 0 if absent.
-func setLen(m map[string]map[string]bool, key string) int {
-	if s, ok := m[key]; ok {
-		return len(s)
-	}
-	return 0
-}
-
-// processPersonEvent tracks aggregated data for a person.
-func processPersonEvent(people map[string]*types.DynamoDBPerson, email, accountID, roleARN, eventSource, eventDate string) {
-	person, exists := people[email]
-	if !exists {
-		person = &types.DynamoDBPerson{
-			Email:     email,
-			FirstSeen: eventDate,
-			LastSeen:  eventDate,
-		}
-		people[email] = person
-	}
-	person.LastSeen = eventDate
-	person.EventsCount++
-}
-
-// processSessionEvent tracks aggregated data for a session.
-// forcedSessionType, when non-empty, overrides user-agent classification and guarantees the
-// session is created even for an unrecognized user agent. Used for AWS MCP Server agent traffic,
-// which is identified by its aws:SignInSessionArn rather than its user agent.
-func processSessionEvent(sessions map[string]*types.DynamoDBSessionAggregated, people map[string]*types.DynamoDBPerson, ns, sessionMapKey, truncatedSessionID, email, roleID, accountID, roleARN, roleName, sessionCreationTime, eventTime, sourceIP, userAgent, eventSource, eventName, errorCode, errorMessage string, resourceList []string, eventDate, forcedSessionType string) {
-	sess, exists := sessions[sessionMapKey]
-	if !exists {
-		displayName := ""
-		if person, personExists := people[email]; personExists {
-			displayName = person.DisplayName
-		}
-
-		sessionType := forcedSessionType
-		if sessionType == "" {
-			sessionType = session.ClassifySessionType(userAgent)
-		}
-		if sessionType == "" {
-			log.Printf("SKIPPED: Unrecognized session type - email:%s role:%s userAgent:%s", email, roleID, userAgent)
-			return
-		}
-
-		sess = &types.DynamoDBSessionAggregated{
-			CustomerID:              ns,
-			SessionID:               truncatedSessionID,
-			SessionType:             sessionType,
-			SessionStart:            sessionCreationTime + "#" + truncatedSessionID,
-			StartTime:               sessionCreationTime,
-			PersonEmail:             email,
-			PersonDisplayName:       displayName,
-			AccountID:               accountID,
-			RoleARN:                 roleARN,
-			RoleName:                roleName,
-			SourceIPs:               []string{},
-			UserAgents:              []string{},
-			EventCounts:             make(map[string]int),
-			ResourcesAccessed:       make(map[string]int),
-			ResourceAccesses:        []types.ResourceAccess{},
-			DeniedEventCount:        0,
-			DeniedEventCounts:       make(map[string]int),
-			DeniedResourcesAccessed: make(map[string]int),
-			DeniedResourceAccesses:  []types.ResourceAccess{},
-			DeniedEventAccesses:     []types.EventAccess{},
-		}
-		sessions[sessionMapKey] = sess
-	}
-
-	sess.EndTime = eventTime
-
-	isAccessDenied := session.IsAccessDeniedError(errorCode)
-	eventKey := fmt.Sprintf("%s:%s", eventSource, eventName)
-
-	if isAccessDenied {
-		policyInfo := session.ExtractPolicyInfo(errorMessage)
-		if policyInfo.PolicyARN != "" {
-			log.Printf("ACCESS_DENIED: session=%s event=%s errorCode=%s policy_arn=%s policy_type=%s errorMessage=%q", sessionMapKey, eventKey, errorCode, policyInfo.PolicyARN, policyInfo.PolicyType, errorMessage)
-		} else {
-			log.Printf("ACCESS_DENIED: session=%s event=%s errorCode=%s errorMessage=%q", sessionMapKey, eventKey, errorCode, errorMessage)
-		}
-		sess.DeniedEventCount++
-		sess.DeniedEventCounts[eventKey]++
-
-		if len(resourceList) > 0 {
-			for _, resource := range resourceList {
-				sess.DeniedResourcesAccessed[resource]++
-				found := false
-				for i := range sess.DeniedResourceAccesses {
-					if sess.DeniedResourceAccesses[i].Resource == resource &&
-						sess.DeniedResourceAccesses[i].Service == eventSource &&
-						sess.DeniedResourceAccesses[i].EventName == eventName &&
-						sess.DeniedResourceAccesses[i].PolicyARN == policyInfo.PolicyARN {
-						sess.DeniedResourceAccesses[i].Count++
-						found = true
-						break
-					}
-				}
-				if !found {
-					sess.DeniedResourceAccesses = append(sess.DeniedResourceAccesses, types.ResourceAccess{
-						Resource:     resource,
-						Service:      eventSource,
-						EventName:    eventName,
-						Count:        1,
-						PolicyARN:    policyInfo.PolicyARN,
-						PolicyType:   policyInfo.PolicyType,
-						ErrorMessage: errorMessage,
-					})
-				}
-			}
-		} else {
-			found := false
-			for i := range sess.DeniedEventAccesses {
-				if sess.DeniedEventAccesses[i].Service == eventSource &&
-					sess.DeniedEventAccesses[i].EventName == eventName &&
-					sess.DeniedEventAccesses[i].PolicyARN == policyInfo.PolicyARN {
-					sess.DeniedEventAccesses[i].Count++
-					found = true
-					break
-				}
-			}
-			if !found {
-				sess.DeniedEventAccesses = append(sess.DeniedEventAccesses, types.EventAccess{
-					Service:      eventSource,
-					EventName:    eventName,
-					Count:        1,
-					PolicyARN:    policyInfo.PolicyARN,
-					PolicyType:   policyInfo.PolicyType,
-					ErrorMessage: errorMessage,
-				})
-			}
-		}
-	} else {
-		sess.EventsCount++
-		sess.EventCounts[eventKey]++
-
-		for _, resource := range resourceList {
-			sess.ResourcesAccessed[resource]++
-			found := false
-			for i := range sess.ResourceAccesses {
-				if sess.ResourceAccesses[i].Resource == resource &&
-					sess.ResourceAccesses[i].Service == eventSource &&
-					sess.ResourceAccesses[i].EventName == eventName {
-					sess.ResourceAccesses[i].Count++
-					found = true
-					break
-				}
-			}
-			if !found {
-				sess.ResourceAccesses = append(sess.ResourceAccesses, types.ResourceAccess{
-					Resource:  resource,
-					Service:   eventSource,
-					EventName: eventName,
-					Count:     1,
-				})
-			}
-		}
-	}
-
-	// Track ClickOps operations
-	if !isAccessDenied && sess.SessionType == "web-console" && session.IsClickOpsOperation(eventName) {
-		sess.ClickOpsEventCount++
-		if sess.ClickOpsEventCounts == nil {
-			sess.ClickOpsEventCounts = make(map[string]int)
-		}
-		sess.ClickOpsEventCounts[eventName]++
-	}
-
-	// Add source IP if valid and not duplicate
-	if sourceIP != "" && session.IsValidSourceIP(sourceIP) {
-		found := false
-		for _, ip := range sess.SourceIPs {
-			if ip == sourceIP {
-				found = true
-				break
-			}
-		}
-		if !found {
-			sess.SourceIPs = append(sess.SourceIPs, sourceIP)
-		}
-	}
-
-	// Add user agent if valid and not duplicate
-	if userAgent != "" && session.IsValidUserAgent(userAgent) {
-		found := false
-		for _, ua := range sess.UserAgents {
-			if ua == userAgent {
-				found = true
-				break
-			}
-		}
-		if !found {
-			sess.UserAgents = append(sess.UserAgents, userAgent)
-		}
-	}
-}
-
-// processChainedSessionEvent accumulates events into a child (chained role) session record.
-// The child session is keyed by childSessionMapKey (stable per access key ID) and stores
-// a back-reference to the parent human session via ParentSessionKey.
-func processChainedSessionEvent(
-	sessions map[string]*types.DynamoDBSessionAggregated,
-	ns, childSessionMapKey, childSessionID,
-	parentEmail, roleARN, roleName, accountID,
-	parentSessionKey, startTime, eventTime, sourceIP, userAgent,
-	sessionType, eventSource, eventName, errorCode, errorMessage string,
-	resourceList []string,
-	eventDate string,
-	sessionTags map[string]string,
-	sessionPolicy string,
-) {
-	sess, exists := sessions[childSessionMapKey]
-	if !exists {
-		sess = &types.DynamoDBSessionAggregated{
-			CustomerID:              ns,
-			SessionID:               childSessionID,
-			SessionType:             sessionType,
-			SessionStart:            startTime + "#" + childSessionID,
-			StartTime:               startTime,
-			PersonEmail:             parentEmail, // shows whose session originated this
-			AccountID:               accountID,
-			RoleARN:                 roleARN,
-			RoleName:                roleName,
-			ParentSessionKey:        parentSessionKey,
-			ParentEmail:             parentEmail,
-			SessionTags:             sessionTags,
-			SessionPolicy:           sessionPolicy,
-			SourceIPs:               []string{},
-			UserAgents:              []string{},
-			EventCounts:             make(map[string]int),
-			ResourcesAccessed:       make(map[string]int),
-			ResourceAccesses:        []types.ResourceAccess{},
-			DeniedEventCounts:       make(map[string]int),
-			DeniedResourcesAccessed: make(map[string]int),
-			DeniedResourceAccesses:  []types.ResourceAccess{},
-			DeniedEventAccesses:     []types.EventAccess{},
-		}
-		sessions[childSessionMapKey] = sess
-	}
-
-	sess.EndTime = eventTime
-	isAccessDenied := session.IsAccessDeniedError(errorCode)
-	eventKey := fmt.Sprintf("%s:%s", eventSource, eventName)
-
-	if isAccessDenied {
-		policyInfo := session.ExtractPolicyInfo(errorMessage)
-		sess.DeniedEventCount++
-		sess.DeniedEventCounts[eventKey]++
-		if len(resourceList) > 0 {
-			for _, resource := range resourceList {
-				sess.DeniedResourcesAccessed[resource]++
-				found := false
-				for i := range sess.DeniedResourceAccesses {
-					if sess.DeniedResourceAccesses[i].Resource == resource &&
-						sess.DeniedResourceAccesses[i].Service == eventSource &&
-						sess.DeniedResourceAccesses[i].EventName == eventName {
-						sess.DeniedResourceAccesses[i].Count++
-						found = true
-						break
-					}
-				}
-				if !found {
-					sess.DeniedResourceAccesses = append(sess.DeniedResourceAccesses, types.ResourceAccess{
-						Resource:     resource,
-						Service:      eventSource,
-						EventName:    eventName,
-						Count:        1,
-						PolicyARN:    policyInfo.PolicyARN,
-						PolicyType:   policyInfo.PolicyType,
-						ErrorMessage: errorMessage,
-					})
-				}
-			}
-		} else {
-			found := false
-			for i := range sess.DeniedEventAccesses {
-				if sess.DeniedEventAccesses[i].Service == eventSource &&
-					sess.DeniedEventAccesses[i].EventName == eventName &&
-					sess.DeniedEventAccesses[i].PolicyARN == policyInfo.PolicyARN {
-					sess.DeniedEventAccesses[i].Count++
-					found = true
-					break
-				}
-			}
-			if !found {
-				sess.DeniedEventAccesses = append(sess.DeniedEventAccesses, types.EventAccess{
-					Service:      eventSource,
-					EventName:    eventName,
-					Count:        1,
-					PolicyARN:    policyInfo.PolicyARN,
-					PolicyType:   policyInfo.PolicyType,
-					ErrorMessage: errorMessage,
-				})
-			}
-		}
-	} else {
-		sess.EventsCount++
-		sess.EventCounts[eventKey]++
-		for _, resource := range resourceList {
-			sess.ResourcesAccessed[resource]++
-			found := false
-			for i := range sess.ResourceAccesses {
-				if sess.ResourceAccesses[i].Resource == resource &&
-					sess.ResourceAccesses[i].Service == eventSource &&
-					sess.ResourceAccesses[i].EventName == eventName {
-					sess.ResourceAccesses[i].Count++
-					found = true
-					break
-				}
-			}
-			if !found {
-				sess.ResourceAccesses = append(sess.ResourceAccesses, types.ResourceAccess{
-					Resource:  resource,
-					Service:   eventSource,
-					EventName: eventName,
-					Count:     1,
-				})
-			}
-		}
-	}
-
-	if sourceIP != "" && session.IsValidSourceIP(sourceIP) {
-		found := false
-		for _, ip := range sess.SourceIPs {
-			if ip == sourceIP {
-				found = true
-				break
-			}
-		}
-		if !found {
-			sess.SourceIPs = append(sess.SourceIPs, sourceIP)
-		}
-	}
-
-	if userAgent != "" && session.IsValidUserAgent(userAgent) {
-		found := false
-		for _, ua := range sess.UserAgents {
-			if ua == userAgent {
-				found = true
-				break
-			}
-		}
-		if !found {
-			sess.UserAgents = append(sess.UserAgents, userAgent)
-		}
-	}
-}
-
-// processAccountEvent tracks aggregated data for an account.
-func processAccountEvent(accounts map[string]*types.DynamoDBAccount, accountID, email, sessionID, roleARN, eventSource, eventDate string) {
-	account, exists := accounts[accountID]
-	if !exists {
-		account = &types.DynamoDBAccount{
-			AccountID: accountID,
-			FirstSeen: eventDate,
-			LastSeen:  eventDate,
-		}
-		accounts[accountID] = account
-	}
-	account.LastSeen = eventDate
-	account.EventsCount++
-}
-
-// processRoleEvent aggregates an event for a role.
-func processRoleEvent(roles map[string]*types.DynamoDBRole, event types.CloudTrailRecord, roleARN string, eventDate string) error {
-	role, exists := roles[roleARN]
-	if !exists {
-		role = &types.DynamoDBRole{
-			ARN:                    roleARN,
-			Name:                   session.ExtractRoleNameFromARN(roleARN),
-			AccountID:              session.ExtractAccountIDFromARN(roleARN),
-			FirstSeen:              eventDate,
-			LastSeen:               eventDate,
-			TotalEvents:            0,
-			ServicesCount:          make(map[string]int),
-			ResourcesCount:         make(map[string]int),
-			TopEventNames:          make(map[string]int),
-			ResourceAccesses:       []types.ResourceAccessItem{},
-			TotalDeniedEvents:      0,
-			TopDeniedEventNames:    make(map[string]int),
-			DeniedResourceAccesses: []types.ResourceAccessItem{},
-			DeniedEventAccesses:    []types.EventAccessItem{},
-		}
-		roles[roleARN] = role
-	}
-
-	isAccessDenied := session.IsAccessDeniedError(event.ErrorCode)
-	eventKey := event.EventSource + ":" + event.EventName
-
-	if isAccessDenied {
-		policyInfo := session.ExtractPolicyInfo(event.ErrorMessage)
-		if policyInfo.PolicyARN != "" {
-			log.Printf("ROLE_ACCESS_DENIED: role=%s event=%s errorCode=%s policy_arn=%s policy_type=%s errorMessage=%q", roleARN, eventKey, event.ErrorCode, policyInfo.PolicyARN, policyInfo.PolicyType, event.ErrorMessage)
-		} else {
-			log.Printf("ROLE_ACCESS_DENIED: role=%s event=%s errorCode=%s errorMessage=%q", roleARN, eventKey, event.ErrorCode, event.ErrorMessage)
-		}
-
-		role.TotalDeniedEvents++
-		role.TopDeniedEventNames[eventKey]++
-
-		resourceList := resources.ExtractResources(event)
-		if len(resourceList) > 0 {
-			for _, resource := range resourceList {
-				found := false
-				for i := range role.DeniedResourceAccesses {
-					ra := &role.DeniedResourceAccesses[i]
-					if ra.Resource == resource && ra.EventName == event.EventName && ra.PolicyARN == policyInfo.PolicyARN {
-						ra.Count++
-						found = true
-						break
-					}
-				}
-				if !found {
-					parts := strings.Split(resource, ":")
-					svc := event.EventSource
-					if len(parts) > 0 {
-						svc = parts[0] + ".amazonaws.com"
-					}
-					role.DeniedResourceAccesses = append(role.DeniedResourceAccesses, types.ResourceAccessItem{
-						Resource:     resource,
-						Service:      svc,
-						EventName:    event.EventName,
-						Count:        1,
-						PolicyARN:    policyInfo.PolicyARN,
-						PolicyType:   policyInfo.PolicyType,
-						ErrorMessage: event.ErrorMessage,
-					})
-				}
-			}
-		} else {
-			found := false
-			for i := range role.DeniedEventAccesses {
-				ea := &role.DeniedEventAccesses[i]
-				if ea.Service == event.EventSource && ea.EventName == event.EventName && ea.PolicyARN == policyInfo.PolicyARN {
-					ea.Count++
-					found = true
-					break
-				}
-			}
-			if !found {
-				role.DeniedEventAccesses = append(role.DeniedEventAccesses, types.EventAccessItem{
-					Service:      event.EventSource,
-					EventName:    event.EventName,
-					Count:        1,
-					PolicyARN:    policyInfo.PolicyARN,
-					PolicyType:   policyInfo.PolicyType,
-					ErrorMessage: event.ErrorMessage,
-				})
-			}
-		}
-	} else {
-		role.TotalEvents++
-		role.ServicesCount[event.EventSource]++
-		role.TopEventNames[eventKey]++
-
-		resourceList := resources.ExtractResources(event)
-		for _, resource := range resourceList {
-			role.ResourcesCount[resource]++
-			found := false
-			for i := range role.ResourceAccesses {
-				ra := &role.ResourceAccesses[i]
-				if ra.Resource == resource && ra.EventName == event.EventName {
-					ra.Count++
-					found = true
-					break
-				}
-			}
-			if !found {
-				parts := strings.Split(resource, ":")
-				svc := event.EventSource
-				if len(parts) > 0 {
-					svc = parts[0] + ".amazonaws.com"
-				}
-				role.ResourceAccesses = append(role.ResourceAccesses, types.ResourceAccessItem{
-					Resource:  resource,
-					Service:   svc,
-					EventName: event.EventName,
-					Count:     1,
-				})
-			}
-		}
-	}
-
-	role.LastSeen = eventDate
-	return nil
-}
-
-// processServiceEvent aggregates an event for a service.
-func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event types.CloudTrailRecord, roleARN string, eventDate string) error {
-	eventSource := event.EventSource
-	svc, exists := serviceMap[eventSource]
-	if !exists {
-		svc = &types.DynamoDBService{
-			EventSource:         eventSource,
-			DisplayName:         resources.GetServiceDisplayName(eventSource),
-			Category:            resources.GetServiceCategory(eventSource),
-			FirstSeen:           eventDate,
-			LastSeen:            eventDate,
-			TotalEvents:         0,
-			TopEventNames:       make(map[string]int),
-			TotalDeniedEvents:   0,
-			TopDeniedEventNames: make(map[string]int),
-		}
-		serviceMap[eventSource] = svc
-	}
-
-	isAccessDenied := session.IsAccessDeniedError(event.ErrorCode)
-	if isAccessDenied {
-		svc.TotalDeniedEvents++
-		svc.TopDeniedEventNames[event.EventName]++
-	} else {
-		svc.TotalEvents++
-		svc.TopEventNames[event.EventName]++
-	}
-
-	svc.LastSeen = eventDate
-
-	if roleARN != "" {
-		if svc.RolesUsing == nil {
-			svc.RolesUsing = []string{}
-		}
-		found := false
-		for _, existingRole := range svc.RolesUsing {
-			if existingRole == roleARN {
-				found = true
-				break
-			}
-		}
-		if !found {
-			svc.RolesUsing = append(svc.RolesUsing, roleARN)
-		}
-	}
-
-	return nil
-}
-
-// findMatchingCloudTrailResource attempts to match a simplified resource identifier
-// with an entry in the CloudTrail Resources array.
-func findMatchingCloudTrailResource(event types.CloudTrailRecord, resourceIdentifier string) *types.CloudTrailResource {
-	if len(event.Resources) == 0 {
-		return nil
-	}
-	if len(event.Resources) == 1 {
-		return &event.Resources[0]
-	}
-
-	parts := strings.Split(resourceIdentifier, ":")
-	if len(parts) >= 3 {
-		resourceName := parts[2]
-		for i := range event.Resources {
-			if strings.Contains(event.Resources[i].ARN, resourceName) {
-				return &event.Resources[i]
-			}
-		}
-	}
-
-	return &event.Resources[0]
-}
-
-// processResourceEvent aggregates an event for a resource.
-func processResourceEvent(resourceMap map[string]*types.DynamoDBResource, event types.CloudTrailRecord, resourceIdentifier string, accountID string, eventDate string) error {
-	resource, exists := resourceMap[resourceIdentifier]
-	if !exists {
-		parts := strings.Split(resourceIdentifier, ":")
-		resourceType := "unknown"
-		resourceName := resourceIdentifier
-
-		if len(parts) >= 3 {
-			resourceType = parts[0] + ":" + parts[1]
-			resourceName = parts[2]
-		}
-
-		ctResource := findMatchingCloudTrailResource(event, resourceIdentifier)
-		resourceARN := ""
-		resourceAccountID := accountID
-
-		if ctResource != nil {
-			if ctResource.AccountID != "" {
-				resourceAccountID = ctResource.AccountID
-			}
-			if ctResource.ARN != "" {
-				resourceARN = ctResource.ARN
-			}
-		}
-
-		resource = &types.DynamoDBResource{
-			Identifier:          resourceIdentifier,
-			Type:                resourceType,
-			Name:                resourceName,
-			AccountID:           resourceAccountID,
-			ARN:                 resourceARN,
-			FirstSeen:           eventDate,
-			LastSeen:            eventDate,
-			TotalEvents:         0,
-			TopEventNames:       make(map[string]int),
-			TotalDeniedEvents:   0,
-			TopDeniedEventNames: make(map[string]int),
-		}
-		resourceMap[resourceIdentifier] = resource
-	}
-
-	isAccessDenied := session.IsAccessDeniedError(event.ErrorCode)
-	if isAccessDenied {
-		resource.TotalDeniedEvents++
-		resource.TopDeniedEventNames[event.EventName]++
-	} else {
-		resource.TotalEvents++
-		resource.TopEventNames[event.EventName]++
-	}
-
-	resource.LastSeen = eventDate
-
-	if roleARN := session.GetRoleARN(event); roleARN != "" {
-		if resource.RolesUsing == nil {
-			resource.RolesUsing = []string{}
-		}
-		found := false
-		for _, existingRole := range resource.RolesUsing {
-			if existingRole == roleARN {
-				found = true
-				break
-			}
-		}
-		if !found {
-			resource.RolesUsing = append(resource.RolesUsing, roleARN)
-		}
-	}
-
-	if resource.ServicesUsed == nil {
-		resource.ServicesUsed = []string{}
-	}
-	found := false
-	for _, existingService := range resource.ServicesUsed {
-		if existingService == event.EventSource {
-			found = true
-			break
-		}
-	}
-	if !found {
-		resource.ServicesUsed = append(resource.ServicesUsed, event.EventSource)
-	}
-
-	return nil
 }
