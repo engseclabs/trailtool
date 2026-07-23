@@ -108,18 +108,34 @@ func credContinuityPKs(g identity.Group) []string {
 	return pks
 }
 
+// switchRoleBackendUA reports whether a user agent is the AWS Switch-Role
+// backend's signature — "AWS Signin, aws-internal/…". This is the only signal
+// that distinguishes a console Switch-Role AssumeRole (which must fold into its
+// console session) from a genuinely vended credential that merely shares the
+// console session's principalId#creationDate (aws login — see
+// sameSessionWebAnchor). The Switch-Role backend, not a browser or the CLI,
+// emits this UA.
+func switchRoleBackendUA(ua string) bool {
+	return strings.HasPrefix(session.NormalizeUserAgent(ua), "AWS Signin")
+}
+
 // sameSessionWebAnchor returns a web# anchor a cd-keyed continuity link records
 // for the group's OWN principalId#creationDate — the console session this
-// credential belongs to. It fires only when some event in the group carries the
-// exact principalId#creationDate the link is keyed on, so it can never adopt a
-// web# anchor from a different session (a separately vended credential — aws
-// login, an agent AssumeRole — has its own principalId and never matches). Used
-// to fold a console Switch-Role AssumeRole (backend UA "AWS Signin,
-// aws-internal/…", no console flag → ak#/key#) back into the web# console
-// session whose per-request credential issued it. Returns "" when no such link
-// exists.
+// credential belongs to. It fires only for a console Switch-Role AssumeRole: an
+// event carrying the exact principalId#creationDate the web# link is keyed on
+// AND the Switch-Role backend UA ("AWS Signin, aws-internal/…").
+//
+// The principalId#creationDate match alone is NOT enough: aws login vends its
+// CLI credential under the authorizing console session's own principalId and
+// creationDate (same role, same second), so that guard would wrongly fold the
+// vended key# session into the console web# session. The backend-UA requirement
+// is what separates the two — the vended credential carries a normal aws-cli UA,
+// never "AWS Signin". Returns "" when no such event exists.
 func sameSessionWebAnchor(links map[string]*link, g identity.Group) string {
 	for _, e := range g.Events {
+		if !switchRoleBackendUA(e.UserAgent) {
+			continue
+		}
 		cd := session.GetSessionCreationTime(e)
 		if cd == "" || e.UserIdentity.PrincipalID == "" {
 			continue
