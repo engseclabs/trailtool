@@ -108,6 +108,30 @@ func credContinuityPKs(g identity.Group) []string {
 	return pks
 }
 
+// sameSessionWebAnchor returns a web# anchor a cd-keyed continuity link records
+// for the group's OWN principalId#creationDate — the console session this
+// credential belongs to. It fires only when some event in the group carries the
+// exact principalId#creationDate the link is keyed on, so it can never adopt a
+// web# anchor from a different session (a separately vended credential — aws
+// login, an agent AssumeRole — has its own principalId and never matches). Used
+// to fold a console Switch-Role AssumeRole (backend UA "AWS Signin,
+// aws-internal/…", no console flag → ak#/key#) back into the web# console
+// session whose per-request credential issued it. Returns "" when no such link
+// exists.
+func sameSessionWebAnchor(links map[string]*link, g identity.Group) string {
+	for _, e := range g.Events {
+		cd := session.GetSessionCreationTime(e)
+		if cd == "" || e.UserIdentity.PrincipalID == "" {
+			continue
+		}
+		pk := "cred#" + e.UserIdentity.PrincipalID + "#" + cd
+		if l, ok := links[pk]; ok && l.kind == linkCred && strings.HasPrefix(l.anchor, "web#") {
+			return l.anchor
+		}
+	}
+	return ""
+}
+
 // continuityAnchor applies anchor continuity (§3.1) to a group's cascade
 // decision and returns the final anchor:
 //
@@ -115,7 +139,12 @@ func credContinuityPKs(g identity.Group) []string {
 //     credential, so no other credential can have written it) is adopted
 //     unconditionally: the anchor decided when this credential first resolved
 //     wins, so one credential can never split across two anchors when
-//     anchor-deciding fields (signInSessionArn) land only in some batches.
+//     anchor-deciding fields (signInSessionArn) land only in some batches. The
+//     one exception is a console Switch-Role AssumeRole: its backend
+//     ("AWS Signin, aws-internal/…") key# credential shares the console
+//     session's own principalId#creationDate, so a same-session web# link folds
+//     it back into that console session (sameSessionWebAnchor) rather than
+//     letting it split off as a phantom key# session that mis-parents the child.
 //   - Everything else is rank-guarded — a link may only move the group UP the
 //     cascade order. rc# groups share their pk namespace with cd-keyed
 //     associative links (cred#<principalId>#<creationDate>), so a console
@@ -130,6 +159,16 @@ func credContinuityPKs(g identity.Group) []string {
 func continuityAnchor(links map[string]*link, g identity.Group, computed string) string {
 	ownPK := credLinkPK(g.Key)
 	if strings.HasPrefix(g.Key, "ak#") {
+		// A console Switch-Role AssumeRole is a console per-request credential —
+		// its principalId#creationDate is the console session's own, so a
+		// same-session web# link outranks this credential's split-off key#
+		// anchor and reunites them. Guarded to the group's own
+		// principalId#creationDate, so a genuinely separate vended credential
+		// (agent AssumeRole, aws login) — which carries a different principalId —
+		// is never folded and keeps its key# session.
+		if web := sameSessionWebAnchor(links, g); web != "" {
+			return web
+		}
 		if l, ok := links[ownPK]; ok && l.kind == linkCred && l.anchor != "" {
 			return l.anchor
 		}
