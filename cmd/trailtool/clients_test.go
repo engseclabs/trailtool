@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/engseclabs/trailtool/core/models"
@@ -56,12 +57,6 @@ func TestTopCommands(t *testing.T) {
 			want:     "PutObject (18), CreateBucket (2), DeleteFunction (1)",
 		},
 		{
-			name:     "ua prefix stripped for display",
-			commands: map[string]int{"ua:s3.cp": 3, "PutObject": 1},
-			max:      5,
-			want:     "s3.cp (3), PutObject (1)",
-		},
-		{
 			name:     "capped at max, ties broken by name",
 			commands: map[string]int{"A": 1, "B": 1, "C": 1},
 			max:      2,
@@ -80,5 +75,22 @@ func TestTopCommands(t *testing.T) {
 				t.Errorf("topCommands() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSplitCommandNamespaces(t *testing.T) {
+	api, client := splitCommandNamespaces(map[string]int{
+		"PutObject": 18,
+		"GetObject": 4,
+		"ua:s3.cp":  12,
+		"ua:s3.rb":  1,
+	})
+	wantAPI := map[string]int{"PutObject": 18, "GetObject": 4}
+	wantClient := map[string]int{"s3.cp": 12, "s3.rb": 1} // "ua:" stripped
+	if !reflect.DeepEqual(api, wantAPI) {
+		t.Errorf("apiEvents = %v, want %v", api, wantAPI)
+	}
+	if !reflect.DeepEqual(client, wantClient) {
+		t.Errorf("clientCmds = %v, want %v", client, wantClient)
 	}
 }
