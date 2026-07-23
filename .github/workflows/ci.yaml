@@ -19,11 +19,26 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Vet
+      - name: Vet (root module)
         run: go vet ./...
 
-      - name: Test
+      - name: Test (root module)
         run: go test ./...
 
       - name: Build
         run: go build ./cmd/trailtool/
+
+      # ingestor/ is a separate Go module, so the root `./...` above never
+      # descends into it. Run its vet/test explicitly or its packages (parser,
+      # aggregator, session, dynamodb) go unchecked in CI.
+      - name: Vet (ingestor module)
+        working-directory: ingestor
+        run: go vet ./...
+
+      - name: Test (ingestor module)
+        working-directory: ingestor
+        run: go test ./...
+
+      - name: Build (ingestor)
+        working-directory: ingestor
+        run: go build ./...
