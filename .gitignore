@@ -9,7 +9,9 @@ bootstrap.zip
 
 # Go build artifacts
 ingestor/ingestor
-trailtool
+# Anchored to repo root: the `go build ./cmd/trailtool/` binary lands at ./trailtool.
+# An unanchored `trailtool` would also ignore the cmd/trailtool/ source directory.
+/trailtool
 
 # SAM build artifacts
 .aws-sam/
