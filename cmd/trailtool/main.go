@@ -371,6 +371,98 @@ func shortRoleName(name string) string {
 	return name
 }
 
+// printClients renders the session's per-client user-agent aggregates: one block
+// per client with identity (name/version), platform, event counts, first/last
+// seen, and top commands. Silent when the session carries no clients (records
+// ingested before client aggregation, or service-only traffic).
+func printClients(clients []models.ClientAggregate) {
+	if len(clients) == 0 {
+		return
+	}
+
+	// Deterministic order: most active first, ties broken by key.
+	sorted := make([]models.ClientAggregate, len(clients))
+	copy(sorted, clients)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].TotalEventCount != sorted[j].TotalEventCount {
+			return sorted[i].TotalEventCount > sorted[j].TotalEventCount
+		}
+		return sorted[i].Key < sorted[j].Key
+	})
+
+	fmt.Printf("\nClients (%d):\n", len(sorted))
+	for _, c := range sorted {
+		name := c.Name
+		if name == "" {
+			name = "(unknown)"
+		}
+		head := name
+		if c.Version != "" {
+			head += " " + c.Version
+		}
+		fmt.Printf("  %s  [%s]  %d events", head, c.Category, c.TotalEventCount)
+		if c.DeniedEventCount > 0 {
+			fmt.Printf(", %d denied", c.DeniedEventCount)
+		}
+		if c.ServiceDrivenEventCount > 0 {
+			fmt.Printf(", %d service-driven", c.ServiceDrivenEventCount)
+		}
+		fmt.Println()
+
+		if plat := clientPlatform(c); plat != "" {
+			fmt.Printf("    %s\n", plat)
+		}
+		if c.FirstSeen != "" || c.LastSeen != "" {
+			fmt.Printf("    seen %s -> %s\n", c.FirstSeen, c.LastSeen)
+		}
+		if cmds := topCommands(c.Commands, 5); cmds != "" {
+			fmt.Printf("    commands: %s\n", cmds)
+		}
+	}
+}
+
+// clientPlatform assembles the "os osversion · arch · runtime" subtitle from
+// whichever platform fields the parser populated.
+func clientPlatform(c models.ClientAggregate) string {
+	var parts []string
+	if os := strings.TrimSpace(c.OS + " " + c.OSVersion); os != "" {
+		parts = append(parts, os)
+	}
+	if c.Architecture != "" {
+		parts = append(parts, c.Architecture)
+	}
+	if c.Runtime != "" {
+		parts = append(parts, c.Runtime)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// topCommands renders the highest-count commands as "name (n)", limited to max.
+// The "ua:" prefix on userAgent-embedded command tokens is dropped for display.
+func topCommands(commands map[string]int, max int) string {
+	if len(commands) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(commands))
+	for k := range commands {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if commands[keys[i]] != commands[keys[j]] {
+			return commands[keys[i]] > commands[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	if len(keys) > max {
+		keys = keys[:max]
+	}
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s (%d)", strings.TrimPrefix(k, "ua:"), commands[k]))
+	}
+	return strings.Join(parts, ", ")
+}
+
 // parseTagFilters parses a slice of "KEY=VALUE" strings into a map.
 func parseTagFilters(raw []string) (map[string]string, error) {
 	result := make(map[string]string, len(raw))
@@ -584,6 +676,8 @@ Examples:
 			if sess.ServiceDrivenEventCount > 0 {
 				fmt.Printf("Service-driven events: %d (AWS services calling with these credentials)\n", sess.ServiceDrivenEventCount)
 			}
+
+			printClients(sess.Clients)
 
 			if len(sess.SessionTags) > 0 {
 				fmt.Println("\nSession Tags:")
