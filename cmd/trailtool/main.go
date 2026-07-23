@@ -400,7 +400,12 @@ func printClients(clients []models.ClientAggregate) {
 		if c.Version != "" {
 			head += " " + c.Version
 		}
-		fmt.Printf("  %s  [%s]  %d events", head, c.Category, c.TotalEventCount)
+		// TotalEventCount is all requests this client made, denied included —
+		// deliberately distinct from the session's success-only "Events" line, so
+		// we label it "requests" and break out the successful/denied split to
+		// avoid a client showing more "events" than the session.
+		ok := c.TotalEventCount - c.DeniedEventCount
+		fmt.Printf("  %s  [%s]  %d requests: %d ok", head, c.Category, c.TotalEventCount, ok)
 		if c.DeniedEventCount > 0 {
 			fmt.Printf(", %d denied", c.DeniedEventCount)
 		}
@@ -415,10 +420,33 @@ func printClients(clients []models.ClientAggregate) {
 		if c.FirstSeen != "" || c.LastSeen != "" {
 			fmt.Printf("    seen %s -> %s\n", c.FirstSeen, c.LastSeen)
 		}
-		if cmds := topCommands(c.Commands, 5); cmds != "" {
-			fmt.Printf("    commands: %s\n", cmds)
+		// Commands mixes two namespaces: bare CloudTrail eventNames (the API calls
+		// AWS recorded) and "ua:"-prefixed tokens the client's user-agent reported
+		// (its own command surface, e.g. aws-cli's s3.cp). Show them separately —
+		// they are different concepts and conflating them misleads.
+		apiEvents, clientCmds := splitCommandNamespaces(c.Commands)
+		if s := topCommands(apiEvents, 5); s != "" {
+			fmt.Printf("    API events: %s\n", s)
+		}
+		if s := topCommands(clientCmds, 5); s != "" {
+			fmt.Printf("    client commands: %s\n", s)
 		}
 	}
+}
+
+// splitCommandNamespaces separates a client's Commands map into bare CloudTrail
+// eventNames and the "ua:"-prefixed user-agent command tokens (prefix stripped).
+func splitCommandNamespaces(commands map[string]int) (apiEvents, clientCmds map[string]int) {
+	apiEvents = map[string]int{}
+	clientCmds = map[string]int{}
+	for k, n := range commands {
+		if cmd, ok := strings.CutPrefix(k, "ua:"); ok {
+			clientCmds[cmd] = n
+		} else {
+			apiEvents[k] = n
+		}
+	}
+	return apiEvents, clientCmds
 }
 
 // clientPlatform assembles the "os osversion · arch · runtime" subtitle from
@@ -437,8 +465,8 @@ func clientPlatform(c models.ClientAggregate) string {
 	return strings.Join(parts, " · ")
 }
 
-// topCommands renders the highest-count commands as "name (n)", limited to max.
-// The "ua:" prefix on userAgent-embedded command tokens is dropped for display.
+// topCommands renders the highest-count entries as "name (n)", limited to max,
+// ties broken by name for stable output.
 func topCommands(commands map[string]int, max int) string {
 	if len(commands) == 0 {
 		return ""
@@ -458,7 +486,7 @@ func topCommands(commands map[string]int, max int) string {
 	}
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
-		parts = append(parts, fmt.Sprintf("%s (%d)", strings.TrimPrefix(k, "ua:"), commands[k]))
+		parts = append(parts, fmt.Sprintf("%s (%d)", k, commands[k]))
 	}
 	return strings.Join(parts, ", ")
 }
