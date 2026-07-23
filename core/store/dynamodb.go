@@ -297,6 +297,9 @@ func (s *Store) querySessionPartition(ctx context.Context, customerID, personKey
 		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal sessions: %w", err)
 		}
+		for i := range page {
+			page[i].Normalize()
+		}
 		sessions = append(sessions, page...)
 
 		if result.LastEvaluatedKey == nil {
@@ -333,6 +336,9 @@ func (s *Store) scanSessions(ctx context.Context, customerID string, filter Sess
 		var page []models.Session
 		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal sessions: %w", err)
+		}
+		for i := range page {
+			page[i].Normalize()
 		}
 		sessions = append(sessions, page...)
 
@@ -612,7 +618,7 @@ func (s *Store) GetSessionByRef(ctx context.Context, customerID, ref string) (*m
 	if err := attributevalue.UnmarshalMap(result.Item, &session); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal session: %w", err)
 	}
-	return &session, nil
+	return session.Normalize(), nil
 }
 
 // FindSessionsBySidPrefix returns every session whose sid starts with prefix,

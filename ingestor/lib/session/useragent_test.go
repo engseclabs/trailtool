@@ -89,7 +89,7 @@ func TestParseUserAgent(t *testing.T) {
 			wantComp:     map[string]string{"terraform_provider_aws": "5.31.0"},
 		},
 		{
-			name:         "aws-sdk-java",
+			name:         "aws-sdk-java legacy positional",
 			ua:           "aws-sdk-java/2.20.0 Linux/5.10.0 Java/17.0.1",
 			wantCategory: ClientCategorySDK,
 			wantName:     "aws-sdk-java",
@@ -97,6 +97,26 @@ func TestParseUserAgent(t *testing.T) {
 			wantOS:       "linux",
 			wantOSVer:    "5.10.0",
 			wantRuntime:  "Java 17.0.1",
+		},
+		{
+			name:         "aws-sdk-go-v2 modern metadata",
+			ua:           "aws-sdk-go-v2/1.24.0 os/linux lang/go#1.21.0 md/GOOS#linux md/GOARCH#arm64",
+			wantCategory: ClientCategorySDK,
+			wantName:     "aws-sdk-go-v2",
+			wantVersion:  "1.24.0",
+			wantOS:       "linux",
+			wantArch:     "arm64",
+			wantRuntime:  "go 1.21.0",
+		},
+		{
+			name:         "aws-sdk-go-v2 GOOS-only osfallback",
+			ua:           "aws-sdk-go-v2/1.30.0 lang/go#1.22 md/GOOS#darwin md/GOARCH#amd64",
+			wantCategory: ClientCategorySDK,
+			wantName:     "aws-sdk-go-v2",
+			wantVersion:  "1.30.0",
+			wantOS:       "macos",
+			wantArch:     "amd64",
+			wantRuntime:  "go 1.22",
 		},
 		{
 			name:         "chrome on macOS",
@@ -113,6 +133,24 @@ func TestParseUserAgent(t *testing.T) {
 			wantName:     "Chrome",
 			wantVersion:  "120.0.0.0",
 			wantOS:       "windows",
+		},
+		{
+			// Android UAs contain "Linux"; must resolve to android, not linux.
+			name:         "chrome on android",
+			ua:           "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+			wantCategory: ClientCategoryBrowser,
+			wantName:     "Chrome",
+			wantVersion:  "120.0.0.0",
+			wantOS:       "android",
+		},
+		{
+			// iOS Safari UAs contain "Mac OS X"; must resolve to ios, not macos.
+			name:         "safari on iphone",
+			ua:           "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+			wantCategory: ClientCategoryBrowser,
+			wantName:     "Safari",
+			wantVersion:  "17.0",
+			wantOS:       "ios",
 		},
 		{
 			name:         "safari on macOS",

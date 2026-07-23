@@ -69,7 +69,11 @@ type Session struct {
 	ServicesCount           int              `json:"services_count" dynamodbav:"services_count"`
 	ResourcesCount          int              `json:"resources_count" dynamodbav:"resources_count"`
 	SourceIPs               []string          `json:"source_ips" dynamodbav:"source_ips"`
-	Clients                 []ClientAggregate `json:"clients" dynamodbav:"clients"` // per-client parsed user-agent aggregates (replaces user_agents)
+	// Clients are the per-client parsed user-agent aggregates (replaces the old
+	// user_agents []string). Store reads run through Session.Normalize, so this
+	// serializes as [] (never null) even for historical rows that predate client
+	// aggregation and carry no "clients" attribute.
+	Clients                 []ClientAggregate `json:"clients" dynamodbav:"clients"`
 	EventCounts             map[string]int    `json:"event_counts" dynamodbav:"event_counts"`
 	ResourcesAccessed       map[string]int   `json:"resources_accessed" dynamodbav:"resources_accessed"`
 	ResourceAccesses        []ResourceAccess `json:"resource_accesses,omitempty" dynamodbav:"resource_accesses"`
@@ -133,6 +137,18 @@ type Session struct {
 // chained/login/MCP attribution fields use to point at other sessions.
 func (s *Session) Ref() string {
 	return s.PersonKey + "|" + s.SK
+}
+
+// Normalize fixes up a freshly-unmarshaled session so its JSON shape is stable
+// regardless of how the stored item looked. Historical rows (ingested before
+// client aggregation) have no "clients" attribute, which unmarshals to a nil
+// slice and would serialize as "clients": null; normalize it to [] so consumers
+// see a consistent array. Returns the receiver for chaining.
+func (s *Session) Normalize() *Session {
+	if s.Clients == nil {
+		s.Clients = []ClientAggregate{}
+	}
+	return s
 }
 
 // sidLength mirrors identity.SidLength on the ingestor side. The two trees don't

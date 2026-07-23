@@ -4,6 +4,7 @@ package aggregator
 
 import (
 	"log"
+	"sort"
 	"strings"
 
 	"github.com/engseclabs/trailtool/ingestor/lib/session"
@@ -189,11 +190,6 @@ func accumulateSessionEvent(sess *types.DynamoDBSession, event types.CloudTrailR
 	}
 }
 
-// maxRawUASamples bounds how many distinct raw user-agent strings each
-// ClientAggregate retains (DynamoDB item-size hygiene). The parsed fields carry
-// the signal; the samples are only an escape hatch to the literal string.
-const maxRawUASamples = 5
-
 // foldClient parses one event's user-agent and folds it into the session's
 // per-client aggregates, creating the ClientAggregate on first sight of its Key
 // and updating counts, seen-times, commands, components, and raw samples.
@@ -251,19 +247,30 @@ func foldClient(sess *types.DynamoDBSession, ua string, event types.CloudTrailRe
 		c.Commands["ua:"+pc.Command]++
 	}
 
-	// Components: last non-empty write wins (stable single-valued facts).
+	// Components: lexically-smallest non-empty value wins, so the in-batch fold
+	// resolves conflicts the same way MergeClients does across batches — order
+	// independent either way.
 	for k, v := range pc.Components {
-		if v != "" {
-			if c.Components == nil {
-				c.Components = map[string]string{}
-			}
+		if v == "" {
+			continue
+		}
+		if c.Components == nil {
+			c.Components = map[string]string{}
+		}
+		if cur, ok := c.Components[k]; !ok || v < cur {
 			c.Components[k] = v
 		}
 	}
 
-	// Raw samples: distinct, capped.
-	if len(c.RawUserAgentSamples) < maxRawUASamples && !containsString(c.RawUserAgentSamples, pc.Raw) {
+	// Raw samples: keep the distinct set, then sort+cap so the retained N are the
+	// lexically-smallest — identical to what MergeClients stores regardless of the
+	// order events arrived within this batch.
+	if !containsString(c.RawUserAgentSamples, pc.Raw) {
 		c.RawUserAgentSamples = append(c.RawUserAgentSamples, pc.Raw)
+		sort.Strings(c.RawUserAgentSamples)
+		if len(c.RawUserAgentSamples) > types.MaxRawUASamples {
+			c.RawUserAgentSamples = c.RawUserAgentSamples[:types.MaxRawUASamples]
+		}
 	}
 }
 

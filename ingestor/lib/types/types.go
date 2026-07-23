@@ -229,6 +229,12 @@ type DynamoDBPerson struct {
 	EventsCount    int      `dynamodbav:"events_count"`
 }
 
+// MaxRawUASamples bounds how many distinct raw user-agent strings each
+// ClientAggregate retains (DynamoDB item-size hygiene). The parsed fields carry
+// the signal; the samples are only an escape hatch to the literal string. Shared
+// by the aggregator (in-batch fold) and the merge so both cap identically.
+const MaxRawUASamples = 5
+
 // ClientAggregate is one client's activity within a session, parsed from the
 // CloudTrail userAgent and aggregated across the session's events. A single
 // session commonly carries several (console + aws-cli, terraform + boto3), so
