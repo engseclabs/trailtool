@@ -133,7 +133,7 @@ func buildSessionPrompt(session *models.Session) string {
 		"session_type":       sessionType,
 		"event_counts":       session.EventCounts,
 		"resources_accessed": session.ResourcesAccessed,
-		"user_agents":        session.UserAgents,
+		"clients":            summarizeClients(session.Clients),
 	}
 
 	if session.DeniedEventCount > 0 {
@@ -144,6 +144,31 @@ func buildSessionPrompt(session *models.Session) string {
 
 	jsonData, _ := json.MarshalIndent(data, "", "  ")
 	return string(jsonData)
+}
+
+// summarizeClients projects the per-client aggregates down to the identity the
+// summarizer cares about (name/version/platform + event count), dropping the
+// bulky fields (raw samples, per-command maps) that would just spend tokens.
+func summarizeClients(clients []models.ClientAggregate) []map[string]interface{} {
+	if len(clients) == 0 {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(clients))
+	for _, c := range clients {
+		entry := map[string]interface{}{
+			"category": c.Category,
+			"name":     c.Name,
+			"events":   c.TotalEventCount,
+		}
+		if c.Version != "" {
+			entry["version"] = c.Version
+		}
+		if c.OS != "" {
+			entry["os"] = c.OS
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func calculateComplexity(s *models.Session) string {

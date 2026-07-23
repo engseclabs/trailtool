@@ -139,7 +139,10 @@ Attributes:
   person_key, role_arn, role_id, account_id
   session_type: cli | web | agent | login
   start_time, end_time (true bounds), version (optimistic lock; load-bearing only for win#)
-  events_count, source_ips[], user_agents[], event_counts{}, resources_accessed{}
+  events_count, source_ips[], clients[], event_counts{}, resources_accessed{}
+                                                  # clients[]: per-client ClientAggregate parsed from userAgent
+                                                  # (category/name/version/os/arch, per-client counts, commands,
+                                                  # first/last seen, capped raw samples) — replaces user_agents[]
   service_driven_event_count                      # events with userIdentity.invokedBy set (§7)
   sign_in_session_arn (when present)
   assumed_from_session, assumed_from_role_arn     # chained child → parent session ref (§5.1)

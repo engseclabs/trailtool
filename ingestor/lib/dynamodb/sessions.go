@@ -125,7 +125,7 @@ func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSessi
 		EventsCount:             existing.EventsCount + incoming.EventsCount,
 		ServiceDrivenEventCount: existing.ServiceDrivenEventCount + incoming.ServiceDrivenEventCount,
 		SourceIPs:               MergeUniqueStrings(existing.SourceIPs, incoming.SourceIPs),
-		UserAgents:              MergeUniqueStrings(existing.UserAgents, incoming.UserAgents),
+		Clients:                 MergeClients(existing.Clients, incoming.Clients),
 		EventCounts:             mergedEventCounts,
 		ResourcesAccessed:       mergedResourcesAccessed,
 		ResourceAccesses:        MergeResourceAccesses(existing.ResourceAccesses, incoming.ResourceAccesses),
@@ -260,4 +260,107 @@ func MergeEventAccesses(a, b []types.EventAccess) []types.EventAccess {
 	}
 
 	return result
+}
+
+// maxRawUASamples bounds retained raw user-agent strings per client on merge —
+// must match the aggregator's cap so cross-batch merges don't grow past it.
+const maxRawUASamples = 5
+
+// MergeClients merges two []ClientAggregate additively and order-independently,
+// keyed on ClientAggregate.Key. Counts sum; FirstSeen/LastSeen take the min/max;
+// Commands (int maps) and Components (last-non-empty) merge per-key; raw samples
+// union and stay capped. This mirrors the additive session-merge contract so a
+// redelivered batch converges to the same result.
+func MergeClients(a, b []types.ClientAggregate) []types.ClientAggregate {
+	order := make([]string, 0, len(a)+len(b))
+	byKey := make(map[string]*types.ClientAggregate)
+
+	add := func(c types.ClientAggregate) {
+		existing, ok := byKey[c.Key]
+		if !ok {
+			cp := c // copy; don't alias caller's backing array
+			byKey[c.Key] = &cp
+			order = append(order, c.Key)
+			return
+		}
+		existing.TotalEventCount += c.TotalEventCount
+		existing.DeniedEventCount += c.DeniedEventCount
+		existing.ServiceDrivenEventCount += c.ServiceDrivenEventCount
+
+		if c.FirstSeen != "" && (existing.FirstSeen == "" || c.FirstSeen < existing.FirstSeen) {
+			existing.FirstSeen = c.FirstSeen
+		}
+		if c.LastSeen > existing.LastSeen {
+			existing.LastSeen = c.LastSeen
+		}
+
+		// Identity/platform fields are part of the key or stable — fill any that
+		// were empty on the first-seen side.
+		existing.Version = firstNonEmpty(existing.Version, c.Version)
+		existing.OS = firstNonEmpty(existing.OS, c.OS)
+		existing.OSVersion = firstNonEmpty(existing.OSVersion, c.OSVersion)
+		existing.Architecture = firstNonEmpty(existing.Architecture, c.Architecture)
+		existing.Runtime = firstNonEmpty(existing.Runtime, c.Runtime)
+
+		existing.Commands = MergeIntMaps(existing.Commands, c.Commands)
+		existing.Components = mergeStringMaps(existing.Components, c.Components)
+		existing.RawUserAgentSamples = mergeCappedSamples(existing.RawUserAgentSamples, c.RawUserAgentSamples)
+	}
+
+	for _, c := range a {
+		add(c)
+	}
+	for _, c := range b {
+		add(c)
+	}
+
+	result := make([]types.ClientAggregate, 0, len(order))
+	for _, k := range order {
+		result = append(result, *byKey[k])
+	}
+	return result
+}
+
+// mergeStringMaps merges two string maps; existing values win, incoming fills gaps.
+func mergeStringMaps(existing, incoming map[string]string) map[string]string {
+	if len(existing) == 0 && len(incoming) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(existing)+len(incoming))
+	for k, v := range incoming {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	for k, v := range existing {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// mergeCappedSamples unions two sample slices preserving order and capping length.
+func mergeCappedSamples(existing, incoming []string) []string {
+	out := make([]string, 0, maxRawUASamples)
+	seen := make(map[string]bool)
+	for _, s := range existing {
+		if len(out) >= maxRawUASamples {
+			return out
+		}
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range incoming {
+		if len(out) >= maxRawUASamples {
+			break
+		}
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }

@@ -56,7 +56,7 @@ func newSession(ns, personKey, sk, anchor, sessionType, roleARN, roleID, account
 		AccountKey:              ns + "#" + accountID,
 		Version:                 1,
 		SourceIPs:               []string{},
-		UserAgents:              []string{},
+		Clients:                 []types.ClientAggregate{},
 		EventCounts:             make(map[string]int),
 		ResourcesAccessed:       make(map[string]int),
 		ResourceAccesses:        []types.ResourceAccess{},
@@ -180,13 +180,101 @@ func accumulateSessionEvent(sess *types.DynamoDBSession, event types.CloudTrailR
 		appendUnique(&sess.SourceIPs, sourceIP)
 	}
 	if ua := session.NormalizeUserAgent(event.UserAgent); ua != "" && session.IsValidUserAgent(ua) {
-		appendUnique(&sess.UserAgents, ua)
+		foldClient(sess, ua, event, isAccessDenied, serviceDriven)
 	}
 	if sess.SignInSessionArn == "" {
 		if sc := event.UserIdentity.SessionContext; sc != nil && sc.SignInSessionArn != "" {
 			sess.SignInSessionArn = sc.SignInSessionArn
 		}
 	}
+}
+
+// maxRawUASamples bounds how many distinct raw user-agent strings each
+// ClientAggregate retains (DynamoDB item-size hygiene). The parsed fields carry
+// the signal; the samples are only an escape hatch to the literal string.
+const maxRawUASamples = 5
+
+// foldClient parses one event's user-agent and folds it into the session's
+// per-client aggregates, creating the ClientAggregate on first sight of its Key
+// and updating counts, seen-times, commands, components, and raw samples.
+func foldClient(sess *types.DynamoDBSession, ua string, event types.CloudTrailRecord, isAccessDenied, serviceDriven bool) {
+	pc := session.ParseUserAgent(ua)
+	key := pc.Key()
+
+	// Find-or-create the aggregate for this client key.
+	var c *types.ClientAggregate
+	for i := range sess.Clients {
+		if sess.Clients[i].Key == key {
+			c = &sess.Clients[i]
+			break
+		}
+	}
+	if c == nil {
+		sess.Clients = append(sess.Clients, types.ClientAggregate{
+			Key:          key,
+			Category:     pc.Category,
+			Name:         pc.Name,
+			Version:      pc.Version,
+			OS:           pc.OS,
+			OSVersion:    pc.OSVersion,
+			Architecture: pc.Arch,
+			Runtime:      pc.Runtime,
+			Commands:     map[string]int{},
+		})
+		c = &sess.Clients[len(sess.Clients)-1]
+	}
+
+	// Counts. TotalEventCount tracks every event this client made (denied or not),
+	// mirroring how the UI wants to attribute activity to a client.
+	c.TotalEventCount++
+	if isAccessDenied {
+		c.DeniedEventCount++
+	}
+	if serviceDriven {
+		c.ServiceDrivenEventCount++
+	}
+
+	// Seen-times: RFC3339 UTC compares lexicographically.
+	et := event.EventTime
+	if c.FirstSeen == "" || et < c.FirstSeen {
+		c.FirstSeen = et
+	}
+	if et > c.LastSeen {
+		c.LastSeen = et
+	}
+
+	// Commands: bare eventName always; "ua:"-prefixed userAgent command token when present.
+	if event.EventName != "" {
+		c.Commands[event.EventName]++
+	}
+	if pc.Command != "" {
+		c.Commands["ua:"+pc.Command]++
+	}
+
+	// Components: last non-empty write wins (stable single-valued facts).
+	for k, v := range pc.Components {
+		if v != "" {
+			if c.Components == nil {
+				c.Components = map[string]string{}
+			}
+			c.Components[k] = v
+		}
+	}
+
+	// Raw samples: distinct, capped.
+	if len(c.RawUserAgentSamples) < maxRawUASamples && !containsString(c.RawUserAgentSamples, pc.Raw) {
+		c.RawUserAgentSamples = append(c.RawUserAgentSamples, pc.Raw)
+	}
+}
+
+// containsString reports whether value is already in slice.
+func containsString(slice []string, value string) bool {
+	for _, v := range slice {
+		if v == value {
+			return true
+		}
+	}
+	return false
 }
 
 // appendUnique appends value to the slice if not already present.
