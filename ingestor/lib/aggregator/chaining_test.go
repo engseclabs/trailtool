@@ -225,6 +225,150 @@ func TestConsoleRoleSwitchChaining(t *testing.T) {
 	}
 }
 
+// TestConsoleRoleSwitchBackendUA reproduces the real sandbox mis-attribution: the
+// console's Switch-Role AssumeRole is emitted by AWS's Switch-Role backend with
+// userAgent "AWS Signin, aws-internal/…" and NO sessionCredentialFromConsole
+// flag — so isConsoleSessionCredential is false and, unlike
+// TestConsoleRoleSwitchChaining (which uses a browser UA), the event does not
+// anchor web# by itself. It carries one of the console session's per-request
+// access keys and the console session's own creationDate. Without the
+// same-session web# continuity fold it splits into a phantom key# session that
+// mis-parents the child (child.assumed_from_session points at the phantom, not
+// the console session). This asserts the AssumeRole folds into the console
+// session and the child is parented to it.
+func TestConsoleRoleSwitchBackendUA(t *testing.T) {
+	const (
+		email          = "alex@engseclabs.com"
+		parentRoleID   = "AROAPARENTCONSOLE001"
+		parentRoleARN  = "arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_Admin_abc123"
+		assumedRoleARN = "arn:aws:iam::111111111111:role/RoleChaining1"
+		assumedRoleID  = "AROACHAINING000001"
+		consoleKey     = "ASIACONSOLEREQKEY001" // a per-request console credential
+		creationDate   = "2026-07-23T19:51:29Z" // the console session's creationDate
+		switchTime     = "2026-07-23T19:53:09Z" // AssumeRole time == child creationDate
+		accountID      = "111111111111"
+		browserUA      = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
+		backendUA      = "AWS Signin, aws-internal/3 aws-sdk-java/2.20.0"
+	)
+	principalID := parentRoleID + ":" + email
+	parentARN := "arn:aws:sts::111111111111:assumed-role/AWSReservedSSO_Admin_abc123/" + email
+
+	// A genuine console click under the console session: browser UA anchors web#
+	// and registers the cd-keyed cred continuity link the fold relies on.
+	consoleClick := types.CloudTrailRecord{
+		EventTime:   "2026-07-23T19:52:00Z",
+		EventName:   "GetRole",
+		EventSource: "iam.amazonaws.com",
+		UserIdentity: types.UserIdentity{
+			Type:           "AssumedRole",
+			PrincipalID:    principalID,
+			ARN:            parentARN,
+			AccountID:      accountID,
+			AccessKeyID:    "ASIACONSOLEREQKEY000", // a different per-request key
+			SessionContext: makeSessionContext(creationDate, parentRoleARN),
+		},
+		UserAgent: browserUA,
+	}
+	consoleClick.UserIdentity.SessionContext.Attributes.SessionCredentialFromConsole = "true"
+
+	// The Switch-Role AssumeRole: backend UA, no console flag, its own key, but
+	// the console session's principalId + creationDate.
+	assumeRoleEvent := types.CloudTrailRecord{
+		EventTime:   switchTime,
+		EventName:   "AssumeRole",
+		EventSource: "sts.amazonaws.com",
+		UserIdentity: types.UserIdentity{
+			Type:           "AssumedRole",
+			PrincipalID:    principalID,
+			ARN:            parentARN,
+			AccountID:      accountID,
+			AccessKeyID:    consoleKey,
+			SessionContext: makeSessionContext(creationDate, parentRoleARN),
+		},
+		UserAgent: backendUA,
+		RequestParameters: map[string]interface{}{
+			"roleArn":         assumedRoleARN,
+			"roleSessionName": email,
+		},
+		ResponseElements: map[string]interface{}{
+			"credentials": map[string]interface{}{
+				"accessKeyId":     "ASIACHILDVEND0000001",
+				"secretAccessKey": "secret",
+				"sessionToken":    "token",
+			},
+			"assumedRoleUser": map[string]interface{}{
+				"assumedRoleId": assumedRoleID + ":" + email,
+				"arn":           "arn:aws:sts::111111111111:assumed-role/RoleChaining1/" + email,
+			},
+		},
+	}
+
+	// Child console events: fresh per-request keys, one creationDate == switchTime.
+	newChildEvent := func(eventTime, name, src, reqKey string) types.CloudTrailRecord {
+		e := types.CloudTrailRecord{
+			EventTime:   eventTime,
+			EventName:   name,
+			EventSource: src,
+			UserIdentity: types.UserIdentity{
+				Type:           "AssumedRole",
+				PrincipalID:    assumedRoleID + ":" + email,
+				ARN:            "arn:aws:sts::111111111111:assumed-role/RoleChaining1/" + email,
+				AccountID:      accountID,
+				AccessKeyID:    reqKey,
+				SessionContext: makeSessionContext(switchTime, assumedRoleARN),
+			},
+			UserAgent: browserUA,
+		}
+		e.UserIdentity.SessionContext.Attributes.SessionCredentialFromConsole = "true"
+		return e
+	}
+
+	sessions, err := processForTest([]types.CloudTrailRecord{
+		consoleClick,
+		assumeRoleEvent,
+		newChildEvent("2026-07-23T19:54:00Z", "ListBuckets", "s3.amazonaws.com", "ASIACHILDREQ1"),
+		newChildEvent("2026-07-23T19:55:00Z", "DescribeInstances", "ec2.amazonaws.com", "ASIACHILDREQ2"),
+	})
+	if err != nil {
+		t.Fatalf("processForTest() error: %v", err)
+	}
+
+	personKey := "email#" + email
+	consoleRef := ref(personKey, "web#"+parentRoleID+"#"+creationDate, parentRoleID)
+	childRef := ref(personKey, "web#"+assumedRoleID+"#"+switchTime, assumedRoleID)
+
+	// The AssumeRole must fold into the console session — no phantom key# session.
+	phantomRef := ref(personKey, "key#"+consoleKey, parentRoleID)
+	if _, ok := sessions[phantomRef]; ok {
+		t.Errorf("phantom key# session %q exists — the Switch-Role AssumeRole split off instead of folding into the console session", phantomRef)
+	}
+
+	consoleSess, ok := sessions[consoleRef]
+	if !ok {
+		t.Fatalf("console session %q not found; keys: %v", consoleRef, sessionKeys(sessions))
+	}
+	if consoleSess.SessionType != SessionTypeWeb {
+		t.Errorf("console SessionType = %q, want %q", consoleSess.SessionType, SessionTypeWeb)
+	}
+	if consoleSess.ChainedEventCount != 2 {
+		t.Errorf("console ChainedEventCount = %d, want 2", consoleSess.ChainedEventCount)
+	}
+	if len(consoleSess.ChainedSessionRefs) != 1 || consoleSess.ChainedSessionRefs[0] != childRef {
+		t.Errorf("console ChainedSessionRefs = %v, want [%s]", consoleSess.ChainedSessionRefs, childRef)
+	}
+
+	childSess, ok := sessions[childRef]
+	if !ok {
+		t.Fatalf("child session %q not found; keys: %v", childRef, sessionKeys(sessions))
+	}
+	if childSess.AssumedFromSession != consoleRef {
+		t.Errorf("child AssumedFromSession = %q, want %q (the real console session, not a phantom key# session)", childSess.AssumedFromSession, consoleRef)
+	}
+	if childSess.EventsCount != 2 {
+		t.Errorf("child EventsCount = %d, want 2", childSess.EventsCount)
+	}
+}
+
 // TestTaggedAssumeRoleAttribution verifies an AssumeRole carrying session tags
 // propagates them to the child session record.
 func TestTaggedAssumeRoleAttribution(t *testing.T) {
