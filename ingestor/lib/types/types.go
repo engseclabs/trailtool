@@ -335,14 +335,14 @@ type DynamoDBSession struct {
 	// ServiceDrivenEventCount counts events with userIdentity.invokedBy set: AWS
 	// services calling with the human's credentials (forward-access sessions).
 	// Included in EventsCount but excluded from ClickOps flagging.
-	ServiceDrivenEventCount int              `dynamodbav:"service_driven_event_count,omitempty"`
-	ServicesCount           int              `dynamodbav:"services_count"`
-	ResourcesCount          int              `dynamodbav:"resources_count"`
-	SourceIPs               []string         `dynamodbav:"source_ips"`
-	Clients                 []ClientAggregate `dynamodbav:"clients"` // per-client parsed user-agent aggregates (replaces user_agents)
-	EventCounts             map[string]int   `dynamodbav:"event_counts"`       // "eventSource:eventName" -> count
-	ResourcesAccessed       map[string]int   `dynamodbav:"resources_accessed"` // resource identifier -> count
-	ResourceAccesses        []ResourceAccess `dynamodbav:"resource_accesses"`
+	ServiceDrivenEventCount int               `dynamodbav:"service_driven_event_count,omitempty"`
+	ServicesCount           int               `dynamodbav:"services_count"`
+	ResourcesCount          int               `dynamodbav:"resources_count"`
+	SourceIPs               []string          `dynamodbav:"source_ips"`
+	Clients                 []ClientAggregate `dynamodbav:"clients"`            // per-client parsed user-agent aggregates (replaces user_agents)
+	EventCounts             map[string]int    `dynamodbav:"event_counts"`       // "eventSource:eventName" -> count
+	ResourcesAccessed       map[string]int    `dynamodbav:"resources_accessed"` // resource identifier -> count
+	ResourceAccesses        []ResourceAccess  `dynamodbav:"resource_accesses"`
 
 	// Access Denied tracking
 	DeniedEventCount        int              `dynamodbav:"denied_event_count,omitempty"`
@@ -448,6 +448,29 @@ type DynamoDBAccount struct {
 	ServicesCount  int    `dynamodbav:"services_count"`
 	ResourcesCount int    `dynamodbav:"resources_count"`
 	EventsCount    int    `dynamodbav:"events_count"`
+}
+
+// DynamoDBRelation is one directed noun relationship. Every observed pair is
+// stored in both directions so a detail lookup needs one partition query.
+type DynamoDBRelation struct {
+	PK          string `dynamodbav:"pk"`
+	SK          string `dynamodbav:"sk"`
+	CustomerID  string `dynamodbav:"customerId"`
+	SubjectKind string `dynamodbav:"subject_kind"`
+	SubjectID   string `dynamodbav:"subject_id"`
+	RelatedKind string `dynamodbav:"related_kind"`
+	RelatedID   string `dynamodbav:"related_id"`
+	FirstSeen   string `dynamodbav:"first_seen"`
+	LastSeen    string `dynamodbav:"last_seen"`
+}
+
+// DynamoDBRelationSummary stores exact distinct relationship counts for one
+// subject partition.
+type DynamoDBRelationSummary struct {
+	PK         string         `dynamodbav:"pk"`
+	SK         string         `dynamodbav:"sk"`
+	CustomerID string         `dynamodbav:"customerId"`
+	Counts     map[string]int `dynamodbav:"counts"`
 }
 
 // EventBridgeS3Event represents the S3 event wrapped by EventBridge
