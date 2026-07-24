@@ -93,19 +93,7 @@ func accountsDetailCmd() *cobra.Command {
 				return printJSON(account)
 			}
 
-			fmt.Printf("Account: %s\n", account.AccountID)
-			if account.AccountName != "" {
-				fmt.Printf("Name: %s\n", account.AccountName)
-			}
-			fmt.Printf("First Seen: %s\n", account.FirstSeen)
-			fmt.Printf("Last Seen: %s\n", account.LastSeen)
-			fmt.Printf("People: %d\n", account.PeopleCount)
-			fmt.Printf("Sessions: %d\n", account.SessionsCount)
-			fmt.Printf("Roles: %d\n", account.RolesCount)
-			fmt.Printf("Services: %d\n", account.ServicesCount)
-			fmt.Printf("Resources: %d\n", account.ResourcesCount)
-			fmt.Printf("Events: %d\n", account.EventsCount)
-
+			fmt.Print(view.AccountDetail(renderContext(), account))
 			return nil
 		},
 	}

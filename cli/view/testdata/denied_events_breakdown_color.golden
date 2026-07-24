@@ -1,0 +1,6 @@
+
+[1m[2m[31m⊘ Denied Events[0m [2m(calls AWS rejected):[0m[0m
+  [1m[2mEVENT                                   DENIED[0m
+  [36mpricelist.amazonaws.com:ListPriceLists[0m       [31m3[0m
+  [36mce.amazonaws.com:GetCostAndUsage[0m             [31m1[0m
+  [36mwafv2.amazonaws.com:ListWebACLs[0m              [31m1[0m

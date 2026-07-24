@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -94,38 +93,7 @@ func servicesDetailCmd() *cobra.Command {
 				return printJSON(svc)
 			}
 
-			fmt.Printf("Service: %s\n", svc.EventSource)
-			if svc.DisplayName != "" {
-				fmt.Printf("Display Name: %s\n", svc.DisplayName)
-			}
-			if svc.Category != "" {
-				fmt.Printf("Category: %s\n", svc.Category)
-			}
-			fmt.Printf("First Seen: %s\n", svc.FirstSeen)
-			fmt.Printf("Last Seen: %s\n", svc.LastSeen)
-			fmt.Printf("Total Events: %d\n", svc.TotalEvents)
-			fmt.Printf("Roles: %d\n", svc.RolesCount)
-			fmt.Printf("Resources: %d\n", svc.ResourcesCount)
-			fmt.Printf("People: %d\n", svc.PeopleCount)
-			fmt.Printf("Sessions: %d\n", svc.SessionsCount)
-			fmt.Printf("Accounts: %d\n", svc.AccountsCount)
-
-			if svc.TotalDeniedEvents > 0 {
-				fmt.Printf("Denied Events: %d\n", svc.TotalDeniedEvents)
-			}
-
-			if len(svc.TopEventNames) > 0 {
-				fmt.Println("\nTop Events:")
-				svcEventKeys := make([]string, 0, len(svc.TopEventNames))
-				for k := range svc.TopEventNames {
-					svcEventKeys = append(svcEventKeys, k)
-				}
-				sort.Strings(svcEventKeys)
-				for _, event := range svcEventKeys {
-					fmt.Printf("  %s: %d\n", event, svc.TopEventNames[event])
-				}
-			}
-
+			fmt.Print(view.ServiceDetail(renderContext(), svc))
 			return nil
 		},
 	}

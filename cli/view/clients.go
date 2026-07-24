@@ -6,15 +6,25 @@ import (
 	"strings"
 
 	"github.com/engseclabs/trailtool/core/models"
+	"github.com/engseclabs/trailtool/internal/render"
 )
 
-// PrintClients renders the session's per-client user-agent aggregates: one block
-// per client with identity (name/version), platform, event counts, first/last
-// seen, and top commands. Silent when the session carries no clients (records
-// ingested before client aggregation, or service-only traffic).
-func PrintClients(clients []models.ClientAggregate) {
+// Clients renders the session's per-client user-agent aggregates as a section
+// (§5.1): one block per client with identity (name/version/category), platform
+// subtitle, reconciled request counts, first/last-seen interval, and top API
+// events / client commands. Shipped semantics are preserved — only styling and
+// width-awareness change.
+//
+// hasEvents reports whether the session recorded any events. An empty clients
+// slice is ambiguous, not proof of no client: when the session has events but no
+// aggregates, a muted note says so rather than silently omitting the section.
+func Clients(ctx render.Context, clients []models.ClientAggregate, hasEvents bool) string {
 	if len(clients) == 0 {
-		return
+		if hasEvents {
+			return ctx.Section(render.Heading("Clients", -1),
+				"  "+ctx.Style(render.Muted, "none recorded (pre-cutover data, service-only traffic, or no accepted user agent)")+"\n")
+		}
+		return ""
 	}
 
 	// Deterministic order: most active first, ties broken by key.
@@ -27,48 +37,63 @@ func PrintClients(clients []models.ClientAggregate) {
 		return sorted[i].Key < sorted[j].Key
 	})
 
-	fmt.Printf("\nClients (%d):\n", len(sorted))
+	var b strings.Builder
 	for _, c := range sorted {
-		name := c.Name
-		if name == "" {
-			name = "(unknown)"
-		}
-		head := name
-		if c.Version != "" {
-			head += " " + c.Version
-		}
-		// TotalEventCount is all requests this client made, denied included —
-		// deliberately distinct from the session's success-only "Events" line, so
-		// we label it "requests" and break out the successful/denied split to
-		// avoid a client showing more "events" than the session.
-		ok := c.TotalEventCount - c.DeniedEventCount
-		fmt.Printf("  %s  [%s]  %d requests: %d ok", head, c.Category, c.TotalEventCount, ok)
-		if c.DeniedEventCount > 0 {
-			fmt.Printf(", %d denied", c.DeniedEventCount)
-		}
-		if c.ServiceDrivenEventCount > 0 {
-			fmt.Printf(", %d service-driven", c.ServiceDrivenEventCount)
-		}
-		fmt.Println()
-
-		if plat := clientPlatform(c); plat != "" {
-			fmt.Printf("    %s\n", plat)
-		}
-		if c.FirstSeen != "" || c.LastSeen != "" {
-			fmt.Printf("    seen %s -> %s\n", c.FirstSeen, c.LastSeen)
-		}
-		// Commands mixes two namespaces: bare CloudTrail eventNames (the API calls
-		// AWS recorded) and "ua:"-prefixed tokens the client's user-agent reported
-		// (its own command surface, e.g. aws-cli's s3.cp). Show them separately —
-		// they are different concepts and conflating them misleads.
-		apiEvents, clientCmds := splitCommandNamespaces(c.Commands)
-		if s := topCommands(apiEvents, 5); s != "" {
-			fmt.Printf("    API events: %s\n", s)
-		}
-		if s := topCommands(clientCmds, 5); s != "" {
-			fmt.Printf("    client commands: %s\n", s)
-		}
+		b.WriteString(clientBlock(ctx, c))
 	}
+	return ctx.Section(render.Heading("Clients", len(sorted)), b.String())
+}
+
+// clientBlock renders one client's block (indented two spaces).
+func clientBlock(ctx render.Context, c models.ClientAggregate) string {
+	name := c.Name
+	if name == "" {
+		name = "(unknown)"
+	}
+	head := name
+	if c.Version != "" {
+		head += " " + c.Version
+	}
+
+	var b strings.Builder
+
+	// Identity line: name [version] [category]  N requests: M ok[, K denied][, S service-driven].
+	// TotalEventCount includes denied — labeled "requests", deliberately distinct
+	// from the session's success-only Events line, so no client shows more events
+	// than its session (§5.1).
+	ok := c.TotalEventCount - c.DeniedEventCount
+	fmt.Fprintf(&b, "  %s  %s  %s requests: %s ok",
+		ctx.Style(render.Ident, head),
+		ctx.Style(render.Muted, "["+c.Category+"]"),
+		ctx.Style(render.Count, n(c.TotalEventCount)),
+		n(ok))
+	if c.DeniedEventCount > 0 {
+		fmt.Fprintf(&b, ", %s", ctx.Style(render.Denied, n(c.DeniedEventCount)+" denied"))
+	}
+	if c.ServiceDrivenEventCount > 0 {
+		fmt.Fprintf(&b, ", %s service-driven", n(c.ServiceDrivenEventCount))
+	}
+	b.WriteByte('\n')
+
+	if plat := clientPlatform(c); plat != "" {
+		fmt.Fprintf(&b, "    %s\n", ctx.Style(render.Muted, plat))
+	}
+	if c.FirstSeen != "" || c.LastSeen != "" {
+		fmt.Fprintf(&b, "    %s\n", ctx.Style(render.Time, "seen "+ctx.Interval(c.FirstSeen, c.LastSeen)))
+	}
+
+	// Commands mixes two namespaces: bare CloudTrail eventNames (the API calls AWS
+	// recorded) and "ua:"-prefixed tokens the client's user-agent reported (its own
+	// command surface). Show them as two separate labeled lists — different concepts
+	// (§5.1); conflating them misleads.
+	apiEvents, clientCmds := splitCommandNamespaces(c.Commands)
+	if s := topCommands(apiEvents, 5); s != "" {
+		fmt.Fprintf(&b, "    API events: %s\n", s)
+	}
+	if s := topCommands(clientCmds, 5); s != "" {
+		fmt.Fprintf(&b, "    client commands: %s\n", s)
+	}
+	return b.String()
 }
 
 // splitCommandNamespaces separates a client's Commands map into bare CloudTrail
@@ -76,11 +101,11 @@ func PrintClients(clients []models.ClientAggregate) {
 func splitCommandNamespaces(commands map[string]int) (apiEvents, clientCmds map[string]int) {
 	apiEvents = map[string]int{}
 	clientCmds = map[string]int{}
-	for k, n := range commands {
+	for k, v := range commands {
 		if cmd, ok := strings.CutPrefix(k, "ua:"); ok {
-			clientCmds[cmd] = n
+			clientCmds[cmd] = v
 		} else {
-			apiEvents[k] = n
+			apiEvents[k] = v
 		}
 	}
 	return apiEvents, clientCmds

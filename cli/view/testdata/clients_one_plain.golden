@@ -1,0 +1,7 @@
+
+Clients (1):
+  aws-cli 2.15.0  [cli]  30 requests: 30 ok
+    macos 14.2 · arm64 · python 3.11
+    seen 2026-07-24T09:00:00Z → 2026-07-24T09:45:00Z
+    API events: s3:GetObject (20), s3:ListBucket (10)
+    client commands: s3.cp (5)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/engseclabs/trailtool/cli/view"
 	"github.com/engseclabs/trailtool/core/models"
@@ -59,16 +60,38 @@ func personLabels(ctx context.Context, s *store.Store) func(string) string {
 }
 
 // printRefNav prints one attribution line (who + when) for a session ref,
-// followed by a copy-pasteable detail command when the target is fetchable.
-func printRefNav(ctx context.Context, s *store.Store, heading, ref string, label func(string) string) {
+// followed by a copy-pasteable detail command when the target is fetchable. The
+// heading is word-led (SymSource accent) and the nav line uses SymNav, so the
+// relationship reads in mono/ASCII (§4.3, §4.5).
+func printRefNav(ctx context.Context, rctx render.Context, s *store.Store, heading, ref string, label func(string) string, now time.Time) {
 	who := label(view.RefPersonKey(ref))
+	src := rctx.Symbol(render.SymSource)
 	target, err := s.GetSessionByRef(ctx, CustomerID, ref)
 	if err != nil || target == nil {
-		fmt.Printf("%s: %s\n", heading, who)
+		fmt.Fprintf(rctx.Out, "%s %s: %s\n", src, rctx.Style(render.Header, heading), who)
 		return
 	}
-	fmt.Printf("%s: %s at %s [%s]\n", heading, who, target.StartTime, view.RelativeTime(target.StartTime))
-	fmt.Printf("  → trailtool sessions detail --session %s\n", view.SidForRefShort(ref))
+	fmt.Fprintf(rctx.Out, "%s %s: %s at %s\n",
+		src, rctx.Style(render.Header, heading), who, rctx.Style(render.Time, render.Timestamp(target.StartTime, now)))
+	fmt.Fprintf(rctx.Out, "  %s\n", rctx.Style(render.Nav, rctx.Symbol(render.SymNav)+" trailtool sessions detail --session "+view.SidForRefShort(ref)))
+}
+
+// printChildRow renders one child/grant session row in the lineage sections:
+// a lineage-accented line (role, event/duration counts, timestamp) plus a
+// copy-paste nav line to that session's detail. The already-resolved session and
+// its display role are passed in so this stays a pure formatter over a fetched
+// model; the caller owns the store lookup.
+func printChildRow(rctx render.Context, child *models.Session, displayRole, ref string, now time.Time) {
+	lineage := rctx.Symbol(render.SymLineage)
+	fmt.Fprintf(rctx.Out, "  %s %s  %s  %s events  %dm  %s\n",
+		lineage,
+		rctx.Style(render.Ident, displayRole),
+		rctx.Style(render.Muted, child.DetectSessionType()),
+		rctx.Style(render.Count, fmt.Sprintf("%d", child.EventsCount)),
+		child.DurationMinutes,
+		rctx.Style(render.Time, render.Timestamp(child.StartTime, now)))
+	fmt.Fprintf(rctx.Out, "    %s\n",
+		rctx.Style(render.Nav, rctx.Symbol(render.SymNav)+" trailtool sessions detail --session "+view.SidForRefShort(ref)))
 }
 
 // resolveSession finds a single session by --session: a sid prefix, or "latest".

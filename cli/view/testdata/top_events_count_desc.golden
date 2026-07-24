@@ -1,0 +1,6 @@
+
+Top Events (3):
+  EVENT          COUNT
+  s3:GetObject      20
+  s3:PutObject       8
+  iam:ListRoles      2
