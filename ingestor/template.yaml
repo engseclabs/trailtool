@@ -165,6 +165,22 @@ Resources:
         - AttributeName: account_id
           KeyType: RANGE
 
+  RelationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: trailtool-relations
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+
   IdentityLinksTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -231,6 +247,7 @@ Resources:
                   - !GetAtt SessionsTable.Arn
                   - !Sub "${SessionsTable.Arn}/index/*"
                   - !GetAtt AccountsTable.Arn
+                  - !GetAtt RelationsTable.Arn
                   - !GetAtt IdentityLinksTable.Arn
                   - !GetAtt IngestedFilesTable.Arn
         - PolicyName: S3ReadPolicy
@@ -258,6 +275,7 @@ Resources:
           PEOPLE_TABLE: !Ref PeopleTable
           SESSIONS_TABLE: !Ref SessionsTable
           ACCOUNTS_TABLE: !Ref AccountsTable
+          RELATIONS_TABLE: !Ref RelationsTable
           IDENTITY_LINKS_TABLE: !Ref IdentityLinksTable
           INGESTED_FILES_TABLE: !Ref IngestedFilesTable
           IDLE_GAP: 30m # windowed-fallback sessions only (long-lived keys, root)

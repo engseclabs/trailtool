@@ -25,6 +25,14 @@ type EntityStore interface {
 	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
 }
 
+// RelationStore is the DynamoDB surface used by relation writes.
+type RelationStore interface {
+	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+	TransactWriteItems(ctx context.Context, params *dynamodb.TransactWriteItemsInput, optFns ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
+}
+
 // LinkGetter is the subset of the DynamoDB client used by BatchGetIdentityLinks,
 // abstracted so the UnprocessedKeys retry loop is unit-testable.
 // *dynamodb.Client satisfies it.
