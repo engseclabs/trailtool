@@ -1,4 +1,4 @@
-package main
+package view
 
 import (
 	"testing"
@@ -43,8 +43,8 @@ func TestSidDisplayWidth(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := sidDisplayWidth(tt.sessions); got != tt.want {
-				t.Errorf("sidDisplayWidth() = %d, want %d", got, tt.want)
+			if got := SidDisplayWidth(tt.sessions); got != tt.want {
+				t.Errorf("SidDisplayWidth() = %d, want %d", got, tt.want)
 			}
 		})
 	}
@@ -54,24 +54,24 @@ func TestSidDisplayWidthCapsAtFullLen(t *testing.T) {
 	// Two identical full-length sids can't be disambiguated; width caps at the
 	// full sid length rather than looping forever.
 	dup := "aaaaaaaaaaaaaaaa" // 16 chars
-	got := sidDisplayWidth([]models.Session{sess(dup), sess(dup)})
+	got := SidDisplayWidth([]models.Session{sess(dup), sess(dup)})
 	if got != sidFullLen {
-		t.Errorf("sidDisplayWidth() = %d, want %d (cap)", got, sidFullLen)
+		t.Errorf("SidDisplayWidth() = %d, want %d (cap)", got, sidFullLen)
 	}
 }
 
 func TestShortSid(t *testing.T) {
 	s := sess("abcdef0123456789")
-	if got := shortSid(&s, 6); got != "abcdef" {
-		t.Errorf("shortSid width 6 = %q, want %q", got, "abcdef")
+	if got := ShortSid(&s, 6); got != "abcdef" {
+		t.Errorf("ShortSid width 6 = %q, want %q", got, "abcdef")
 	}
 	empty := sess("")
-	if got := shortSid(&empty, 6); got != "-" {
-		t.Errorf("shortSid empty = %q, want %q", got, "-")
+	if got := ShortSid(&empty, 6); got != "-" {
+		t.Errorf("ShortSid empty = %q, want %q", got, "-")
 	}
 	// Width beyond the sid length clamps to the sid.
 	short := sess("abc")
-	if got := shortSid(&short, 6); got != "abc" {
-		t.Errorf("shortSid over-width = %q, want %q", got, "abc")
+	if got := ShortSid(&short, 6); got != "abc" {
+		t.Errorf("ShortSid over-width = %q, want %q", got, "abc")
 	}
 }

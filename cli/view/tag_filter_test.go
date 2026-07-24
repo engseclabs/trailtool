@@ -1,4 +1,4 @@
-package main
+package view
 
 import (
 	"testing"
@@ -45,19 +45,19 @@ func TestParseTagFilters(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseTagFilters(tt.input)
+			got, err := ParseTagFilters(tt.input)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("parseTagFilters() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("ParseTagFilters() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !tt.wantErr {
 				for k, v := range tt.want {
 					if got[k] != v {
-						t.Errorf("parseTagFilters()[%q] = %q, want %q", k, got[k], v)
+						t.Errorf("ParseTagFilters()[%q] = %q, want %q", k, got[k], v)
 					}
 				}
 				if len(got) != len(tt.want) {
-					t.Errorf("parseTagFilters() len = %d, want %d", len(got), len(tt.want))
+					t.Errorf("ParseTagFilters() len = %d, want %d", len(got), len(tt.want))
 				}
 			}
 		})
@@ -111,9 +111,9 @@ func TestSessionMatchesTags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := sessionMatchesTags(tt.sessionTags, tt.filters)
+			got := SessionMatchesTags(tt.sessionTags, tt.filters)
 			if got != tt.want {
-				t.Errorf("sessionMatchesTags() = %v, want %v", got, tt.want)
+				t.Errorf("SessionMatchesTags() = %v, want %v", got, tt.want)
 			}
 		})
 	}
