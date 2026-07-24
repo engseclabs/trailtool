@@ -30,26 +30,29 @@ into `cli/commands/` (Cobra + store) and `cli/view/` (formatting) on top of it.
   its own PR (output byte-identical) before any styling lands, so each diff is
   legible and regressions bisect cleanly to "move" vs "restyle" (§10).
 
-This design is grounded in the **current shipped code**, not the original design
-brief's screenshots. Where the brief diverged from reality, the code wins (§2).
+## 2. Current behavior this design preserves
 
-## 2. Grounding: where the brief was stale
+Several output behaviors are already correct in shipped code and this redesign
+keeps them — it restyles and reorganizes, it does not relitigate these:
 
-The originating brief was written against screenshots and predates several
-shipped commits. The design silently builds on current reality; the divergences
-are recorded here once so reviewers aren't confused by the brief.
+- **Session selection is by SID.** `sessions detail` selects via `--session <SID>`
+  (short prefix ok, or `latest`). `--index` selection exists only on
+  `accounts` / `roles` / `resources` detail. The redesign preserves both.
+- **Client command namespaces are already split.** `splitCommandNamespaces`
+  separates bare CloudTrail event names (`API events:`) from `ua:`-prefixed
+  user-agent tokens (`client commands:`). They stay two labeled lists (§5.1).
+- **Client counts are already reconciled.** The client line renders
+  `N requests: M ok, K denied` — "requests" is inclusive of denied, deliberately
+  distinct from the session's success-only Events line, so no client appears to
+  have more events than its session. The redesign keeps this framing (§5.1).
+- **Current list columns** are the baseline for the responsive table work:
+  people = `# PERSON KEY SESSIONS ROLES ACCOUNTS LAST SEEN`; sessions =
+  `SID WHEN USER ROLE ACCOUNT EVENTS TYPE DURATION CHAINED`.
 
-| Brief assumption | Shipped reality (this design's baseline) |
-|---|---|
-| Session detail selects via `--at latest` / `--index`; those mutual-exclusion errors are a live empty-state | **Gone.** `sessions detail` selects via `--session <SID>` (short prefix ok, or `latest`). `--index` survives only on `accounts`/`roles`/`resources` detail. |
-| Client `commands` mixes `ua:` and bare CloudTrail names in one displayed list — should they be split? | **Already split** into `API events:` and `client commands:` (`splitCommandNamespaces`, commit `3bd105d`). Design keeps the split. |
-| Client line can imply more events than the session's `events_count` | **Already reconciled** — renders `N requests: M ok, K denied`, labeled "requests" precisely to avoid a shared-denominator illusion. Design keeps this framing. |
-| people-list columns are `EMAIL / DISPLAY NAME` | Actual columns are `PERSON / KEY`. session-list has a `SID` column. |
-
-What the brief got **right and remains unaddressed** — and is therefore the real
-work: no shared render system, no color/TTY/width awareness, inconsistent
-IA/typography/timestamps, alphabetical "Top Events", leaking AWS errors, and
-stdout/stderr interleaving in `status`.
+The unaddressed gaps this design targets: no shared render system, no
+color/TTY/width awareness, inconsistent IA/typography/timestamps,
+alphabetically-sorted "Top Events", leaking raw AWS errors, and stdout/stderr
+interleaving in `status`.
 
 ## 3. Package architecture
 
@@ -240,7 +243,8 @@ width-aware.
 - **Empty `clients[]` is ambiguous**, not proof of no client. When a session has
   events but no client aggregates, print a `Muted` note:
   `Clients: none recorded (pre-cutover data, service-only traffic, or no accepted user agent)`.
-  This directly answers the brief's "empty ≠ no client" concern.
+  An empty `clients[]` is not proof that no client was involved, and the note
+  says so rather than silently omitting the section.
 
 ## 6. Responsive output
 
@@ -342,9 +346,9 @@ PRs 1–3 link `Part of #25`; PR 4 links `Closes #25`.
   `raw_user_agent_samples` in human output (JSON already exposes them). Additive
   flag; deferrable.
 - A mixed-client **indicator** on `sessions list` (e.g. a `CLIENTS` column or a
-  marker when a session spans client families). The brief asks whether a
-  mixed-client session deserves a security signal; recommendation: a **neutral**
-  count/marker only — TrailTool reports, it does not adjudicate. Deferrable to a
-  follow-up issue since it touches the list schema.
+  marker when a session spans client families). Recommendation: a **neutral**
+  count/marker only — TrailTool reports, it does not adjudicate — rather than a
+  security signal. Deferrable to a follow-up issue since it touches the list
+  schema.
 
 Neither is required for #25; both would be separate slices if pursued.
