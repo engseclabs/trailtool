@@ -69,7 +69,7 @@ func newSession(ns, personKey, sk, anchor, sessionType, roleARN, roleID, account
 }
 
 // accumulateSessionEvent folds one event into its session record.
-func accumulateSessionEvent(sess *types.DynamoDBSession, event types.CloudTrailRecord, resourceList []string) {
+func accumulateSessionEvent(sess *types.DynamoDBSession, event types.CloudTrailRecord, resourceList []types.ResourceIdentity) {
 	eventTime := event.EventTime
 	if sess.StartTime == "" || eventTime < sess.StartTime {
 		sess.StartTime = eventTime
@@ -97,10 +97,11 @@ func accumulateSessionEvent(sess *types.DynamoDBSession, event types.CloudTrailR
 
 		if len(resourceList) > 0 {
 			for _, resource := range resourceList {
-				sess.DeniedResourcesAccessed[resource]++
+				sess.DeniedResourcesAccessed[resource.Identifier]++
 				found := false
 				for i := range sess.DeniedResourceAccesses {
-					if sess.DeniedResourceAccesses[i].Resource == resource &&
+					if sess.DeniedResourceAccesses[i].Resource == resource.Identifier &&
+						sess.DeniedResourceAccesses[i].ResourceAccountID == resource.AccountID &&
 						sess.DeniedResourceAccesses[i].Service == event.EventSource &&
 						sess.DeniedResourceAccesses[i].EventName == event.EventName &&
 						sess.DeniedResourceAccesses[i].PolicyARN == policyInfo.PolicyARN {
@@ -111,13 +112,14 @@ func accumulateSessionEvent(sess *types.DynamoDBSession, event types.CloudTrailR
 				}
 				if !found {
 					sess.DeniedResourceAccesses = append(sess.DeniedResourceAccesses, types.ResourceAccess{
-						Resource:     resource,
-						Service:      event.EventSource,
-						EventName:    event.EventName,
-						Count:        1,
-						PolicyARN:    policyInfo.PolicyARN,
-						PolicyType:   policyInfo.PolicyType,
-						ErrorMessage: event.ErrorMessage,
+						Resource:          resource.Identifier,
+						ResourceAccountID: resource.AccountID,
+						Service:           event.EventSource,
+						EventName:         event.EventName,
+						Count:             1,
+						PolicyARN:         policyInfo.PolicyARN,
+						PolicyType:        policyInfo.PolicyType,
+						ErrorMessage:      event.ErrorMessage,
 					})
 				}
 			}
@@ -147,10 +149,11 @@ func accumulateSessionEvent(sess *types.DynamoDBSession, event types.CloudTrailR
 		sess.EventsCount++
 		sess.EventCounts[eventKey]++
 		for _, resource := range resourceList {
-			sess.ResourcesAccessed[resource]++
+			sess.ResourcesAccessed[resource.Identifier]++
 			found := false
 			for i := range sess.ResourceAccesses {
-				if sess.ResourceAccesses[i].Resource == resource &&
+				if sess.ResourceAccesses[i].Resource == resource.Identifier &&
+					sess.ResourceAccesses[i].ResourceAccountID == resource.AccountID &&
 					sess.ResourceAccesses[i].Service == event.EventSource &&
 					sess.ResourceAccesses[i].EventName == event.EventName {
 					sess.ResourceAccesses[i].Count++
@@ -160,10 +163,11 @@ func accumulateSessionEvent(sess *types.DynamoDBSession, event types.CloudTrailR
 			}
 			if !found {
 				sess.ResourceAccesses = append(sess.ResourceAccesses, types.ResourceAccess{
-					Resource:  resource,
-					Service:   event.EventSource,
-					EventName: event.EventName,
-					Count:     1,
+					Resource:          resource.Identifier,
+					ResourceAccountID: resource.AccountID,
+					Service:           event.EventSource,
+					EventName:         event.EventName,
+					Count:             1,
 				})
 			}
 		}

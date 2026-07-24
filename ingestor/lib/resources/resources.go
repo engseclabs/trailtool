@@ -3,6 +3,7 @@
 package resources
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log"
 	"strings"
@@ -10,8 +11,101 @@ import (
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
 
-// ExtractResources normalizes resources from an event
-func ExtractResources(event types.CloudTrailRecord) []string {
+// ExtractResources returns account-qualified resource identities from an
+// event. CloudTrail resource metadata wins; recipient and caller accounts are
+// fallbacks for services that only identify resources in request parameters.
+func ExtractResources(event types.CloudTrailRecord, callerAccountID string) []types.ResourceIdentity {
+	identifiers := extractResourceIdentifiers(event)
+	result := make([]types.ResourceIdentity, 0, len(identifiers))
+	seen := make(map[string]bool)
+	for _, identifier := range identifiers {
+		identity := resourceIdentity(event, identifier, callerAccountID)
+		key := ResourceKey(identity.AccountID, identity.Identifier)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, identity)
+	}
+	return result
+}
+
+// ResourceKey returns the resource table sort key and canonical relation ID.
+func ResourceKey(accountID, identifier string) string {
+	return accountID + "#" + base64.RawURLEncoding.EncodeToString([]byte(identifier))
+}
+
+// ResourceKeys returns canonical account-qualified IDs.
+func ResourceKeys(resources []types.ResourceIdentity) []string {
+	keys := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		keys = append(keys, ResourceKey(resource.AccountID, resource.Identifier))
+	}
+	return keys
+}
+
+func resourceIdentity(event types.CloudTrailRecord, identifier, callerAccountID string) types.ResourceIdentity {
+	identity := types.ResourceIdentity{Identifier: identifier}
+	parts := strings.SplitN(identifier, ":", 3)
+	if len(parts) >= 2 {
+		identity.Type = parts[0] + ":" + parts[1]
+		identity.Name = parts[len(parts)-1]
+	} else {
+		identity.Type = "unknown"
+		identity.Name = identifier
+	}
+
+	if matched := matchingCloudTrailResource(event, identifier); matched != nil {
+		identity.ARN = matched.ARN
+		identity.AccountID = matched.AccountID
+		if identity.AccountID == "" {
+			identity.AccountID = accountIDFromARN(matched.ARN)
+		}
+		if identity.Type == "unknown" && matched.Type != "" {
+			identity.Type = strings.ToLower(matched.Type)
+		}
+	}
+	if identity.AccountID == "" {
+		identity.AccountID = event.RecipientAccountID
+	}
+	if identity.AccountID == "" {
+		identity.AccountID = callerAccountID
+	}
+	if identity.AccountID == "" {
+		identity.AccountID = event.UserIdentity.AccountID
+	}
+	return identity
+}
+
+func matchingCloudTrailResource(event types.CloudTrailRecord, identifier string) *types.CloudTrailResource {
+	for i := range event.Resources {
+		if event.Resources[i].ARN != "" && NormalizeResourceFromARN(event.Resources[i].ARN) == identifier {
+			return &event.Resources[i]
+		}
+	}
+	parts := strings.SplitN(identifier, ":", 3)
+	name := parts[len(parts)-1]
+	for i := range event.Resources {
+		if name != "" && strings.Contains(event.Resources[i].ARN, name) {
+			return &event.Resources[i]
+		}
+	}
+	if len(event.Resources) == 1 {
+		return &event.Resources[0]
+	}
+	return nil
+}
+
+func accountIDFromARN(arn string) string {
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) == 6 {
+		return parts[4]
+	}
+	return ""
+}
+
+// extractResourceIdentifiers normalizes resource display identifiers.
+func extractResourceIdentifiers(event types.CloudTrailRecord) []string {
 	var resources []string
 	seen := make(map[string]bool)
 
@@ -150,7 +244,7 @@ func ExtractResources(event types.CloudTrailRecord) []string {
 		if r.ARN != "" {
 			// Skip ARNs for services we already extract explicitly
 			arnParts := strings.SplitN(r.ARN, ":", 6)
-			if len(arnParts) >= 3 && handledServices[arnParts[2]] {
+			if len(resources) > 0 && len(arnParts) >= 3 && handledServices[arnParts[2]] {
 				continue
 			}
 			norm := NormalizeResourceFromARN(r.ARN)
@@ -180,6 +274,21 @@ func NormalizeResourceFromARN(arnStr string) string {
 	}
 	service := parts[2]
 	resourcePart := parts[5]
+	switch service {
+	case "s3":
+		bucket := strings.SplitN(resourcePart, "/", 2)[0]
+		if bucket != "" {
+			return fmt.Sprintf("s3:bucket:%s", bucket)
+		}
+	case "sns":
+		if resourcePart != "" {
+			return fmt.Sprintf("sns:topic:%s", resourcePart)
+		}
+	case "sqs":
+		if resourcePart != "" {
+			return fmt.Sprintf("sqs:queue:%s", resourcePart)
+		}
+	}
 	segments := strings.Split(resourcePart, "/")
 	if len(segments) >= 2 {
 		// Include resource type and name: service:type:name

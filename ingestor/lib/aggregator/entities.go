@@ -39,15 +39,20 @@ func processPersonEvent(people map[string]*types.DynamoDBPerson, p identity.Pers
 	person, exists := people[p.Key]
 	if !exists {
 		person = &types.DynamoDBPerson{
-			PersonKey: p.Key,
-			Tier:      p.Tier,
-			FirstSeen: eventDate,
-			LastSeen:  eventDate,
+			PersonKey:           p.Key,
+			Tier:                p.Tier,
+			FirstSeen:           eventDate,
+			LastSeen:            eventDate,
+			TopDeniedEventNames: make(map[string]int),
 		}
 		people[p.Key] = person
 	}
 	person.LastSeen = eventDate
 	person.EventsCount++
+	if session.IsAccessDeniedError(event.ErrorCode) {
+		person.DeniedEventCount++
+		person.TopDeniedEventNames[event.EventSource+":"+event.EventName]++
+	}
 
 	if p.Tier == identity.TierIdentityCenter || p.Tier == identity.TierEmail {
 		if name := sessionNameOf(event.UserIdentity.PrincipalID); name != "" {
@@ -65,22 +70,34 @@ func processPersonEvent(people map[string]*types.DynamoDBPerson, p identity.Pers
 }
 
 // processAccountEvent tracks aggregated data for an account.
-func processAccountEvent(accounts map[string]*types.DynamoDBAccount, accountID, eventDate string) {
+func processAccountEvent(accounts map[string]*types.DynamoDBAccount, accountID string, event types.CloudTrailRecord, eventDate string, clickOps bool) {
 	account, exists := accounts[accountID]
 	if !exists {
 		account = &types.DynamoDBAccount{
-			AccountID: accountID,
-			FirstSeen: eventDate,
-			LastSeen:  eventDate,
+			AccountID:           accountID,
+			FirstSeen:           eventDate,
+			LastSeen:            eventDate,
+			TopEventNames:       make(map[string]int),
+			TopDeniedEventNames: make(map[string]int),
 		}
 		accounts[accountID] = account
 	}
 	account.LastSeen = eventDate
 	account.EventsCount++
+	eventKey := event.EventSource + ":" + event.EventName
+	if session.IsAccessDeniedError(event.ErrorCode) {
+		account.TotalDeniedEvents++
+		account.TopDeniedEventNames[eventKey]++
+	} else {
+		account.TopEventNames[eventKey]++
+	}
+	if clickOps {
+		account.ClickOpsCount++
+	}
 }
 
 // processRoleEvent aggregates an event for a role.
-func processRoleEvent(roles map[string]*types.DynamoDBRole, event types.CloudTrailRecord, roleARN string, eventDate string) {
+func processRoleEvent(roles map[string]*types.DynamoDBRole, event types.CloudTrailRecord, roleARN string, resourceList []types.ResourceIdentity, eventDate string) {
 	role, exists := roles[roleARN]
 	if !exists {
 		role = &types.DynamoDBRole{
@@ -116,32 +133,35 @@ func processRoleEvent(roles map[string]*types.DynamoDBRole, event types.CloudTra
 		role.TotalDeniedEvents++
 		role.TopDeniedEventNames[eventKey]++
 
-		resourceList := resources.ExtractResources(event)
 		if len(resourceList) > 0 {
 			for _, resource := range resourceList {
 				found := false
 				for i := range role.DeniedResourceAccesses {
 					ra := &role.DeniedResourceAccesses[i]
-					if ra.Resource == resource && ra.EventName == event.EventName && ra.PolicyARN == policyInfo.PolicyARN {
+					if ra.Resource == resource.Identifier &&
+						ra.ResourceAccountID == resource.AccountID &&
+						ra.EventName == event.EventName &&
+						ra.PolicyARN == policyInfo.PolicyARN {
 						ra.Count++
 						found = true
 						break
 					}
 				}
 				if !found {
-					parts := strings.Split(resource, ":")
+					parts := strings.Split(resource.Identifier, ":")
 					svc := event.EventSource
 					if len(parts) > 0 {
 						svc = parts[0] + ".amazonaws.com"
 					}
 					role.DeniedResourceAccesses = append(role.DeniedResourceAccesses, types.ResourceAccessItem{
-						Resource:     resource,
-						Service:      svc,
-						EventName:    event.EventName,
-						Count:        1,
-						PolicyARN:    policyInfo.PolicyARN,
-						PolicyType:   policyInfo.PolicyType,
-						ErrorMessage: event.ErrorMessage,
+						Resource:          resource.Identifier,
+						ResourceAccountID: resource.AccountID,
+						Service:           svc,
+						EventName:         event.EventName,
+						Count:             1,
+						PolicyARN:         policyInfo.PolicyARN,
+						PolicyType:        policyInfo.PolicyType,
+						ErrorMessage:      event.ErrorMessage,
 					})
 				}
 			}
@@ -171,29 +191,31 @@ func processRoleEvent(roles map[string]*types.DynamoDBRole, event types.CloudTra
 		role.ServicesCount[event.EventSource]++
 		role.TopEventNames[eventKey]++
 
-		resourceList := resources.ExtractResources(event)
 		for _, resource := range resourceList {
-			role.ResourcesCount[resource]++
+			role.ResourcesCount[resource.Identifier]++
 			found := false
 			for i := range role.ResourceAccesses {
 				ra := &role.ResourceAccesses[i]
-				if ra.Resource == resource && ra.EventName == event.EventName {
+				if ra.Resource == resource.Identifier &&
+					ra.ResourceAccountID == resource.AccountID &&
+					ra.EventName == event.EventName {
 					ra.Count++
 					found = true
 					break
 				}
 			}
 			if !found {
-				parts := strings.Split(resource, ":")
+				parts := strings.Split(resource.Identifier, ":")
 				svc := event.EventSource
 				if len(parts) > 0 {
 					svc = parts[0] + ".amazonaws.com"
 				}
 				role.ResourceAccesses = append(role.ResourceAccesses, types.ResourceAccessItem{
-					Resource:  resource,
-					Service:   svc,
-					EventName: event.EventName,
-					Count:     1,
+					Resource:          resource.Identifier,
+					ResourceAccountID: resource.AccountID,
+					Service:           svc,
+					EventName:         event.EventName,
+					Count:             1,
 				})
 			}
 		}
@@ -203,7 +225,7 @@ func processRoleEvent(roles map[string]*types.DynamoDBRole, event types.CloudTra
 }
 
 // processServiceEvent aggregates an event for a service.
-func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event types.CloudTrailRecord, roleARN string, resourceList []string, eventDate string) {
+func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event types.CloudTrailRecord, roleARN string, resourceList []types.ResourceIdentity, eventDate string) {
 	eventSource := event.EventSource
 	svc, exists := serviceMap[eventSource]
 	if !exists {
@@ -239,65 +261,22 @@ func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event typ
 		appendUnique(&svc.RolesUsing, roleARN)
 	}
 	for _, resource := range resourceList {
-		appendUnique(&svc.ResourcesUsed, resource)
+		appendUnique(&svc.ResourcesUsed, resource.Identifier)
 	}
-}
-
-// findMatchingCloudTrailResource attempts to match a simplified resource identifier
-// with an entry in the CloudTrail Resources array.
-func findMatchingCloudTrailResource(event types.CloudTrailRecord, resourceIdentifier string) *types.CloudTrailResource {
-	if len(event.Resources) == 0 {
-		return nil
-	}
-	if len(event.Resources) == 1 {
-		return &event.Resources[0]
-	}
-
-	parts := strings.Split(resourceIdentifier, ":")
-	if len(parts) >= 3 {
-		resourceName := parts[2]
-		for i := range event.Resources {
-			if strings.Contains(event.Resources[i].ARN, resourceName) {
-				return &event.Resources[i]
-			}
-		}
-	}
-
-	return &event.Resources[0]
 }
 
 // processResourceEvent aggregates an event for a resource.
-func processResourceEvent(resourceMap map[string]*types.DynamoDBResource, event types.CloudTrailRecord, resourceIdentifier string, accountID string, eventDate string) {
-	resource, exists := resourceMap[resourceIdentifier]
+func processResourceEvent(resourceMap map[string]*types.DynamoDBResource, event types.CloudTrailRecord, identity types.ResourceIdentity, eventDate string) {
+	resourceKey := resources.ResourceKey(identity.AccountID, identity.Identifier)
+	resource, exists := resourceMap[resourceKey]
 	if !exists {
-		parts := strings.Split(resourceIdentifier, ":")
-		resourceType := "unknown"
-		resourceName := resourceIdentifier
-
-		if len(parts) >= 3 {
-			resourceType = parts[0] + ":" + parts[1]
-			resourceName = parts[2]
-		}
-
-		ctResource := findMatchingCloudTrailResource(event, resourceIdentifier)
-		resourceARN := ""
-		resourceAccountID := accountID
-
-		if ctResource != nil {
-			if ctResource.AccountID != "" {
-				resourceAccountID = ctResource.AccountID
-			}
-			if ctResource.ARN != "" {
-				resourceARN = ctResource.ARN
-			}
-		}
-
 		resource = &types.DynamoDBResource{
-			Identifier:          resourceIdentifier,
-			Type:                resourceType,
-			Name:                resourceName,
-			AccountID:           resourceAccountID,
-			ARN:                 resourceARN,
+			ResourceKey:         resourceKey,
+			Identifier:          identity.Identifier,
+			Type:                identity.Type,
+			Name:                identity.Name,
+			AccountID:           identity.AccountID,
+			ARN:                 identity.ARN,
 			FirstSeen:           eventDate,
 			LastSeen:            eventDate,
 			TotalEvents:         0,
@@ -305,7 +284,7 @@ func processResourceEvent(resourceMap map[string]*types.DynamoDBResource, event 
 			TotalDeniedEvents:   0,
 			TopDeniedEventNames: make(map[string]int),
 		}
-		resourceMap[resourceIdentifier] = resource
+		resourceMap[resourceKey] = resource
 	}
 
 	isAccessDenied := session.IsAccessDeniedError(event.ErrorCode)

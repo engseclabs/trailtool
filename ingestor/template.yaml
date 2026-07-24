@@ -63,12 +63,12 @@ Resources:
       AttributeDefinitions:
         - AttributeName: customerId
           AttributeType: S
-        - AttributeName: identifier
+        - AttributeName: resource_key
           AttributeType: S
       KeySchema:
         - AttributeName: customerId
           KeyType: HASH
-        - AttributeName: identifier
+        - AttributeName: resource_key
           KeyType: RANGE
 
   PeopleTable:

@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
@@ -472,7 +473,7 @@ func TestNormalizeResourceFromARN(t *testing.T) {
 		{
 			name: "S3 bucket ARN",
 			arn:  "arn:aws:s3:::my-bucket",
-			want: "s3:my-bucket",
+			want: "s3:bucket:my-bucket",
 		},
 		{
 			name: "DynamoDB table ARN",
@@ -503,9 +504,10 @@ func TestNormalizeResourceFromARN(t *testing.T) {
 
 func TestExtractResources(t *testing.T) {
 	tests := []struct {
-		name  string
-		event types.CloudTrailRecord
-		want  []string
+		name            string
+		event           types.CloudTrailRecord
+		callerAccountID string
+		want            []types.ResourceIdentity
 	}{
 		{
 			name: "S3 GetObject",
@@ -516,7 +518,13 @@ func TestExtractResources(t *testing.T) {
 					"bucketName": "my-bucket",
 				},
 			},
-			want: []string{"s3:bucket:my-bucket"},
+			callerAccountID: "111111111111",
+			want: []types.ResourceIdentity{{
+				Identifier: "s3:bucket:my-bucket",
+				AccountID:  "111111111111",
+				Type:       "s3:bucket",
+				Name:       "my-bucket",
+			}},
 		},
 		{
 			name: "Lambda Invoke",
@@ -527,18 +535,31 @@ func TestExtractResources(t *testing.T) {
 					"functionName": "my-function",
 				},
 			},
-			want: []string{"lambda:function:my-function"},
+			callerAccountID: "111111111111",
+			want: []types.ResourceIdentity{{
+				Identifier: "lambda:function:my-function",
+				AccountID:  "111111111111",
+				Type:       "lambda:function",
+				Name:       "my-function",
+			}},
 		},
 		{
-			name: "DynamoDB GetItem",
+			name: "DynamoDB GetItem uses recipient account",
 			event: types.CloudTrailRecord{
-				EventSource: "dynamodb.amazonaws.com",
-				EventName:   "GetItem",
+				EventSource:        "dynamodb.amazonaws.com",
+				EventName:          "GetItem",
+				RecipientAccountID: "222222222222",
 				RequestParameters: map[string]interface{}{
 					"tableName": "my-table",
 				},
 			},
-			want: []string{"dynamodb:table:my-table"},
+			callerAccountID: "111111111111",
+			want: []types.ResourceIdentity{{
+				Identifier: "dynamodb:table:my-table",
+				AccountID:  "222222222222",
+				Type:       "dynamodb:table",
+				Name:       "my-table",
+			}},
 		},
 		{
 			name: "No extractable resource",
@@ -547,22 +568,75 @@ func TestExtractResources(t *testing.T) {
 				EventName:         "AssumeRole",
 				RequestParameters: map[string]interface{}{},
 			},
-			want: nil,
+			callerAccountID: "111111111111",
+			want:            []types.ResourceIdentity{},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ExtractResources(tt.event)
-			if len(got) != len(tt.want) {
-				t.Errorf("ExtractResources() returned %d resources, want %d", len(got), len(tt.want))
-				return
-			}
-			for i, r := range got {
-				if r != tt.want[i] {
-					t.Errorf("ExtractResources()[%d] = %q, want %q", i, r, tt.want[i])
-				}
+			got := ExtractResources(tt.event, tt.callerAccountID)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ExtractResources() = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExtractResourcesPrefersCloudTrailResourceOwner(t *testing.T) {
+	event := types.CloudTrailRecord{
+		EventSource:        "s3.amazonaws.com",
+		EventName:          "GetObject",
+		RecipientAccountID: "111111111111",
+		RequestParameters: map[string]interface{}{
+			"bucketName": "shared-bucket",
+		},
+		Resources: []types.CloudTrailResource{{
+			ARN:       "arn:aws:s3:::shared-bucket",
+			AccountID: "222222222222",
+			Type:      "AWS::S3::Bucket",
+		}},
+	}
+
+	got := ExtractResources(event, "111111111111")
+	want := []types.ResourceIdentity{{
+		Identifier: "s3:bucket:shared-bucket",
+		AccountID:  "222222222222",
+		ARN:        "arn:aws:s3:::shared-bucket",
+		Type:       "s3:bucket",
+		Name:       "shared-bucket",
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ExtractResources() = %#v, want %#v", got, want)
+	}
+}
+
+func TestExtractResourcesUsesARNAccount(t *testing.T) {
+	event := types.CloudTrailRecord{
+		EventSource: "lambda.amazonaws.com",
+		EventName:   "Invoke",
+		Resources: []types.CloudTrailResource{{
+			ARN:  "arn:aws:lambda:us-east-1:222222222222:function:shared-function",
+			Type: "AWS::Lambda::Function",
+		}},
+	}
+
+	got := ExtractResources(event, "111111111111")
+	if len(got) != 1 ||
+		got[0].Identifier != "lambda:function:shared-function" ||
+		got[0].AccountID != "222222222222" {
+		t.Fatalf("resource identity = %#v", got)
+	}
+}
+
+func TestResourceKeyQualifiesIdentifierByAccount(t *testing.T) {
+	identifier := "lambda:function:shared-function"
+	first := ResourceKey("111111111111", identifier)
+	second := ResourceKey("222222222222", identifier)
+	if first == second {
+		t.Fatalf("ResourceKey returned %q for two accounts", first)
+	}
+	if want := "111111111111#bGFtYmRhOmZ1bmN0aW9uOnNoYXJlZC1mdW5jdGlvbg"; first != want {
+		t.Fatalf("ResourceKey() = %q, want %q", first, want)
 	}
 }
