@@ -1,0 +1,15 @@
+me@example.com
+Role:     AdministratorAccess
+Account:  123456789012
+SID:      sig-abc123
+Events:   42
+
+Top Events (2):
+  EVENT                                         COUNT  DENIED
+  s3:GetObject                                     30       0
+  aws-reserved/sso.amazo…tratorAccess_7d88aa2a     12     ⊘ 3
+
+✓ Config: OK
+✗ Data access: FAIL
+No resources found.
+Error: bad --session value

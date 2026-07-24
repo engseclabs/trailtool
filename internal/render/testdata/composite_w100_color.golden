@@ -1,0 +1,15 @@
+[1mme@example.com[0m
+Role:     [36mAdministratorAccess[0m
+Account:  123456789012
+SID:      [36msig-abc123[0m
+Events:   42
+
+[1m[2mTop Events (2):[0m
+  [1m[2mEVENT                              COUNT  DENIED[0m
+  s3:GetObject                          30       [31m0[0m
+  aws-reserved/sso…rAccess_7d88aa2a     12     [31m⊘ 3[0m
+
+[32m✓[0m [32mConfig: OK[0m
+[31m✗[0m [31mData access: FAIL[0m
+[2mNo resources found.[0m
+[31mError: bad --session value[0m
