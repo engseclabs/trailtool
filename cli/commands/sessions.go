@@ -158,7 +158,7 @@ Examples:
 			fmt.Print(view.Clients(rctx, sess.Clients, sess.EventsCount > 0))
 
 			fmt.Print(view.SessionTags(rctx, sess.SessionTags))
-			fmt.Print(view.DeniedEvents(rctx, sess.DeniedEventCount))
+			fmt.Print(view.DeniedEvents(rctx, sess.DeniedEventCount, sess.DeniedEventCounts))
 			// Top Events / Resources Accessed now sort count-descending (§5).
 			fmt.Print(view.TopEvents(rctx, sess.EventCounts))
 			fmt.Print(view.ResourcesAccessed(rctx, sess.ResourcesAccessed))

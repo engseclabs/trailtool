@@ -59,6 +59,23 @@ func TestGoldenTopEventsCountDesc(t *testing.T) {
 	assertGolden(t, "top_events_count_desc", TopEvents(ctxFor(100, false, true), counts))
 }
 
+func TestGoldenDeniedEvents(t *testing.T) {
+	// With a per-call breakdown: a count-descending table, denied-accented.
+	counts := map[string]int{
+		"pricelist.amazonaws.com:ListPriceLists": 3,
+		"ce.amazonaws.com:GetCostAndUsage":       1,
+		"wafv2.amazonaws.com:ListWebACLs":        1,
+	}
+	assertGolden(t, "denied_events_breakdown", DeniedEvents(ctxFor(100, false, true), 5, counts))
+	assertGolden(t, "denied_events_breakdown_color", DeniedEvents(ctxFor(100, true, true), 5, counts))
+	// Total known but no breakdown (older records): explanatory one-line fallback.
+	assertGolden(t, "denied_events_count_only", DeniedEvents(ctxFor(80, false, true), 6, nil))
+	// No denials: nothing rendered.
+	if got := DeniedEvents(ctxFor(80, false, true), 0, nil); got != "" {
+		t.Errorf("no denials should render nothing, got %q", got)
+	}
+}
+
 func TestGoldenSessionTitleKV(t *testing.T) {
 	sess := &models.Session{
 		PersonKey: "email#alice@example.com", SK: "sis#session-1",

@@ -59,13 +59,35 @@ func SessionTags(ctx render.Context, tags map[string]string) string {
 	return ctx.Section(render.Heading("Session Tags", -1), b.String())
 }
 
-// DeniedEvents renders the one-line Denied Events count when nonzero, "" else.
-// It is Denied-styled and carries the word, so it reads without color.
-func DeniedEvents(ctx render.Context, count int) string {
-	if count <= 0 {
+// DeniedEvents renders the Denied Events section (§5): the API calls this
+// session made that AWS rejected with an explicit deny or AccessDenied. When a
+// per-call breakdown is available (counts), it renders a count-descending table
+// like Top Events, with the counts Denied-accented and a leading ⊘/(denied)
+// accent on the heading. When only the total is known (older records with no
+// breakdown), it falls back to a one-line count so no signal is lost. Returns ""
+// when the session had no denials.
+func DeniedEvents(ctx render.Context, total int, counts map[string]int) string {
+	if total <= 0 && len(counts) == 0 {
 		return ""
 	}
-	return "\n" + ctx.Style(render.Denied, ctx.Symbol(render.SymDenied)+" Denied Events: "+n(count)) + "\n"
+	heading := ctx.Symbol(render.SymDenied) + " Denied Events"
+
+	// No breakdown: keep the explanatory one-line count.
+	if len(counts) == 0 {
+		return "\n" + ctx.Style(render.Denied, heading+": "+n(total)) +
+			ctx.Style(render.Muted, "  (calls AWS rejected with AccessDenied)") + "\n"
+	}
+
+	rows := sortByCountDesc(counts)
+	t := render.NewTable(
+		render.Column{Header: "EVENT", Align: render.AlignLeft},
+		render.Column{Header: "DENIED", Align: render.AlignRight},
+	)
+	for _, r := range rows {
+		t.Row(ctx.Style(render.Ident, r.name), ctx.Style(render.Denied, n(r.count)))
+	}
+	head := ctx.Style(render.Denied, heading) + " " + ctx.Style(render.Muted, "(calls AWS rejected):")
+	return ctx.Section(head, ctx.RenderTable(t, render.BodyIndent))
 }
 
 // TopEvents renders the Top Events section as a count-descending table (fixes
@@ -80,19 +102,18 @@ func ResourcesAccessed(ctx render.Context, counts map[string]int) string {
 	return countTable(ctx, "Resources Accessed", "RESOURCE", counts)
 }
 
-// countTable renders a name→count map as a count-descending two-column table in
-// a titled section. Ties break by name. Returns "" when the map is empty.
-func countTable(ctx render.Context, heading, nameHeader string, counts map[string]int) string {
-	if len(counts) == 0 {
-		return ""
-	}
-	type kv struct {
-		name  string
-		count int
-	}
-	rows := make([]kv, 0, len(counts))
+// countRow is one name→count pair for a count-descending table.
+type countRow struct {
+	name  string
+	count int
+}
+
+// sortByCountDesc flattens a name→count map into rows sorted count-descending,
+// ties broken by name for stable output.
+func sortByCountDesc(counts map[string]int) []countRow {
+	rows := make([]countRow, 0, len(counts))
 	for k, v := range counts {
-		rows = append(rows, kv{k, v})
+		rows = append(rows, countRow{k, v})
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].count != rows[j].count {
@@ -100,6 +121,16 @@ func countTable(ctx render.Context, heading, nameHeader string, counts map[strin
 		}
 		return rows[i].name < rows[j].name
 	})
+	return rows
+}
+
+// countTable renders a name→count map as a count-descending two-column table in
+// a titled section. Ties break by name. Returns "" when the map is empty.
+func countTable(ctx render.Context, heading, nameHeader string, counts map[string]int) string {
+	if len(counts) == 0 {
+		return ""
+	}
+	rows := sortByCountDesc(counts)
 	t := render.NewTable(
 		render.Column{Header: nameHeader, Align: render.AlignLeft},
 		render.Column{Header: "COUNT", Align: render.AlignRight},

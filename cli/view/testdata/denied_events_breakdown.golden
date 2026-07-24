@@ -1,0 +1,6 @@
+
+⊘ Denied Events (calls AWS rejected):
+  EVENT                                   DENIED
+  pricelist.amazonaws.com:ListPriceLists       3
+  ce.amazonaws.com:GetCostAndUsage             1
+  wafv2.amazonaws.com:ListWebACLs              1
