@@ -18,6 +18,8 @@ func main() {
 	}
 
 	rootCmd.PersistentFlags().StringVar(&commands.Format, "format", "text", "Output format: text or json")
+	rootCmd.PersistentFlags().StringVar(&commands.ColorMode, "color", "auto", "Colorize output: auto, always, or never")
+	rootCmd.PersistentFlags().BoolVar(&commands.Debug, "debug", false, "Show raw AWS/service errors for diagnosis")
 
 	rootCmd.Version = version
 	rootCmd.AddCommand(commands.StatusCmd())

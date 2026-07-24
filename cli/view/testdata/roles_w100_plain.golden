@@ -1,0 +1,3 @@
+#  NAME                 ACCOUNT       EVENTS  PEOPLE  SESSIONS  DENIED  LAST SEEN
+1  AdministratorAccess  123456789012     420       5        30       7  2026-07-24T11:00:00Z
+2  ReadOnly             123456789012      88       2         9       0  2026-07-22T08:00:00Z

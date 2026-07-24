@@ -6,7 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -46,7 +46,7 @@ func sessionsListCmd() *cobra.Command {
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				return fatal("failed to connect to AWS: %v", err)
+				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
 			filter := store.SessionFilter{
@@ -92,22 +92,8 @@ func sessionsListCmd() *cobra.Command {
 
 			label := personLabels(ctx, s)
 			sidWidth := view.SidDisplayWidth(sessions)
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "SID\tWHEN\tUSER\tROLE\tACCOUNT\tEVENTS\tTYPE\tDURATION\tCHAINED")
-			for i := range sessions {
-				sess := &sessions[i]
-				st := sess.DetectSessionType()
-				duration := fmt.Sprintf("%dm", sess.DurationMinutes)
-				chained := view.ChainedMarks(sess)
-				displayRole := sess.RoleName
-				if !long {
-					displayRole = view.ShortRoleName(sess.RoleName)
-				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
-					view.ShortSid(sess, sidWidth), view.RelativeTime(sess.StartTime), label(sess.PersonKey), displayRole, sess.AccountID,
-					sess.EventsCount, st, duration, chained)
-			}
-			return w.Flush()
+			fmt.Print(view.SessionList(renderContext(), sessions, sidWidth, long, label, time.Now()))
+			return nil
 		},
 	}
 
@@ -147,7 +133,7 @@ Examples:
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				return fatal("failed to connect to AWS: %v", err)
+				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
 			sess, err := resolveSession(ctx, s, sessionID, user)
@@ -325,7 +311,7 @@ Examples:
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				return fatal("failed to connect to AWS: %v", err)
+				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
 			sess, err := resolveSession(ctx, s, sessionID, user)
@@ -394,7 +380,7 @@ Examples:
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				return fatal("failed to connect to AWS: %v", err)
+				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
 			sess, err := resolveSession(ctx, s, sessionID, user)

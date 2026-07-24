@@ -1,0 +1,3 @@
+SID     WHEN    USER           ROLE                 EVENTS  TYPE  DURATION
+k7m2qp  3h ago  Alice Example  AdministratorAccess      30  API        45m
+q9w1e7  4h ago  idc#…#abcd     ReadOnly                  3  API         5m

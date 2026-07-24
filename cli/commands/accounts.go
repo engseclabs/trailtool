@@ -3,11 +3,10 @@ package commands
 import (
 	"context"
 	"fmt"
-	"os"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
+	"github.com/engseclabs/trailtool/cli/view"
 	"github.com/engseclabs/trailtool/core/store"
 )
 
@@ -29,7 +28,7 @@ func accountsListCmd() *cobra.Command {
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				return fatal("failed to connect to AWS: %v", err)
+				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
 			accounts, err := s.ListAccounts(ctx, CustomerID)
@@ -41,14 +40,8 @@ func accountsListCmd() *cobra.Command {
 				return printJSON(accounts)
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "#\tACCOUNT ID\tNAME\tPEOPLE\tSESSIONS\tROLES\tSERVICES\tRESOURCES\tLAST SEEN")
-			for i, a := range accounts {
-				fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n",
-					i+1, a.AccountID, a.AccountName, a.PeopleCount, a.SessionsCount,
-					a.RolesCount, a.ServicesCount, a.ResourcesCount, a.LastSeen)
-			}
-			return w.Flush()
+			fmt.Print(view.Accounts(renderContext(), accounts))
+			return nil
 		},
 	}
 }
@@ -71,7 +64,7 @@ func accountsDetailCmd() *cobra.Command {
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				return fatal("failed to connect to AWS: %v", err)
+				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
 			var accountID string
