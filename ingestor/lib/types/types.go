@@ -229,6 +229,51 @@ type DynamoDBPerson struct {
 	EventsCount    int      `dynamodbav:"events_count"`
 }
 
+// MaxRawUASamples bounds how many distinct raw user-agent strings each
+// ClientAggregate retains (DynamoDB item-size hygiene). The parsed fields carry
+// the signal; the samples are only an escape hatch to the literal string. Shared
+// by the aggregator (in-batch fold) and the merge so both cap identically.
+const MaxRawUASamples = 5
+
+// ClientAggregate is one client's activity within a session, parsed from the
+// CloudTrail userAgent and aggregated across the session's events. A single
+// session commonly carries several (console + aws-cli, terraform + boto3), so
+// sessions hold a []ClientAggregate keyed on Key. It replaces the old raw
+// user_agents []string entirely — the parsed identity feeds the UI (client name,
+// version, platform, commands, counts, first/last seen), and RawUserAgentSamples
+// keeps a bounded escape hatch to the literal strings.
+type ClientAggregate struct {
+	// Key is category|name|version|os|osversion|arch — the aggregation identity.
+	Key      string `json:"key" dynamodbav:"key"`
+	Category string `json:"category" dynamodbav:"category"` // cli | sdk | iac | browser | agent | service | unknown
+	Name     string `json:"name" dynamodbav:"name"`
+
+	Version      string `json:"version,omitempty" dynamodbav:"version,omitempty"`
+	OS           string `json:"os,omitempty" dynamodbav:"os,omitempty"`
+	OSVersion    string `json:"os_version,omitempty" dynamodbav:"os_version,omitempty"`
+	Architecture string `json:"architecture,omitempty" dynamodbav:"architecture,omitempty"`
+	Runtime      string `json:"runtime,omitempty" dynamodbav:"runtime,omitempty"`
+
+	TotalEventCount         int `json:"total_event_count" dynamodbav:"total_event_count"`
+	DeniedEventCount        int `json:"denied_event_count,omitempty" dynamodbav:"denied_event_count,omitempty"`
+	ServiceDrivenEventCount int `json:"service_driven_event_count,omitempty" dynamodbav:"service_driven_event_count,omitempty"`
+
+	FirstSeen string `json:"first_seen" dynamodbav:"first_seen"`
+	LastSeen  string `json:"last_seen" dynamodbav:"last_seen"`
+
+	// Commands counts what this client did. It holds two namespaces: bare
+	// CloudTrail eventNames (e.g. "PutObject") and, prefixed "ua:", any command
+	// token the userAgent itself carried (e.g. "ua:s3.cp"). eventNames are always
+	// present; ua: tokens appear only for clients that embed them (aws-cli).
+	Commands map[string]int `json:"commands,omitempty" dynamodbav:"commands,omitempty"`
+	// Components holds single-valued stable extras the parser found but that
+	// aren't promoted to their own column: awscrt, pyimpl, installer, botocore,
+	// terraform_provider_aws. Last non-empty write wins on merge.
+	Components map[string]string `json:"components,omitempty" dynamodbav:"components,omitempty"`
+	// RawUserAgentSamples retains up to maxRawUASamples distinct raw strings.
+	RawUserAgentSamples []string `json:"raw_user_agent_samples,omitempty" dynamodbav:"raw_user_agent_samples,omitempty"`
+}
+
 // ResourceAccess represents a detailed resource access record
 type ResourceAccess struct {
 	Resource     string `dynamodbav:"resource"`   // e.g., "s3:bucket:my-bucket"
@@ -294,7 +339,7 @@ type DynamoDBSession struct {
 	ServicesCount           int              `dynamodbav:"services_count"`
 	ResourcesCount          int              `dynamodbav:"resources_count"`
 	SourceIPs               []string         `dynamodbav:"source_ips"`
-	UserAgents              []string         `dynamodbav:"user_agents"`
+	Clients                 []ClientAggregate `dynamodbav:"clients"` // per-client parsed user-agent aggregates (replaces user_agents)
 	EventCounts             map[string]int   `dynamodbav:"event_counts"`       // "eventSource:eventName" -> count
 	ResourcesAccessed       map[string]int   `dynamodbav:"resources_accessed"` // resource identifier -> count
 	ResourceAccesses        []ResourceAccess `dynamodbav:"resource_accesses"`

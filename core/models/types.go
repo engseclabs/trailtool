@@ -68,9 +68,13 @@ type Session struct {
 	ServiceDrivenEventCount int              `json:"service_driven_event_count,omitempty" dynamodbav:"service_driven_event_count"`
 	ServicesCount           int              `json:"services_count" dynamodbav:"services_count"`
 	ResourcesCount          int              `json:"resources_count" dynamodbav:"resources_count"`
-	SourceIPs               []string         `json:"source_ips" dynamodbav:"source_ips"`
-	UserAgents              []string         `json:"user_agents" dynamodbav:"user_agents"`
-	EventCounts             map[string]int   `json:"event_counts" dynamodbav:"event_counts"`
+	SourceIPs               []string          `json:"source_ips" dynamodbav:"source_ips"`
+	// Clients are the per-client parsed user-agent aggregates (replaces the old
+	// user_agents []string). Store reads run through Session.Normalize, so this
+	// serializes as [] (never null) even for historical rows that predate client
+	// aggregation and carry no "clients" attribute.
+	Clients                 []ClientAggregate `json:"clients" dynamodbav:"clients"`
+	EventCounts             map[string]int    `json:"event_counts" dynamodbav:"event_counts"`
 	ResourcesAccessed       map[string]int   `json:"resources_accessed" dynamodbav:"resources_accessed"`
 	ResourceAccesses        []ResourceAccess `json:"resource_accesses,omitempty" dynamodbav:"resource_accesses"`
 
@@ -133,6 +137,18 @@ type Session struct {
 // chained/login/MCP attribution fields use to point at other sessions.
 func (s *Session) Ref() string {
 	return s.PersonKey + "|" + s.SK
+}
+
+// Normalize fixes up a freshly-unmarshaled session so its JSON shape is stable
+// regardless of how the stored item looked. Historical rows (ingested before
+// client aggregation) have no "clients" attribute, which unmarshals to a nil
+// slice and would serialize as "clients": null; normalize it to [] so consumers
+// see a consistent array. Returns the receiver for chaining.
+func (s *Session) Normalize() *Session {
+	if s.Clients == nil {
+		s.Clients = []ClientAggregate{}
+	}
+	return s
 }
 
 // sidLength mirrors identity.SidLength on the ingestor side. The two trees don't
@@ -198,6 +214,36 @@ type Role struct {
 
 	// Enriched information
 	AccountName string `json:"account_name,omitempty"`
+}
+
+// ClientAggregate is one client's activity within a session, parsed from the
+// CloudTrail userAgent (client identity, version, platform, per-client commands
+// and counts, first/last seen). Sessions carry a []ClientAggregate — one row per
+// distinct client — replacing the old raw user_agents []string. Mirror of
+// types.ClientAggregate on the ingestor side; keep the two in sync.
+type ClientAggregate struct {
+	Key      string `json:"key" dynamodbav:"key"`
+	Category string `json:"category" dynamodbav:"category"`
+	Name     string `json:"name" dynamodbav:"name"`
+
+	Version      string `json:"version,omitempty" dynamodbav:"version,omitempty"`
+	OS           string `json:"os,omitempty" dynamodbav:"os,omitempty"`
+	OSVersion    string `json:"os_version,omitempty" dynamodbav:"os_version,omitempty"`
+	Architecture string `json:"architecture,omitempty" dynamodbav:"architecture,omitempty"`
+	Runtime      string `json:"runtime,omitempty" dynamodbav:"runtime,omitempty"`
+
+	TotalEventCount         int `json:"total_event_count" dynamodbav:"total_event_count"`
+	DeniedEventCount        int `json:"denied_event_count,omitempty" dynamodbav:"denied_event_count,omitempty"`
+	ServiceDrivenEventCount int `json:"service_driven_event_count,omitempty" dynamodbav:"service_driven_event_count,omitempty"`
+
+	FirstSeen string `json:"first_seen" dynamodbav:"first_seen"`
+	LastSeen  string `json:"last_seen" dynamodbav:"last_seen"`
+
+	// Commands: bare CloudTrail eventNames plus "ua:"-prefixed userAgent command
+	// tokens, each counted. See types.ClientAggregate for the full contract.
+	Commands            map[string]int    `json:"commands,omitempty" dynamodbav:"commands,omitempty"`
+	Components          map[string]string `json:"components,omitempty" dynamodbav:"components,omitempty"`
+	RawUserAgentSamples []string          `json:"raw_user_agent_samples,omitempty" dynamodbav:"raw_user_agent_samples,omitempty"`
 }
 
 // ResourceAccess represents a detailed resource access record

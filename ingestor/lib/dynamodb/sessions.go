@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -125,7 +126,7 @@ func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSessi
 		EventsCount:             existing.EventsCount + incoming.EventsCount,
 		ServiceDrivenEventCount: existing.ServiceDrivenEventCount + incoming.ServiceDrivenEventCount,
 		SourceIPs:               MergeUniqueStrings(existing.SourceIPs, incoming.SourceIPs),
-		UserAgents:              MergeUniqueStrings(existing.UserAgents, incoming.UserAgents),
+		Clients:                 MergeClients(existing.Clients, incoming.Clients),
 		EventCounts:             mergedEventCounts,
 		ResourcesAccessed:       mergedResourcesAccessed,
 		ResourceAccesses:        MergeResourceAccesses(existing.ResourceAccesses, incoming.ResourceAccesses),
@@ -260,4 +261,119 @@ func MergeEventAccesses(a, b []types.EventAccess) []types.EventAccess {
 	}
 
 	return result
+}
+
+// MergeClients merges two []ClientAggregate keyed on ClientAggregate.Key. The
+// result is a deterministic function of the multiset of inputs — independent of
+// batch order and of the order within each slice:
+//
+//   - counts sum; FirstSeen/LastSeen take min/max (RFC3339 lexical);
+//   - Components union, with the lexically-smallest value winning any per-key
+//     conflict (never "last write");
+//   - raw samples take the distinct union sorted lexically, then capped, so the
+//     retained set is the same regardless of arrival order;
+//   - output is sorted by Key.
+//
+// Counts are additive per batch. This is NOT self-idempotent — MergeClients(x,x)
+// doubles counts — because a batch's own aggregate is meant to be folded exactly
+// once. Redelivery of the same S3 object is prevented upstream by the
+// ingested-file guard (trailtool-ingested-files), not here; that is what makes
+// the end-to-end pipeline idempotent.
+func MergeClients(a, b []types.ClientAggregate) []types.ClientAggregate {
+	byKey := make(map[string]*types.ClientAggregate, len(a)+len(b))
+
+	add := func(c types.ClientAggregate) {
+		existing, ok := byKey[c.Key]
+		if !ok {
+			cp := c // copy; don't alias caller's backing array
+			byKey[c.Key] = &cp
+			return
+		}
+		existing.TotalEventCount += c.TotalEventCount
+		existing.DeniedEventCount += c.DeniedEventCount
+		existing.ServiceDrivenEventCount += c.ServiceDrivenEventCount
+
+		if c.FirstSeen != "" && (existing.FirstSeen == "" || c.FirstSeen < existing.FirstSeen) {
+			existing.FirstSeen = c.FirstSeen
+		}
+		if c.LastSeen > existing.LastSeen {
+			existing.LastSeen = c.LastSeen
+		}
+
+		// Version/OS/OSVersion/Architecture/Runtime are all part of Key, so they
+		// are identical for every c that lands here — nothing to reconcile.
+		existing.Commands = MergeIntMaps(existing.Commands, c.Commands)
+		existing.Components = mergeComponents(existing.Components, c.Components)
+		existing.RawUserAgentSamples = mergeSamples(existing.RawUserAgentSamples, c.RawUserAgentSamples)
+	}
+
+	for _, c := range a {
+		add(c)
+	}
+	for _, c := range b {
+		add(c)
+	}
+
+	keys := make([]string, 0, len(byKey))
+	for k := range byKey {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	result := make([]types.ClientAggregate, 0, len(keys))
+	for _, k := range keys {
+		result = append(result, *byKey[k])
+	}
+	return result
+}
+
+// mergeComponents unions two component maps. On a per-key value conflict the
+// lexically-smallest value wins, so the result is independent of arrival order.
+func mergeComponents(a, b map[string]string) map[string]string {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(a)+len(b))
+	put := func(k, v string) {
+		if v == "" {
+			return
+		}
+		if cur, ok := out[k]; !ok || v < cur {
+			out[k] = v
+		}
+	}
+	for k, v := range a {
+		put(k, v)
+	}
+	for k, v := range b {
+		put(k, v)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// mergeSamples returns the distinct union of two sample slices, sorted lexically
+// and capped at maxRawUASamples. Sorting-before-capping makes the retained set a
+// deterministic function of the inputs, not of arrival order.
+func mergeSamples(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	for _, s := range a {
+		seen[s] = true
+	}
+	for _, s := range b {
+		seen[s] = true
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	union := make([]string, 0, len(seen))
+	for s := range seen {
+		union = append(union, s)
+	}
+	sort.Strings(union)
+	if len(union) > types.MaxRawUASamples {
+		union = union[:types.MaxRawUASamples]
+	}
+	return union
 }
