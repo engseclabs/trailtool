@@ -59,6 +59,7 @@ func TablesFromEnv(prefix string) aggregator.Tables {
 		People:        GetEnvOrDefault("PEOPLE_TABLE", prefix+"-people"),
 		Sessions:      GetEnvOrDefault("SESSIONS_TABLE", prefix+"-sessions"),
 		Accounts:      GetEnvOrDefault("ACCOUNTS_TABLE", prefix+"-accounts"),
+		Relations:     GetEnvOrDefault("RELATIONS_TABLE", prefix+"-relations"),
 		IdentityLinks: GetEnvOrDefault("IDENTITY_LINKS_TABLE", prefix+"-identity-links"),
 	}
 }
