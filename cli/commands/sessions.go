@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -14,6 +12,7 @@ import (
 	"github.com/engseclabs/trailtool/core/policy"
 	"github.com/engseclabs/trailtool/core/session"
 	"github.com/engseclabs/trailtool/core/store"
+	"github.com/engseclabs/trailtool/internal/render"
 )
 
 func SessionsCmd() *cobra.Command {
@@ -145,106 +144,68 @@ Examples:
 				return printJSON(sess)
 			}
 
+			rctx := renderContext()
+			now := time.Now()
 			label := personLabels(ctx, s)
-			fmt.Printf("User: %s (%s)\n", label(sess.PersonKey), sess.PersonKey)
-			fmt.Printf("Role: %s (%s)\n", sess.RoleName, sess.RoleARN)
-			fmt.Printf("Account: %s\n", sess.AccountID)
-			fmt.Printf("Type: %s\n", sess.DetectSessionType())
-			fmt.Printf("Session: %s\n", sess.SK)
-			fmt.Printf("Time: %s -> %s (%dm) [%s]\n", sess.StartTime, sess.EndTime, sess.DurationMinutes, view.RelativeTime(sess.StartTime))
-			fmt.Printf("Events: %d across %d services\n", sess.EventsCount, sess.ServicesCount)
-			if sess.ServiceDrivenEventCount > 0 {
-				fmt.Printf("Service-driven events: %d (AWS services calling with these credentials)\n", sess.ServiceDrivenEventCount)
-			}
 
-			view.PrintClients(sess.Clients)
+			// Title + key facts (§5). The time line uses the centralized interval +
+			// relative rule (§4.5); the command owns "now".
+			timeLine := fmt.Sprintf("%s (%dm) [%s]",
+				rctx.Interval(sess.StartTime, sess.EndTime), sess.DurationMinutes, render.Relative(sess.StartTime, now))
+			fmt.Print(view.SessionTitleKV(rctx, sess, label(sess.PersonKey), timeLine))
 
-			if len(sess.SessionTags) > 0 {
-				fmt.Println("\nSession Tags:")
-				tagKeys := make([]string, 0, len(sess.SessionTags))
-				for k := range sess.SessionTags {
-					tagKeys = append(tagKeys, k)
-				}
-				sort.Strings(tagKeys)
-				for _, k := range tagKeys {
-					fmt.Printf("  %s: %s\n", k, sess.SessionTags[k])
-				}
-			}
+			// Clients (§5.1) — restyle plus the empty-ambiguity note.
+			fmt.Print(view.Clients(rctx, sess.Clients, sess.EventsCount > 0))
 
-			if sess.DeniedEventCount > 0 {
-				fmt.Printf("Denied Events: %d\n", sess.DeniedEventCount)
-			}
-
-			if len(sess.EventCounts) > 0 {
-				fmt.Println("\nTop Events:")
-				eventKeys := make([]string, 0, len(sess.EventCounts))
-				for k := range sess.EventCounts {
-					eventKeys = append(eventKeys, k)
-				}
-				sort.Strings(eventKeys)
-				for _, event := range eventKeys {
-					fmt.Printf("  %s: %d\n", event, sess.EventCounts[event])
-				}
-			}
-
-			if len(sess.ResourcesAccessed) > 0 {
-				fmt.Println("\nResources Accessed:")
-				resourceKeys := make([]string, 0, len(sess.ResourcesAccessed))
-				for k := range sess.ResourcesAccessed {
-					resourceKeys = append(resourceKeys, k)
-				}
-				sort.Strings(resourceKeys)
-				for _, resource := range resourceKeys {
-					fmt.Printf("  %s: %d\n", resource, sess.ResourcesAccessed[resource])
-				}
-			}
+			fmt.Print(view.SessionTags(rctx, sess.SessionTags))
+			fmt.Print(view.DeniedEvents(rctx, sess.DeniedEventCount))
+			// Top Events / Resources Accessed now sort count-descending (§5).
+			fmt.Print(view.TopEvents(rctx, sess.EventCounts))
+			fmt.Print(view.ResourcesAccessed(rctx, sess.ResourcesAccessed))
 
 			// AWS MCP Server agent traffic: show the MCP resource and the human session that
 			// authorized the OAuth grant these agent credentials were minted under.
 			if sess.AgentAuthorizedBySession != "" || sess.MCPResource != "" {
 				if sess.MCPResource != "" {
-					fmt.Printf("\nAWS MCP Server: %s\n", sess.MCPResource)
+					fmt.Fprintf(rctx.Out, "\n%s %s\n", rctx.Style(render.Header, "AWS MCP Server:"), rctx.Style(render.Ident, sess.MCPResource))
 				}
 				if sess.SignInSessionArn != "" {
-					fmt.Printf("Sign-in session: %s\n", sess.SignInSessionArn)
+					fmt.Fprintf(rctx.Out, "%s %s\n", rctx.Style(render.Header, "Sign-in session:"), rctx.Style(render.Ident, sess.SignInSessionArn))
 				}
 				if sess.AgentAuthorizedBySession != "" && sess.AgentAuthorizedBySession != sess.Ref() {
-					printRefNav(ctx, s, "OAuth grant authorized by", sess.AgentAuthorizedBySession, label)
+					printRefNav(ctx, rctx, s, "OAuth grant authorized by", sess.AgentAuthorizedBySession, label, now)
 				}
 			}
 
 			// Login grant: show the human session that ran aws login to create these credentials
 			if sess.LoginGrantedBySession != "" {
-				fmt.Println()
-				printRefNav(ctx, s, "Credentials granted via aws login by", sess.LoginGrantedBySession, label)
+				fmt.Fprintln(rctx.Out)
+				printRefNav(ctx, rctx, s, "Credentials granted via aws login by", sess.LoginGrantedBySession, label, now)
 			}
 
 			// Chaining: child view — show parent with navigable time
 			if sess.AssumedFromSession != "" {
-				fmt.Println()
-				printRefNav(ctx, s, "Assumed by", sess.AssumedFromSession, label)
+				fmt.Fprintln(rctx.Out)
+				printRefNav(ctx, rctx, s, "Assumed by", sess.AssumedFromSession, label, now)
 			}
 
 			// Chaining: parent view — show each child session with navigable time
 			if len(sess.ChainedSessionRefs) > 0 || len(sess.ChainedRoles) > 0 {
-				fmt.Printf("\nAssumed Roles (%d, %d events):\n", len(sess.ChainedRoles), sess.ChainedEventCount)
+				fmt.Fprint(rctx.Out, rctx.Section(
+					fmt.Sprintf("Assumed Roles (%d, %d events):", len(sess.ChainedRoles), sess.ChainedEventCount), ""))
 				shown := 0
 				for _, childRef := range sess.ChainedSessionRefs {
 					childSess, _ := s.GetSessionByRef(ctx, CustomerID, childRef)
 					if childSess == nil {
-						fmt.Printf("  %s\n", childRef)
+						fmt.Fprintf(rctx.Out, "  %s\n", childRef)
 						continue
 					}
 					shown++
-					fmt.Printf("  %s  %-25s  %d events  %dm  [%s]\n",
-						childSess.StartTime, childSess.RoleName,
-						childSess.EventsCount, childSess.DurationMinutes,
-						view.RelativeTime(childSess.StartTime))
-					fmt.Printf("    → trailtool sessions detail --session %s\n", view.SidForRefShort(childRef))
+					printChildRow(rctx, childSess, childSess.RoleName, childRef, now)
 				}
 				if shown == 0 && len(sess.ChainedSessionRefs) == 0 {
 					for _, childRoleARN := range sess.ChainedRoles {
-						fmt.Printf("  %s\n", childRoleARN)
+						fmt.Fprintf(rctx.Out, "  %s\n", rctx.Style(render.Ident, childRoleARN))
 					}
 				}
 			}
@@ -252,31 +213,19 @@ Examples:
 			// Grants: parent view — sessions whose credentials this session
 			// authorized via aws login / MCP OAuth grants.
 			if len(sess.GrantedSessionRefs) > 0 {
-				fmt.Printf("\nAuthorized Sessions (%d):\n", len(sess.GrantedSessionRefs))
+				fmt.Fprint(rctx.Out, rctx.Section(
+					fmt.Sprintf("Authorized Sessions (%d):", len(sess.GrantedSessionRefs)), ""))
 				for _, gRef := range sess.GrantedSessionRefs {
 					gSess, _ := s.GetSessionByRef(ctx, CustomerID, gRef)
 					if gSess == nil {
-						fmt.Printf("  %s\n", gRef)
+						fmt.Fprintf(rctx.Out, "  %s\n", gRef)
 						continue
 					}
-					fmt.Printf("  %s  %-5s  %-25s  %d events  %dm  [%s]\n",
-						gSess.StartTime, gSess.DetectSessionType(), view.ShortRoleName(gSess.RoleName),
-						gSess.EventsCount, gSess.DurationMinutes, view.RelativeTime(gSess.StartTime))
-					fmt.Printf("    → trailtool sessions detail --session %s\n", view.SidForRefShort(gRef))
+					printChildRow(rctx, gSess, view.ShortRoleName(gSess.RoleName), gRef, now)
 				}
 			}
 
-			if sess.SessionPolicy != "" {
-				fmt.Println("\nSession Policy:")
-				prettyPolicy, ppErr := view.PrettyJSON(sess.SessionPolicy)
-				if ppErr != nil {
-					fmt.Printf("  %s\n", sess.SessionPolicy)
-				} else {
-					for _, line := range strings.Split(prettyPolicy, "\n") {
-						fmt.Printf("  %s\n", line)
-					}
-				}
-			}
+			fmt.Print(view.SessionPolicy(rctx, sess.SessionPolicy))
 
 			return nil
 		},

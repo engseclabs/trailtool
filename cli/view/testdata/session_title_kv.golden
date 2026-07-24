@@ -1,0 +1,7 @@
+Alice Example  (email#alice@example.com)
+Role:     AdministratorAccess  (arn:aws:iam::123456789012:role/AdministratorAccess)
+Account:  123456789012
+Type:     API
+Session:  sis#session-1
+Time:     2026-07-24T09:00:00Z → 2026-07-24T09:45:00Z (45m) [3h ago]
+Events:   30 across 3 services

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -97,41 +96,7 @@ func rolesDetailCmd() *cobra.Command {
 				return printJSON(role)
 			}
 
-			fmt.Printf("Role: %s\n", role.Name)
-			fmt.Printf("ARN: %s\n", role.ARN)
-			fmt.Printf("Account: %s\n", role.AccountID)
-			fmt.Printf("First Seen: %s\n", role.FirstSeen)
-			fmt.Printf("Last Seen: %s\n", role.LastSeen)
-			fmt.Printf("Total Events: %d\n", role.TotalEvents)
-			fmt.Printf("People: %d\n", role.PeopleCount)
-			fmt.Printf("Sessions: %d\n", role.SessionsCount)
-
-			if role.TotalDeniedEvents > 0 {
-				fmt.Printf("Denied Events: %d\n", role.TotalDeniedEvents)
-			}
-
-			if len(role.ServicesUsed) > 0 {
-				fmt.Println("\nServices Used:")
-				sortedSvcs := make([]string, len(role.ServicesUsed))
-				copy(sortedSvcs, role.ServicesUsed)
-				sort.Strings(sortedSvcs)
-				for _, svc := range sortedSvcs {
-					fmt.Printf("  %s\n", svc)
-				}
-			}
-
-			if len(role.TopEventNames) > 0 {
-				fmt.Println("\nTop Events:")
-				roleEventKeys := make([]string, 0, len(role.TopEventNames))
-				for k := range role.TopEventNames {
-					roleEventKeys = append(roleEventKeys, k)
-				}
-				sort.Strings(roleEventKeys)
-				for _, event := range roleEventKeys {
-					fmt.Printf("  %s: %d\n", event, role.TopEventNames[event])
-				}
-			}
-
+			fmt.Print(view.RoleDetail(renderContext(), role))
 			return nil
 		},
 	}

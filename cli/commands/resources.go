@@ -3,8 +3,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"os"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -63,35 +61,7 @@ func resourcesListCmd() *cobra.Command {
 			rctx := renderContext()
 
 			if clickops {
-				// ClickOps two-level report stays on tabwriter for now; it gets its
-				// render treatment in the session-detail/ClickOps slice (§10 PR 4).
-				if len(resources) == 0 {
-					fmt.Print(view.Resources(rctx, resources))
-					return nil
-				}
-				fmt.Printf("Found %d resources created/modified via web console:\n\n", len(resources))
-
-				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-				fmt.Fprintln(w, "#\tRESOURCE\tTYPE\tACCOUNT\tCLICKOPS EVENTS\tLAST SEEN")
-				for i, r := range resources {
-					fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%d\t%s\n",
-						i+1, r.Name, r.Type, r.AccountID, r.ClickOpsCount, r.LastSeen)
-				}
-				w.Flush()
-
-				label := personLabels(ctx, s)
-				fmt.Println("\n--- Console Operations ---")
-				for _, r := range resources {
-					fmt.Printf("\n%s (%s)\n", r.Name, r.Type)
-					for _, access := range r.ClickOpsAccesses {
-						date := access.AccessTime
-						if len(date) >= 10 {
-							date = date[:10]
-						}
-						fmt.Printf("  %s by %s (%dx) - %s\n",
-							access.EventName, label(access.PersonKey), access.EventCount, date)
-					}
-				}
+				fmt.Print(view.ClickOps(rctx, resources, personLabels(ctx, s)))
 				return nil
 			}
 
