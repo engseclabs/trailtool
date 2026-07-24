@@ -202,7 +202,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 				accountID = session.ExtractAccountIDFromARN(event.UserIdentity.ARN)
 			}
 
-			resourceList := resources.ExtractResources(event)
+			resourceList := resources.ExtractResources(event, accountID)
 
 			// === Session axis ===
 			var sess *types.DynamoDBSession
@@ -263,6 +263,11 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			if event.ErrorCode != "" {
 				log.Printf("EVENT_ERROR: event=%s:%s errorCode=%s person=%s", event.EventSource, event.EventName, event.ErrorCode, personKey)
 			}
+			clickOps := sess != nil &&
+				!session.IsAccessDeniedError(event.ErrorCode) &&
+				sess.SessionType == SessionTypeWeb &&
+				event.UserIdentity.InvokedBy == "" &&
+				session.IsClickOpsOperation(event.EventName)
 
 			// === Person ===
 			if rg.ok {
@@ -275,7 +280,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 			// === Account ===
 			if accountID != "" {
-				processAccountEvent(accounts, accountID, eventDate)
+				processAccountEvent(accounts, accountID, event, eventDate, clickOps)
 				addToSet(accountPeople, accountID, personKey)
 				addToSet(accountSessions, accountID, sessRef)
 				addToSet(accountRoles, accountID, roleARN)
@@ -284,7 +289,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 			// === Role ===
 			if roleARN != "" {
-				processRoleEvent(roles, event, roleARN, eventDate)
+				processRoleEvent(roles, event, roleARN, resourceList, eventDate)
 				addToSet(rolePeople, roleARN, personKey)
 				addToSet(roleSessions, roleARN, sessRef)
 				addToSet(roleAccounts, roleARN, accountID)
@@ -298,13 +303,13 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 			// === Resources ===
 			for _, resource := range resourceList {
-				processResourceEvent(resourceMap, event, resource, accountID, eventDate)
+				resourceKey := resources.ResourceKey(resource.AccountID, resource.Identifier)
+				processResourceEvent(resourceMap, event, resource, eventDate)
 
 				// Track ClickOps operations: console modifications by the human
 				// (never service fan-out with the human's credentials).
-				if sess != nil && sess.SessionType == SessionTypeWeb &&
-					event.UserIdentity.InvokedBy == "" && session.IsClickOpsOperation(event.EventName) {
-					if resourceEntry, ok := resourceMap[resource]; ok {
+				if clickOps {
+					if resourceEntry, ok := resourceMap[resourceKey]; ok {
 						found := false
 						for j := range resourceEntry.ClickOpsAccesses {
 							access := &resourceEntry.ClickOpsAccesses[j]
@@ -321,23 +326,23 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 								EventName:  event.EventName,
 								AccessTime: sess.StartTime,
 								EventCount: 1,
-								AccountID:  accountID,
+								AccountID:  resource.AccountID,
 							})
 						}
 						resourceEntry.ClickOpsCount++
 					}
 				}
 
-				addToSet(resourcePeople, resource, personKey)
-				addToSet(resourceSessions, resource, sessRef)
+				addToSet(resourcePeople, resourceKey, personKey)
+				addToSet(resourceSessions, resourceKey, sessRef)
 				if personKey != "" {
-					addToSet(personResources, personKey, resource)
+					addToSet(personResources, personKey, resourceKey)
 				}
 				if sessRef != "" {
-					addToSet(sessionResources, sessRef, resource)
+					addToSet(sessionResources, sessRef, resourceKey)
 				}
 				if accountID != "" {
-					addToSet(accountResources, accountID, resource)
+					addToSet(accountResources, accountID, resourceKey)
 				}
 			}
 
@@ -350,7 +355,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 				accountID,
 				roleARN,
 				event.EventSource,
-				resourceList,
+				resources.ResourceKeys(resourceList),
 			)
 		}
 

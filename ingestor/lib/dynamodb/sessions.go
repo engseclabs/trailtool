@@ -172,21 +172,22 @@ func MergeResourceAccesses(a, b []types.ResourceAccess) []types.ResourceAccess {
 
 	// Add all from first slice
 	for _, ra := range a {
-		key := fmt.Sprintf("%s:%s:%s:%s", ra.Service, ra.EventName, ra.Resource, ra.PolicyARN)
+		key := fmt.Sprintf("%s:%s:%s:%s:%s", ra.Service, ra.EventName, ra.ResourceAccountID, ra.Resource, ra.PolicyARN)
 		accessMap[key] = &types.ResourceAccess{
-			Resource:     ra.Resource,
-			Service:      ra.Service,
-			EventName:    ra.EventName,
-			Count:        ra.Count,
-			PolicyARN:    ra.PolicyARN,
-			PolicyType:   ra.PolicyType,
-			ErrorMessage: ra.ErrorMessage,
+			Resource:          ra.Resource,
+			ResourceAccountID: ra.ResourceAccountID,
+			Service:           ra.Service,
+			EventName:         ra.EventName,
+			Count:             ra.Count,
+			PolicyARN:         ra.PolicyARN,
+			PolicyType:        ra.PolicyType,
+			ErrorMessage:      ra.ErrorMessage,
 		}
 	}
 
 	// Merge from second slice
 	for _, ra := range b {
-		key := fmt.Sprintf("%s:%s:%s:%s", ra.Service, ra.EventName, ra.Resource, ra.PolicyARN)
+		key := fmt.Sprintf("%s:%s:%s:%s:%s", ra.Service, ra.EventName, ra.ResourceAccountID, ra.Resource, ra.PolicyARN)
 		if existing, exists := accessMap[key]; exists {
 			existing.Count += ra.Count
 			// Keep the first non-empty error message we saw.
@@ -195,13 +196,14 @@ func MergeResourceAccesses(a, b []types.ResourceAccess) []types.ResourceAccess {
 			}
 		} else {
 			accessMap[key] = &types.ResourceAccess{
-				Resource:     ra.Resource,
-				Service:      ra.Service,
-				EventName:    ra.EventName,
-				Count:        ra.Count,
-				PolicyARN:    ra.PolicyARN,
-				PolicyType:   ra.PolicyType,
-				ErrorMessage: ra.ErrorMessage,
+				Resource:          ra.Resource,
+				ResourceAccountID: ra.ResourceAccountID,
+				Service:           ra.Service,
+				EventName:         ra.EventName,
+				Count:             ra.Count,
+				PolicyARN:         ra.PolicyARN,
+				PolicyType:        ra.PolicyType,
+				ErrorMessage:      ra.ErrorMessage,
 			}
 		}
 	}

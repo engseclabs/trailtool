@@ -66,6 +66,15 @@ type CloudTrailResource struct {
 	Type      string `json:"type"`
 }
 
+// ResourceIdentity is an account-qualified resource extracted from one event.
+type ResourceIdentity struct {
+	Identifier string
+	AccountID  string
+	ARN        string
+	Type       string
+	Name       string
+}
+
 // OnBehalfOf identifies the IAM Identity Center user a request was made on behalf of.
 // It names the stable human principal in the identity store independent of
 // role-assumption and credential-refresh churn — the tier-1 identity key.
@@ -126,13 +135,14 @@ type DynamoDBRole struct {
 
 // ResourceAccessItem tracks resource access details for aggregation
 type ResourceAccessItem struct {
-	Resource     string `dynamodbav:"resource"`
-	Service      string `dynamodbav:"service"`
-	EventName    string `dynamodbav:"event_name"`
-	Count        int    `dynamodbav:"count"`
-	PolicyARN    string `dynamodbav:"policy_arn,omitempty"`    // ARN of denying policy (AWS Jan 2026)
-	PolicyType   string `dynamodbav:"policy_type,omitempty"`   // Type: SCP, RCP, identity-based, session, permission-boundary
-	ErrorMessage string `dynamodbav:"error_message,omitempty"` // Full CloudTrail error message for context
+	Resource          string `dynamodbav:"resource"`
+	ResourceAccountID string `dynamodbav:"resource_account_id,omitempty"`
+	Service           string `dynamodbav:"service"`
+	EventName         string `dynamodbav:"event_name"`
+	Count             int    `dynamodbav:"count"`
+	PolicyARN         string `dynamodbav:"policy_arn,omitempty"`    // ARN of denying policy (AWS Jan 2026)
+	PolicyType        string `dynamodbav:"policy_type,omitempty"`   // Type: SCP, RCP, identity-based, session, permission-boundary
+	ErrorMessage      string `dynamodbav:"error_message,omitempty"` // Full CloudTrail error message for context
 }
 
 // EventAccessItem tracks event access details for aggregation (for events without specific resources)
@@ -181,6 +191,7 @@ type ClickOpsAccess struct {
 // DynamoDBResource represents an aggregated resource record
 type DynamoDBResource struct {
 	CustomerID    string         `dynamodbav:"customerId"`
+	ResourceKey   string         `dynamodbav:"resource_key"`
 	Identifier    string         `dynamodbav:"identifier"`
 	Type          string         `dynamodbav:"type"`
 	ARN           string         `dynamodbav:"arn"`
@@ -216,17 +227,19 @@ type DynamoDBPerson struct {
 	// Email is the primary observed email (email_index GSI range key). Identity
 	// Center usernames are not required to be emails: non-email session names land
 	// in EmailsSeen (they're the username) but never become an Email.
-	Email          string   `dynamodbav:"email,omitempty"`
-	EmailsSeen     []string `dynamodbav:"emails_seen,omitempty"`
-	DisplayName    string   `dynamodbav:"display_name,omitempty"`
-	FirstSeen      string   `dynamodbav:"first_seen"`
-	LastSeen       string   `dynamodbav:"last_seen"`
-	SessionsCount  int      `dynamodbav:"sessions_count"`
-	AccountsCount  int      `dynamodbav:"accounts_count"`
-	RolesCount     int      `dynamodbav:"roles_count"`
-	ServicesCount  int      `dynamodbav:"services_count"`
-	ResourcesCount int      `dynamodbav:"resources_count"`
-	EventsCount    int      `dynamodbav:"events_count"`
+	Email               string         `dynamodbav:"email,omitempty"`
+	EmailsSeen          []string       `dynamodbav:"emails_seen,omitempty"`
+	DisplayName         string         `dynamodbav:"display_name,omitempty"`
+	FirstSeen           string         `dynamodbav:"first_seen"`
+	LastSeen            string         `dynamodbav:"last_seen"`
+	SessionsCount       int            `dynamodbav:"sessions_count"`
+	AccountsCount       int            `dynamodbav:"accounts_count"`
+	RolesCount          int            `dynamodbav:"roles_count"`
+	ServicesCount       int            `dynamodbav:"services_count"`
+	ResourcesCount      int            `dynamodbav:"resources_count"`
+	EventsCount         int            `dynamodbav:"events_count"`
+	DeniedEventCount    int            `dynamodbav:"denied_event_count,omitempty"`
+	TopDeniedEventNames map[string]int `dynamodbav:"top_denied_event_names,omitempty"`
 }
 
 // MaxRawUASamples bounds how many distinct raw user-agent strings each
@@ -276,13 +289,14 @@ type ClientAggregate struct {
 
 // ResourceAccess represents a detailed resource access record
 type ResourceAccess struct {
-	Resource     string `dynamodbav:"resource"`   // e.g., "s3:bucket:my-bucket"
-	Service      string `dynamodbav:"service"`    // e.g., "s3.amazonaws.com"
-	EventName    string `dynamodbav:"event_name"` // e.g., "PutObject"
-	Count        int    `dynamodbav:"count"`
-	PolicyARN    string `dynamodbav:"policy_arn,omitempty"`    // ARN of denying policy (from Jan 2026 AWS update)
-	PolicyType   string `dynamodbav:"policy_type,omitempty"`   // Type: SCP, RCP, identity-based, session, permission-boundary
-	ErrorMessage string `dynamodbav:"error_message,omitempty"` // Full CloudTrail error message for context
+	Resource          string `dynamodbav:"resource"` // e.g., "s3:bucket:my-bucket"
+	ResourceAccountID string `dynamodbav:"resource_account_id,omitempty"`
+	Service           string `dynamodbav:"service"`    // e.g., "s3.amazonaws.com"
+	EventName         string `dynamodbav:"event_name"` // e.g., "PutObject"
+	Count             int    `dynamodbav:"count"`
+	PolicyARN         string `dynamodbav:"policy_arn,omitempty"`    // ARN of denying policy (from Jan 2026 AWS update)
+	PolicyType        string `dynamodbav:"policy_type,omitempty"`   // Type: SCP, RCP, identity-based, session, permission-boundary
+	ErrorMessage      string `dynamodbav:"error_message,omitempty"` // Full CloudTrail error message for context
 }
 
 // EventAccess represents a detailed event access record (for events without specific resources)
@@ -437,17 +451,21 @@ type DynamoDBIngestedFile struct {
 
 // DynamoDBAccount represents an aggregated account record
 type DynamoDBAccount struct {
-	CustomerID     string `dynamodbav:"customerId"`
-	AccountID      string `dynamodbav:"account_id"`
-	AccountName    string `dynamodbav:"account_name,omitempty"`
-	FirstSeen      string `dynamodbav:"first_seen"`
-	LastSeen       string `dynamodbav:"last_seen"`
-	PeopleCount    int    `dynamodbav:"people_count"`
-	SessionsCount  int    `dynamodbav:"sessions_count"`
-	RolesCount     int    `dynamodbav:"roles_count"`
-	ServicesCount  int    `dynamodbav:"services_count"`
-	ResourcesCount int    `dynamodbav:"resources_count"`
-	EventsCount    int    `dynamodbav:"events_count"`
+	CustomerID          string         `dynamodbav:"customerId"`
+	AccountID           string         `dynamodbav:"account_id"`
+	AccountName         string         `dynamodbav:"account_name,omitempty"`
+	FirstSeen           string         `dynamodbav:"first_seen"`
+	LastSeen            string         `dynamodbav:"last_seen"`
+	PeopleCount         int            `dynamodbav:"people_count"`
+	SessionsCount       int            `dynamodbav:"sessions_count"`
+	RolesCount          int            `dynamodbav:"roles_count"`
+	ServicesCount       int            `dynamodbav:"services_count"`
+	ResourcesCount      int            `dynamodbav:"resources_count"`
+	EventsCount         int            `dynamodbav:"events_count"`
+	TopEventNames       map[string]int `dynamodbav:"top_event_names,omitempty"`
+	TotalDeniedEvents   int            `dynamodbav:"total_denied_events,omitempty"`
+	TopDeniedEventNames map[string]int `dynamodbav:"top_denied_event_names,omitempty"`
+	ClickOpsCount       int            `dynamodbav:"clickops_count,omitempty"`
 }
 
 // DynamoDBRelation is one directed noun relationship. Every observed pair is
