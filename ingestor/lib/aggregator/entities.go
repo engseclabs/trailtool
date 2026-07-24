@@ -203,7 +203,7 @@ func processRoleEvent(roles map[string]*types.DynamoDBRole, event types.CloudTra
 }
 
 // processServiceEvent aggregates an event for a service.
-func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event types.CloudTrailRecord, roleARN string, eventDate string) {
+func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event types.CloudTrailRecord, roleARN string, resourceList []string, eventDate string) {
 	eventSource := event.EventSource
 	svc, exists := serviceMap[eventSource]
 	if !exists {
@@ -237,6 +237,9 @@ func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event typ
 			svc.RolesUsing = []string{}
 		}
 		appendUnique(&svc.RolesUsing, roleARN)
+	}
+	for _, resource := range resourceList {
+		appendUnique(&svc.ResourcesUsed, resource)
 	}
 }
 

@@ -288,7 +288,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			}
 
 			// === Service ===
-			processServiceEvent(services, event, roleARN, eventDate)
+			processServiceEvent(services, event, roleARN, resourceList, eventDate)
 			addToSet(servicePeople, event.EventSource, personKey)
 			addToSet(serviceSessions, event.EventSource, sessRef)
 			addToSet(serviceAccounts, event.EventSource, accountID)
