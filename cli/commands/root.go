@@ -10,11 +10,25 @@ import (
 	"github.com/engseclabs/trailtool/core/models"
 	"github.com/engseclabs/trailtool/core/session"
 	"github.com/engseclabs/trailtool/core/store"
+	"github.com/engseclabs/trailtool/internal/render"
 )
 
 // Format holds the value of the global --format flag ("text" or "json"). It is
 // bound by main.go's persistent flag registration.
 var Format = "text"
+
+// ColorMode holds the value of the global --color flag ("auto", "always", or
+// "never"). It is bound by main.go's persistent flag registration.
+var ColorMode = "auto"
+
+// renderContext resolves the terminal capabilities once per command, per §4.1.
+// Views are threaded the returned Context and never re-read the environment.
+// An unrecognized --color value falls back to auto (the flag's help lists the
+// valid values; Cobra does not enum-validate it).
+func renderContext() render.Context {
+	mode, _ := render.ParseColorMode(ColorMode)
+	return render.Detect(mode, os.Stdout, os.Stderr)
+}
 
 // CustomerID identifies the tenant whose data the CLI queries. It defaults to
 // "default" and is overridden by TRAILTOOL_CUSTOMER_ID.
@@ -109,8 +123,36 @@ func lookupRole(ctx context.Context, s *store.Store, nameOrARN, accountID string
 	return s.GetRoleByName(ctx, CustomerID, nameOrARN, accountID)
 }
 
+// Debug is bound to the global --debug flag; TRAILTOOL_DEBUG=1 also enables it.
+// When on, AWS/service errors surface the raw SDK error (request id, exception
+// type, HTTP status) in addition to the human message (§5).
+var Debug = false
+
+func debugEnabled() bool {
+	return Debug || os.Getenv("TRAILTOOL_DEBUG") == "1"
+}
+
+// fatal renders a one-line validation error ("Error: <msg>") to stderr and exits
+// 1 (§5). Styling is resolved through the render context so the error is Fail-
+// colored on a TTY and plain when redirected.
 func fatal(format string, args ...interface{}) error {
-	fmt.Fprintf(os.Stderr, "Error: "+format+"\n", args...)
+	rctx := renderContext()
+	fmt.Fprintln(rctx.Err, rctx.Error(fmt.Sprintf(format, args...)))
+	os.Exit(1)
+	return nil
+}
+
+// fatalAWS renders an AWS/service error as a human message plus a one-line hint,
+// hiding the raw SDK error unless debug is on (§5), then exits 1. Use this for
+// store-connection and store-query failures where the raw error is noise to a
+// normal user but essential when diagnosing.
+func fatalAWS(hint string, err error) error {
+	rctx := renderContext()
+	msg := "could not reach TrailTool data"
+	fmt.Fprintln(rctx.Err, rctx.ErrorHint(msg, hint))
+	if debugEnabled() {
+		fmt.Fprintln(rctx.Err, "  "+rctx.Style(render.Muted, err.Error()))
+	}
 	os.Exit(1)
 	return nil
 }

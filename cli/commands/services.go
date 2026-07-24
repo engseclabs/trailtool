@@ -3,12 +3,11 @@ package commands
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
+	"github.com/engseclabs/trailtool/cli/view"
 	"github.com/engseclabs/trailtool/core/store"
 )
 
@@ -30,7 +29,7 @@ func servicesListCmd() *cobra.Command {
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				return fatal("failed to connect to AWS: %v", err)
+				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
 			services, err := s.ListServices(ctx, CustomerID)
@@ -42,14 +41,8 @@ func servicesListCmd() *cobra.Command {
 				return printJSON(services)
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "#\tSERVICE\tDISPLAY NAME\tEVENTS\tROLES\tRESOURCES\tPEOPLE\tLAST SEEN")
-			for i, svc := range services {
-				fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
-					i+1, svc.EventSource, svc.DisplayName, svc.TotalEvents,
-					svc.RolesCount, svc.ResourcesCount, svc.PeopleCount, svc.LastSeen)
-			}
-			return w.Flush()
+			fmt.Print(view.Services(renderContext(), services))
+			return nil
 		},
 	}
 }
@@ -72,7 +65,7 @@ func servicesDetailCmd() *cobra.Command {
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				return fatal("failed to connect to AWS: %v", err)
+				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
 			var eventSource string

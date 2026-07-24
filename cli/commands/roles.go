@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
+	"github.com/engseclabs/trailtool/cli/view"
 	"github.com/engseclabs/trailtool/core/models"
 	"github.com/engseclabs/trailtool/core/policy"
 	"github.com/engseclabs/trailtool/core/store"
@@ -33,7 +33,7 @@ func rolesListCmd() *cobra.Command {
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				return fatal("failed to connect to AWS: %v", err)
+				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
 			roles, err := s.ListRoles(ctx, CustomerID)
@@ -45,14 +45,8 @@ func rolesListCmd() *cobra.Command {
 				return printJSON(roles)
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "#\tNAME\tACCOUNT\tEVENTS\tPEOPLE\tSESSIONS\tDENIED\tLAST SEEN")
-			for i, r := range roles {
-				fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
-					i+1, r.Name, r.AccountID, r.TotalEvents, r.PeopleCount,
-					r.SessionsCount, r.TotalDeniedEvents, r.LastSeen)
-			}
-			return w.Flush()
+			fmt.Print(view.Roles(renderContext(), roles))
+			return nil
 		},
 	}
 }
@@ -76,7 +70,7 @@ func rolesDetailCmd() *cobra.Command {
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				return fatal("failed to connect to AWS: %v", err)
+				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
 			var role *models.Role
@@ -161,7 +155,7 @@ func rolesPolicyCmd() *cobra.Command {
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				return fatal("failed to connect to AWS: %v", err)
+				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
 			role, err := lookupRole(ctx, s, args[0], accountID)

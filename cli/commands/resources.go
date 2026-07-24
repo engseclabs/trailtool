@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/engseclabs/trailtool/cli/view"
 	"github.com/engseclabs/trailtool/core/models"
 	"github.com/engseclabs/trailtool/core/store"
 )
@@ -35,7 +36,7 @@ func resourcesListCmd() *cobra.Command {
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
-				return fatal("failed to connect to AWS: %v", err)
+				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
 			filter := store.ResourceFilter{
@@ -59,12 +60,15 @@ func resourcesListCmd() *cobra.Command {
 				return printJSON(resources)
 			}
 
-			if len(resources) == 0 {
-				fmt.Println("No resources found.")
-				return nil
-			}
+			rctx := renderContext()
 
 			if clickops {
+				// ClickOps two-level report stays on tabwriter for now; it gets its
+				// render treatment in the session-detail/ClickOps slice (§10 PR 4).
+				if len(resources) == 0 {
+					fmt.Print(view.Resources(rctx, resources))
+					return nil
+				}
 				fmt.Printf("Found %d resources created/modified via web console:\n\n", len(resources))
 
 				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -88,16 +92,10 @@ func resourcesListCmd() *cobra.Command {
 							access.EventName, label(access.PersonKey), access.EventCount, date)
 					}
 				}
-			} else {
-				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-				fmt.Fprintln(w, "#\tRESOURCE\tTYPE\tACCOUNT\tEVENTS\tCLICKOPS\tLAST SEEN")
-				for i, r := range resources {
-					fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%d\t%d\t%s\n",
-						i+1, r.Name, r.Type, r.AccountID, r.TotalEvents, r.ClickOpsCount, r.LastSeen)
-				}
-				w.Flush()
+				return nil
 			}
 
+			fmt.Print(view.Resources(rctx, resources))
 			return nil
 		},
 	}
