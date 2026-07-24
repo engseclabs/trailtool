@@ -132,14 +132,22 @@ func TestMergeAccountAggregatedIsOrderAndPartitionIndependent(t *testing.T) {
 	a := &types.DynamoDBAccount{
 		CustomerID: "test", AccountID: "111111111111", FirstSeen: "2026-07-03", LastSeen: "2026-07-03",
 		EventsCount: 1, PeopleCount: 1, SessionsCount: 1,
+		TopEventNames: map[string]int{"s3.amazonaws.com:GetObject": 1},
+		ClickOpsCount: 1,
 	}
 	b := &types.DynamoDBAccount{
 		CustomerID: "test", AccountID: "111111111111", AccountName: "production",
 		FirstSeen: "2026-07-01", LastSeen: "2026-07-02", EventsCount: 2, RolesCount: 2,
+		TotalDeniedEvents:   1,
+		TopDeniedEventNames: map[string]int{"s3.amazonaws.com:DeleteObject": 1},
 	}
 	c := &types.DynamoDBAccount{
 		CustomerID: "test", AccountID: "111111111111", AccountName: "production",
 		FirstSeen: "2026-07-04", LastSeen: "2026-07-05", EventsCount: 3, ResourcesCount: 3,
+		TopEventNames:       map[string]int{"s3.amazonaws.com:GetObject": 2},
+		TotalDeniedEvents:   2,
+		TopDeniedEventNames: map[string]int{"s3.amazonaws.com:DeleteObject": 2},
+		ClickOpsCount:       2,
 	}
 
 	ab := MergeAccountAggregated(a, b)
@@ -154,6 +162,12 @@ func TestMergeAccountAggregatedIsOrderAndPartitionIndependent(t *testing.T) {
 	}
 	if left.EventsCount != 6 || left.FirstSeen != "2026-07-01" || left.LastSeen != "2026-07-05" {
 		t.Fatalf("merged account = %+v, want 6 events spanning 2026-07-01 through 2026-07-05", left)
+	}
+	if left.TopEventNames["s3.amazonaws.com:GetObject"] != 3 ||
+		left.TotalDeniedEvents != 3 ||
+		left.TopDeniedEventNames["s3.amazonaws.com:DeleteObject"] != 3 ||
+		left.ClickOpsCount != 3 {
+		t.Fatalf("merged account activity = %+v", left)
 	}
 }
 
@@ -182,5 +196,127 @@ func TestWriteAccountToDynamoDBPreservesPriorBatches(t *testing.T) {
 	}
 	if got.EventsCount != 5 || got.FirstSeen != "2026-07-01" || got.LastSeen != "2026-07-02" {
 		t.Fatalf("stored account = %+v, want 5 events spanning both batches", got)
+	}
+}
+
+func TestMergeResourceAccessItemsKeepsResourceAccountsDistinct(t *testing.T) {
+	first := types.ResourceAccessItem{
+		Resource:          "lambda:function:shared-function",
+		ResourceAccountID: "111111111111",
+		Service:           "lambda.amazonaws.com",
+		EventName:         "Invoke",
+		Count:             1,
+	}
+	second := first
+	second.ResourceAccountID = "222222222222"
+
+	got := MergeResourceAccessItems([]types.ResourceAccessItem{first}, []types.ResourceAccessItem{second})
+	if len(got) != 2 {
+		t.Fatalf("merged accesses = %#v, want two account-qualified entries", got)
+	}
+	if got[0].ResourceAccountID != "111111111111" || got[1].ResourceAccountID != "222222222222" {
+		t.Fatalf("resource accounts = %#v", got)
+	}
+}
+
+func TestMergeRoleAndResourceDoNotAddDistinctCounts(t *testing.T) {
+	role := MergeRoleAggregated(
+		&types.DynamoDBRole{
+			ARN:           "arn:aws:iam::111111111111:role/reader",
+			PeopleCount:   4,
+			SessionsCount: 3,
+			AccountsCount: 1,
+		},
+		&types.DynamoDBRole{
+			ARN:           "arn:aws:iam::111111111111:role/reader",
+			PeopleCount:   2,
+			SessionsCount: 5,
+			AccountsCount: 1,
+		},
+	)
+	if role.PeopleCount != 4 || role.SessionsCount != 5 || role.AccountsCount != 1 {
+		t.Fatalf("role relationship counts = %d/%d/%d, want 4/5/1",
+			role.PeopleCount, role.SessionsCount, role.AccountsCount)
+	}
+
+	resource := MergeResourceAggregated(
+		&types.DynamoDBResource{
+			ResourceKey:   "111111111111#key",
+			Identifier:    "s3:bucket:example",
+			AccountID:     "111111111111",
+			PeopleCount:   4,
+			SessionsCount: 3,
+		},
+		&types.DynamoDBResource{
+			ResourceKey:   "111111111111#key",
+			Identifier:    "s3:bucket:example",
+			AccountID:     "111111111111",
+			PeopleCount:   2,
+			SessionsCount: 5,
+		},
+	)
+	if resource.PeopleCount != 4 || resource.SessionsCount != 5 {
+		t.Fatalf("resource relationship counts = %d/%d, want 4/5",
+			resource.PeopleCount, resource.SessionsCount)
+	}
+}
+
+func TestMergeResourceAggregatedIsOrderIndependent(t *testing.T) {
+	a := &types.DynamoDBResource{
+		CustomerID:  "test",
+		ResourceKey: "111111111111#key",
+		Identifier:  "s3:bucket:example",
+		Type:        "unknown",
+		AccountID:   "111111111111",
+		TotalEvents: 1,
+		RolesUsing:  []string{"role-b"},
+		ServicesUsed: []string{
+			"s3.amazonaws.com",
+		},
+		FirstSeen: "2026-07-02",
+		LastSeen:  "2026-07-02",
+	}
+	b := &types.DynamoDBResource{
+		CustomerID:  "test",
+		ResourceKey: "111111111111#key",
+		Identifier:  "s3:bucket:example",
+		Type:        "s3:bucket",
+		Name:        "example",
+		ARN:         "arn:aws:s3:::example",
+		AccountID:   "111111111111",
+		TotalEvents: 2,
+		RolesUsing:  []string{"role-a"},
+		ServicesUsed: []string{
+			"s3-control.amazonaws.com",
+		},
+		FirstSeen: "2026-07-01",
+		LastSeen:  "2026-07-03",
+	}
+
+	ab := MergeResourceAggregated(a, b)
+	ba := MergeResourceAggregated(b, a)
+	if !reflect.DeepEqual(ab, ba) {
+		t.Fatalf("resource merge depends on arrival order:\nab=%+v\nba=%+v", ab, ba)
+	}
+	if ab.Type != "s3:bucket" || ab.TotalEvents != 3 || ab.RolesCount != 2 {
+		t.Fatalf("merged resource = %+v", ab)
+	}
+}
+
+func TestMergePersonPreservesDeniedActivity(t *testing.T) {
+	got := MergePerson(
+		&types.DynamoDBPerson{
+			PersonKey:           "email#alex@example.com",
+			DeniedEventCount:    1,
+			TopDeniedEventNames: map[string]int{"s3.amazonaws.com:GetObject": 1},
+		},
+		&types.DynamoDBPerson{
+			PersonKey:           "email#alex@example.com",
+			DeniedEventCount:    2,
+			TopDeniedEventNames: map[string]int{"s3.amazonaws.com:GetObject": 2},
+		},
+	)
+	if got.DeniedEventCount != 3 || got.TopDeniedEventNames["s3.amazonaws.com:GetObject"] != 3 {
+		t.Fatalf("merged person denied activity = %+v", got)
 	}
 }

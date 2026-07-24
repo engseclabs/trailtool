@@ -83,16 +83,6 @@ func WriteRoleToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableN
 
 // MergeRoleAggregated merges two DynamoDBRole records, combining their data
 func MergeRoleAggregated(existing *types.DynamoDBRole, new *types.DynamoDBRole) *types.DynamoDBRole {
-	// Use earlier first_seen and later last_seen
-	firstSeen := existing.FirstSeen
-	if new.FirstSeen < firstSeen {
-		firstSeen = new.FirstSeen
-	}
-	lastSeen := existing.LastSeen
-	if new.LastSeen > lastSeen {
-		lastSeen = new.LastSeen
-	}
-
 	// Merge event counts and service/resource counts
 	mergedTopEventNames := MergeIntMaps(existing.TopEventNames, new.TopEventNames)
 	mergedServicesCount := MergeIntMaps(existing.ServicesCount, new.ServicesCount)
@@ -109,18 +99,20 @@ func MergeRoleAggregated(existing *types.DynamoDBRole, new *types.DynamoDBRole) 
 	for service := range mergedServicesCount {
 		servicesUsed = append(servicesUsed, service)
 	}
+	sort.Strings(servicesUsed)
 	resourcesUsed := make([]string, 0, len(mergedResourcesCount))
 	for resource := range mergedResourcesCount {
 		resourcesUsed = append(resourcesUsed, resource)
 	}
+	sort.Strings(resourcesUsed)
 
 	merged := &types.DynamoDBRole{
-		CustomerID:             new.CustomerID,
-		ARN:                    new.ARN,
-		Name:                   new.Name,
-		AccountID:              new.AccountID,
-		FirstSeen:              firstSeen,
-		LastSeen:               lastSeen,
+		CustomerID:             stableNonEmpty(existing.CustomerID, new.CustomerID),
+		ARN:                    stableNonEmpty(existing.ARN, new.ARN),
+		Name:                   stableNonEmpty(existing.Name, new.Name),
+		AccountID:              stableNonEmpty(existing.AccountID, new.AccountID),
+		FirstSeen:              earliestNonEmpty(existing.FirstSeen, new.FirstSeen),
+		LastSeen:               latestNonEmpty(existing.LastSeen, new.LastSeen),
 		TotalEvents:            existing.TotalEvents + new.TotalEvents,
 		ServicesCount:          mergedServicesCount,
 		ResourcesCount:         mergedResourcesCount,
@@ -132,9 +124,9 @@ func MergeRoleAggregated(existing *types.DynamoDBRole, new *types.DynamoDBRole) 
 		TopDeniedEventNames:    mergedTopDeniedEventNames,
 		DeniedResourceAccesses: mergedDeniedResourceAccesses,
 		DeniedEventAccesses:    mergedDeniedEventAccesses,
-		PeopleCount:            existing.PeopleCount + new.PeopleCount,
-		SessionsCount:          existing.SessionsCount + new.SessionsCount,
-		AccountsCount:          existing.AccountsCount + new.AccountsCount,
+		PeopleCount:            maxInt(existing.PeopleCount, new.PeopleCount),
+		SessionsCount:          maxInt(existing.SessionsCount, new.SessionsCount),
+		AccountsCount:          maxInt(existing.AccountsCount, new.AccountsCount),
 	}
 
 	return merged
@@ -142,44 +134,32 @@ func MergeRoleAggregated(existing *types.DynamoDBRole, new *types.DynamoDBRole) 
 
 // MergeResourceAccessItems merges two ResourceAccessItem slices, combining counts for duplicates
 func MergeResourceAccessItems(a, b []types.ResourceAccessItem) []types.ResourceAccessItem {
-	// Use map to aggregate by unique combination of Resource+Service+EventName
-	accessMap := make(map[string]*types.ResourceAccessItem)
+	type key struct {
+		Service           string
+		EventName         string
+		ResourceAccountID string
+		Resource          string
+		PolicyARN         string
+	}
+	accessMap := make(map[key]*types.ResourceAccessItem)
 
 	// Add all from first slice
 	for _, ra := range a {
-		key := fmt.Sprintf("%s:%s:%s", ra.Service, ra.EventName, ra.Resource)
-		accessMap[key] = &types.ResourceAccessItem{
-			Resource:     ra.Resource,
-			Service:      ra.Service,
-			EventName:    ra.EventName,
-			Count:        ra.Count,
-			PolicyARN:    ra.PolicyARN,
-			PolicyType:   ra.PolicyType,
-			ErrorMessage: ra.ErrorMessage,
-		}
+		k := key{ra.Service, ra.EventName, ra.ResourceAccountID, ra.Resource, ra.PolicyARN}
+		cp := ra
+		accessMap[k] = &cp
 	}
 
 	// Merge from second slice
 	for _, ra := range b {
-		key := fmt.Sprintf("%s:%s:%s", ra.Service, ra.EventName, ra.Resource)
-		if existing, exists := accessMap[key]; exists {
+		k := key{ra.Service, ra.EventName, ra.ResourceAccountID, ra.Resource, ra.PolicyARN}
+		if existing, exists := accessMap[k]; exists {
 			existing.Count += ra.Count
-			// Keep the first policy info we saw (could enhance to track multiple policies)
-			if existing.PolicyARN == "" && ra.PolicyARN != "" {
-				existing.PolicyARN = ra.PolicyARN
-				existing.PolicyType = ra.PolicyType
-				existing.ErrorMessage = ra.ErrorMessage
-			}
+			existing.PolicyType = stableNonEmpty(existing.PolicyType, ra.PolicyType)
+			existing.ErrorMessage = stableNonEmpty(existing.ErrorMessage, ra.ErrorMessage)
 		} else {
-			accessMap[key] = &types.ResourceAccessItem{
-				Resource:     ra.Resource,
-				Service:      ra.Service,
-				EventName:    ra.EventName,
-				Count:        ra.Count,
-				PolicyARN:    ra.PolicyARN,
-				PolicyType:   ra.PolicyType,
-				ErrorMessage: ra.ErrorMessage,
-			}
+			cp := ra
+			accessMap[k] = &cp
 		}
 	}
 
@@ -188,6 +168,23 @@ func MergeResourceAccessItems(a, b []types.ResourceAccessItem) []types.ResourceA
 	for _, ra := range accessMap {
 		result = append(result, *ra)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		left := result[i]
+		right := result[j]
+		if left.Service != right.Service {
+			return left.Service < right.Service
+		}
+		if left.EventName != right.EventName {
+			return left.EventName < right.EventName
+		}
+		if left.ResourceAccountID != right.ResourceAccountID {
+			return left.ResourceAccountID < right.ResourceAccountID
+		}
+		if left.Resource != right.Resource {
+			return left.Resource < right.Resource
+		}
+		return left.PolicyARN < right.PolicyARN
+	})
 
 	return result
 }
@@ -236,6 +233,15 @@ func MergeEventAccessItems(a, b []types.EventAccessItem) []types.EventAccessItem
 	for _, ea := range accessMap {
 		result = append(result, *ea)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Service != result[j].Service {
+			return result[i].Service < result[j].Service
+		}
+		if result[i].EventName != result[j].EventName {
+			return result[i].EventName < result[j].EventName
+		}
+		return result[i].PolicyARN < result[j].PolicyARN
+	})
 
 	return result
 }
@@ -311,8 +317,8 @@ func WriteResourceToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, ta
 	getInput := &dynamodb.GetItemInput{
 		TableName: aws.String(tableName),
 		Key: map[string]ddbtypes.AttributeValue{
-			"customerId": &ddbtypes.AttributeValueMemberS{Value: resource.CustomerID},
-			"identifier": &ddbtypes.AttributeValueMemberS{Value: resource.Identifier},
+			"customerId":   &ddbtypes.AttributeValueMemberS{Value: resource.CustomerID},
+			"resource_key": &ddbtypes.AttributeValueMemberS{Value: resource.ResourceKey},
 		},
 	}
 
@@ -353,27 +359,6 @@ func WriteResourceToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, ta
 
 // MergeResourceAggregated merges two DynamoDBResource records, combining their data
 func MergeResourceAggregated(existing *types.DynamoDBResource, incoming *types.DynamoDBResource) *types.DynamoDBResource {
-	firstSeen := existing.FirstSeen
-	if incoming.FirstSeen < firstSeen {
-		firstSeen = incoming.FirstSeen
-	}
-	lastSeen := existing.LastSeen
-	if incoming.LastSeen > lastSeen {
-		lastSeen = incoming.LastSeen
-	}
-
-	// Use non-empty ARN
-	arn := existing.ARN
-	if arn == "" {
-		arn = incoming.ARN
-	}
-
-	// Use non-unknown type
-	resourceType := existing.Type
-	if resourceType == "unknown" && incoming.Type != "unknown" {
-		resourceType = incoming.Type
-	}
-
 	mergedClickOps := MergeClickOpsAccesses(existing.ClickOpsAccesses, incoming.ClickOpsAccesses)
 
 	// Sum clickops counts, but recount from merged accesses to be accurate
@@ -383,22 +368,23 @@ func MergeResourceAggregated(existing *types.DynamoDBResource, incoming *types.D
 	}
 
 	merged := &types.DynamoDBResource{
-		CustomerID:          incoming.CustomerID,
-		Identifier:          incoming.Identifier,
-		Type:                resourceType,
-		ARN:                 arn,
-		Name:                incoming.Name,
-		AccountID:           incoming.AccountID,
+		CustomerID:          stableNonEmpty(existing.CustomerID, incoming.CustomerID),
+		ResourceKey:         stableNonEmpty(existing.ResourceKey, incoming.ResourceKey),
+		Identifier:          stableNonEmpty(existing.Identifier, incoming.Identifier),
+		Type:                stableResourceType(existing.Type, incoming.Type),
+		ARN:                 stableNonEmpty(existing.ARN, incoming.ARN),
+		Name:                stableNonEmpty(existing.Name, incoming.Name),
+		AccountID:           stableNonEmpty(existing.AccountID, incoming.AccountID),
 		TotalEvents:         existing.TotalEvents + incoming.TotalEvents,
-		RolesUsing:          MergeUniqueStrings(existing.RolesUsing, incoming.RolesUsing),
-		ServicesUsed:        MergeUniqueStrings(existing.ServicesUsed, incoming.ServicesUsed),
+		RolesUsing:          mergeSortedUniqueStrings(existing.RolesUsing, incoming.RolesUsing),
+		ServicesUsed:        mergeSortedUniqueStrings(existing.ServicesUsed, incoming.ServicesUsed),
 		TopEventNames:       MergeIntMaps(existing.TopEventNames, incoming.TopEventNames),
-		FirstSeen:           firstSeen,
-		LastSeen:            lastSeen,
+		FirstSeen:           earliestNonEmpty(existing.FirstSeen, incoming.FirstSeen),
+		LastSeen:            latestNonEmpty(existing.LastSeen, incoming.LastSeen),
 		TotalDeniedEvents:   existing.TotalDeniedEvents + incoming.TotalDeniedEvents,
 		TopDeniedEventNames: MergeIntMaps(existing.TopDeniedEventNames, incoming.TopDeniedEventNames),
-		PeopleCount:         existing.PeopleCount + incoming.PeopleCount,
-		SessionsCount:       existing.SessionsCount + incoming.SessionsCount,
+		PeopleCount:         maxInt(existing.PeopleCount, incoming.PeopleCount),
+		SessionsCount:       maxInt(existing.SessionsCount, incoming.SessionsCount),
 		ClickOpsAccesses:    mergedClickOps,
 		ClickOpsCount:       clickOpsCount,
 	}
@@ -424,6 +410,9 @@ func MergeClickOpsAccesses(a, b []types.ClickOpsAccess) []types.ClickOpsAccess {
 		k := key{b[i].SessionRef, b[i].EventName}
 		if existing, ok := merged[k]; ok {
 			existing.EventCount += b[i].EventCount
+			existing.PersonKey = stableNonEmpty(existing.PersonKey, b[i].PersonKey)
+			existing.AccessTime = earliestNonEmpty(existing.AccessTime, b[i].AccessTime)
+			existing.AccountID = stableNonEmpty(existing.AccountID, b[i].AccountID)
 		} else {
 			cp := b[i]
 			merged[k] = &cp
@@ -434,6 +423,12 @@ func MergeClickOpsAccesses(a, b []types.ClickOpsAccess) []types.ClickOpsAccess {
 	for _, v := range merged {
 		result = append(result, *v)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].SessionRef != result[j].SessionRef {
+			return result[i].SessionRef < result[j].SessionRef
+		}
+		return result[i].EventName < result[j].EventName
+	})
 	return result
 }
 
@@ -474,17 +469,21 @@ func WriteAccountToDynamoDB(ctx context.Context, ddbClient EntityStore, tableNam
 // use max until the relation table supplies exact global distinct counts.
 func MergeAccountAggregated(existing, incoming *types.DynamoDBAccount) *types.DynamoDBAccount {
 	return &types.DynamoDBAccount{
-		CustomerID:     stableNonEmpty(existing.CustomerID, incoming.CustomerID),
-		AccountID:      stableNonEmpty(existing.AccountID, incoming.AccountID),
-		AccountName:    stableNonEmpty(existing.AccountName, incoming.AccountName),
-		FirstSeen:      earliestNonEmpty(existing.FirstSeen, incoming.FirstSeen),
-		LastSeen:       latestNonEmpty(existing.LastSeen, incoming.LastSeen),
-		PeopleCount:    maxInt(existing.PeopleCount, incoming.PeopleCount),
-		SessionsCount:  maxInt(existing.SessionsCount, incoming.SessionsCount),
-		RolesCount:     maxInt(existing.RolesCount, incoming.RolesCount),
-		ServicesCount:  maxInt(existing.ServicesCount, incoming.ServicesCount),
-		ResourcesCount: maxInt(existing.ResourcesCount, incoming.ResourcesCount),
-		EventsCount:    existing.EventsCount + incoming.EventsCount,
+		CustomerID:          stableNonEmpty(existing.CustomerID, incoming.CustomerID),
+		AccountID:           stableNonEmpty(existing.AccountID, incoming.AccountID),
+		AccountName:         stableNonEmpty(existing.AccountName, incoming.AccountName),
+		FirstSeen:           earliestNonEmpty(existing.FirstSeen, incoming.FirstSeen),
+		LastSeen:            latestNonEmpty(existing.LastSeen, incoming.LastSeen),
+		PeopleCount:         maxInt(existing.PeopleCount, incoming.PeopleCount),
+		SessionsCount:       maxInt(existing.SessionsCount, incoming.SessionsCount),
+		RolesCount:          maxInt(existing.RolesCount, incoming.RolesCount),
+		ServicesCount:       maxInt(existing.ServicesCount, incoming.ServicesCount),
+		ResourcesCount:      maxInt(existing.ResourcesCount, incoming.ResourcesCount),
+		EventsCount:         existing.EventsCount + incoming.EventsCount,
+		TopEventNames:       MergeIntMaps(existing.TopEventNames, incoming.TopEventNames),
+		TotalDeniedEvents:   existing.TotalDeniedEvents + incoming.TotalDeniedEvents,
+		TopDeniedEventNames: MergeIntMaps(existing.TopDeniedEventNames, incoming.TopDeniedEventNames),
+		ClickOpsCount:       existing.ClickOpsCount + incoming.ClickOpsCount,
 	}
 }
 
@@ -496,6 +495,24 @@ func mergeSortedUniqueStrings(a, b []string) []string {
 
 func stableNonEmpty(a, b string) string {
 	return earliestNonEmpty(a, b)
+}
+
+func stableResourceType(a, b string) string {
+	aKnown := a != "" && a != "unknown"
+	bKnown := b != "" && b != "unknown"
+	if aKnown && bKnown {
+		return stableNonEmpty(a, b)
+	}
+	if aKnown {
+		return a
+	}
+	if bKnown {
+		return b
+	}
+	if a == "unknown" || b == "unknown" {
+		return "unknown"
+	}
+	return ""
 }
 
 func earliestNonEmpty(a, b string) string {

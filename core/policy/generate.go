@@ -55,10 +55,11 @@ func GeneratePolicyFromSession(sess *models.Session, includeDenied bool) (*Gener
 		items := make([]models.ResourceAccessItem, len(accesses))
 		for i, a := range accesses {
 			items[i] = models.ResourceAccessItem{
-				Resource:  a.Resource,
-				Service:   a.Service,
-				EventName: a.EventName,
-				Count:     a.Count,
+				Resource:          a.Resource,
+				ResourceAccountID: a.ResourceAccountID,
+				Service:           a.Service,
+				EventName:         a.EventName,
+				Count:             a.Count,
 			}
 		}
 		return items
@@ -217,7 +218,11 @@ func mapResourceAccessesToActionResources(accesses []models.ResourceAccessItem, 
 			if actionResourceMap[action] == nil {
 				actionResourceMap[action] = make(map[string]bool)
 			}
-			arn := resourceIdentifierToARN(ra.Resource, accountID)
+			resourceAccountID := ra.ResourceAccountID
+			if resourceAccountID == "" {
+				resourceAccountID = accountID
+			}
+			arn := resourceIdentifierToARN(ra.Resource, resourceAccountID)
 			actionResourceMap[action][arn] = true
 		}
 	}
@@ -281,6 +286,9 @@ func resourceIdentifierToARN(identifier, accountID string) string {
 	if len(parts) < 2 {
 		return identifier
 	}
+	if accountID == "" {
+		accountID = "*"
+	}
 
 	service := parts[0]
 	resourceType := parts[1]
@@ -297,24 +305,24 @@ func resourceIdentifierToARN(identifier, accountID string) string {
 		return "arn:aws:s3:::*"
 	case "dynamodb":
 		if resourceType == "table" && resourceName != "" {
-			return fmt.Sprintf("arn:aws:dynamodb:*:*:table/%s", resourceName)
+			return fmt.Sprintf("arn:aws:dynamodb:*:%s:table/%s", accountID, resourceName)
 		}
-		return "arn:aws:dynamodb:*:*:table/*"
+		return fmt.Sprintf("arn:aws:dynamodb:*:%s:table/*", accountID)
 	case "lambda":
 		if resourceType == "function" && resourceName != "" {
-			return fmt.Sprintf("arn:aws:lambda:*:*:function:%s", resourceName)
+			return fmt.Sprintf("arn:aws:lambda:*:%s:function:%s", accountID, resourceName)
 		}
-		return "arn:aws:lambda:*:*:function:*"
+		return fmt.Sprintf("arn:aws:lambda:*:%s:function:*", accountID)
 	case "sqs":
 		if resourceName != "" {
-			return fmt.Sprintf("arn:aws:sqs:*:*:%s", resourceName)
+			return fmt.Sprintf("arn:aws:sqs:*:%s:%s", accountID, resourceName)
 		}
-		return "arn:aws:sqs:*:*:*"
+		return fmt.Sprintf("arn:aws:sqs:*:%s:*", accountID)
 	case "sns":
 		if resourceName != "" {
-			return fmt.Sprintf("arn:aws:sns:*:*:%s", resourceName)
+			return fmt.Sprintf("arn:aws:sns:*:%s:%s", accountID, resourceName)
 		}
-		return "arn:aws:sns:*:*:*"
+		return fmt.Sprintf("arn:aws:sns:*:%s:*", accountID)
 	case "secretsmanager":
 		if resourceType == "secret" && resourceName != "" {
 			if len(resourceName) > 7 && strings.Contains(resourceName, "-") {
@@ -323,23 +331,23 @@ func resourceIdentifierToARN(identifier, accountID string) string {
 					resourceName = strings.Join(rnParts[:len(rnParts)-1], "-") + "-*"
 				}
 			}
-			return fmt.Sprintf("arn:aws:secretsmanager:*:*:secret:%s", resourceName)
+			return fmt.Sprintf("arn:aws:secretsmanager:*:%s:secret:%s", accountID, resourceName)
 		}
-		return "arn:aws:secretsmanager:*:*:secret:*"
+		return fmt.Sprintf("arn:aws:secretsmanager:*:%s:secret:*", accountID)
 	case "kms":
 		if resourceType == "key" && resourceName != "" {
-			return fmt.Sprintf("arn:aws:kms:*:*:key/%s", resourceName)
+			return fmt.Sprintf("arn:aws:kms:*:%s:key/%s", accountID, resourceName)
 		}
-		return "arn:aws:kms:*:*:key/*"
+		return fmt.Sprintf("arn:aws:kms:*:%s:key/*", accountID)
 	case "logs":
 		if resourceType == "log-group" && resourceName != "" {
-			return fmt.Sprintf("arn:aws:logs:*:*:log-group:%s:*", resourceName)
+			return fmt.Sprintf("arn:aws:logs:*:%s:log-group:%s:*", accountID, resourceName)
 		}
-		return "arn:aws:logs:*:*:log-group:*"
+		return fmt.Sprintf("arn:aws:logs:*:%s:log-group:*", accountID)
 	default:
 		if resourceName != "" {
-			return fmt.Sprintf("arn:aws:%s:*:*:%s/%s", service, resourceType, resourceName)
+			return fmt.Sprintf("arn:aws:%s:*:%s:%s/%s", service, accountID, resourceType, resourceName)
 		}
-		return fmt.Sprintf("arn:aws:%s:*:*:*", service)
+		return fmt.Sprintf("arn:aws:%s:*:%s:*", service, accountID)
 	}
 }
