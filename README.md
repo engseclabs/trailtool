@@ -104,6 +104,8 @@ trailtool status --format json
 ```
 
 All commands support `--format json` for machine-readable output.
+Detail text shows denied totals by default; add `--include-denied-details` for
+per-event breakdowns and denied resource-access rows. Detail JSON stays complete.
 Noun list and detail relationship totals come from exact distinct-count
 summaries; stored aggregate counts are used only if a summary is unavailable.
 `resources list --days` filters on `last_seen`; successful and denied activity

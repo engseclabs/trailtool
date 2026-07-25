@@ -88,6 +88,7 @@ func resourceWindowStart(now time.Time, days int) (date, timestamp string) {
 func resourcesDetailCmd() *cobra.Command {
 	var limit int
 	var all bool
+	var includeDeniedDetails bool
 
 	cmd := &cobra.Command{
 		Use:   "detail <rid>",
@@ -136,12 +137,13 @@ Example:
 				return printJSON(detail)
 			}
 
-			fmt.Print(view.ResourceDetail(renderContext(), &detail))
+			fmt.Print(view.ResourceDetail(renderContext(), &detail, includeDeniedDetails))
 			return nil
 		},
 	}
 
 	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
 	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
+	cmd.Flags().BoolVar(&includeDeniedDetails, "include-denied-details", false, "Show denied event breakdowns")
 	return cmd
 }

@@ -51,6 +51,7 @@ func servicesListCmd() *cobra.Command {
 func servicesDetailCmd() *cobra.Command {
 	var limit int
 	var all bool
+	var includeDeniedDetails bool
 
 	cmd := &cobra.Command{
 		Use:   "detail <event-source>",
@@ -104,12 +105,13 @@ such as "ses" for "email.amazonaws.com" are not inferred.`,
 				return printJSON(detail)
 			}
 
-			fmt.Print(view.ServiceDetail(renderContext(), &detail))
+			fmt.Print(view.ServiceDetail(renderContext(), &detail, includeDeniedDetails))
 			return nil
 		},
 	}
 
 	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
 	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
+	cmd.Flags().BoolVar(&includeDeniedDetails, "include-denied-details", false, "Show denied event breakdowns")
 	return cmd
 }

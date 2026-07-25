@@ -11,7 +11,7 @@ import (
 
 // PersonDetail renders identity facts, activity, relationships, and
 // copy-pasteable commands for a person.
-func PersonDetail(ctx render.Context, detail *models.PersonDetail) string {
+func PersonDetail(ctx render.Context, detail *models.PersonDetail, includeDeniedDetails bool) string {
 	person := &detail.Person
 	var b strings.Builder
 	b.WriteString(ctx.Title(person.DisplayLabel()))
@@ -41,7 +41,9 @@ func PersonDetail(ctx render.Context, detail *models.PersonDetail) string {
 	}
 	b.WriteString(ctx.RenderKV(kv, 0))
 
-	b.WriteString(DeniedEvents(ctx, person.DeniedEventCount, person.TopDeniedEventNames))
+	if includeDeniedDetails {
+		b.WriteString(DeniedEvents(ctx, person.DeniedEventCount, person.TopDeniedEventNames))
+	}
 	b.WriteString(relatedSessions(ctx, detail.Related.Sessions))
 	b.WriteString(relatedAccounts(ctx, detail.Related.Accounts))
 	b.WriteString(relatedRoles(ctx, detail.Related.Roles))
@@ -53,7 +55,7 @@ func PersonDetail(ctx render.Context, detail *models.PersonDetail) string {
 
 // ResourceDetail renders resource facts, activity, relationships, ClickOps
 // history, and copy-pasteable commands.
-func ResourceDetail(ctx render.Context, detail *models.ResourceDetail) string {
+func ResourceDetail(ctx render.Context, detail *models.ResourceDetail, includeDeniedDetails bool) string {
 	resource := &detail.Resource
 	title := resource.Name
 	if title == "" {
@@ -90,7 +92,9 @@ func ResourceDetail(ctx render.Context, detail *models.ResourceDetail) string {
 	b.WriteString(ctx.RenderKV(kv, 0))
 
 	b.WriteString(TopEvents(ctx, resource.TopEventNames))
-	b.WriteString(DeniedEvents(ctx, resource.TotalDeniedEvents, resource.TopDeniedEventNames))
+	if includeDeniedDetails {
+		b.WriteString(DeniedEvents(ctx, resource.TotalDeniedEvents, resource.TopDeniedEventNames))
+	}
 	b.WriteString(relatedRoles(ctx, detail.Related.Roles))
 	b.WriteString(relatedServices(ctx, detail.Related.Services))
 	b.WriteString(relatedPeople(ctx, detail.Related.People))

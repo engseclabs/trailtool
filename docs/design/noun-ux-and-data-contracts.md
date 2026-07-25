@@ -138,8 +138,7 @@ returns every row and cannot be combined with `--limit`.
 
 Denied totals remain in key facts. Per-event denied breakdowns and denied
 resource rows require `--include-denied-details`. `--include-denied` remains
-specific to policy generation.
-
+specific to policy generation. Detail JSON remains complete without the flag.
 Counts and top maps sort by count descending, then canonical identity.
 Relationship rows sort by last seen descending, then identity.
 

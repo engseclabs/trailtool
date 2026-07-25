@@ -112,6 +112,7 @@ func sessionsDetailCmd() *cobra.Command {
 	var user string
 	var limit int
 	var all bool
+	var includeDeniedDetails bool
 
 	cmd := &cobra.Command{
 		Use:   "detail [sid-or-latest]",
@@ -177,13 +178,17 @@ Examples:
 			fmt.Print(view.Clients(rctx, sess.Clients, sess.EventsCount > 0))
 
 			fmt.Print(view.SessionTags(rctx, sess.SessionTags))
-			fmt.Print(view.DeniedEvents(rctx, sess.DeniedEventCount, sess.DeniedEventCounts))
+			if includeDeniedDetails {
+				fmt.Print(view.DeniedEvents(rctx, sess.DeniedEventCount, sess.DeniedEventCounts))
+			}
 			fmt.Print(view.SessionClickOps(rctx, sess.ClickOpsEventCount, sess.ClickOpsEventCounts))
 			// Top Events / Resources Accessed now sort count-descending (§5).
 			fmt.Print(view.TopEvents(rctx, sess.EventCounts))
 			fmt.Print(view.ResourcesAccessed(rctx, sess.ResourcesAccessed))
 			fmt.Print(view.SessionResourceActivity(rctx, sess.ResourceAccesses))
-			fmt.Print(view.SessionDeniedActivity(rctx, sess.DeniedResourceAccesses, sess.DeniedEventAccesses))
+			if includeDeniedDetails {
+				fmt.Print(view.SessionDeniedActivity(rctx, sess.DeniedResourceAccesses, sess.DeniedEventAccesses))
+			}
 			fmt.Print(view.SessionSummary(rctx, sess))
 			fmt.Print(view.SessionRelationships(rctx, &detail))
 
@@ -259,6 +264,7 @@ Examples:
 	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
 	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
 	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
+	cmd.Flags().BoolVar(&includeDeniedDetails, "include-denied-details", false, "Show denied event breakdowns and access details")
 
 	return cmd
 }

@@ -13,7 +13,7 @@ import (
 // empty/zero facts.
 
 // AccountDetail renders account activity and exact relationships.
-func AccountDetail(ctx render.Context, detail *models.AccountDetail) string {
+func AccountDetail(ctx render.Context, detail *models.AccountDetail, includeDeniedDetails bool) string {
 	a := &detail.Account
 	var b strings.Builder
 	b.WriteString(ctx.Title(ctx.Style(render.Ident, a.AccountID)))
@@ -37,7 +37,9 @@ func AccountDetail(ctx render.Context, detail *models.AccountDetail) string {
 	}
 	b.WriteString(ctx.RenderKV(kv, 0))
 	b.WriteString(TopEvents(ctx, a.TopEventNames))
-	b.WriteString(DeniedEvents(ctx, a.TotalDeniedEvents, a.TopDeniedEventNames))
+	if includeDeniedDetails {
+		b.WriteString(DeniedEvents(ctx, a.TotalDeniedEvents, a.TopDeniedEventNames))
+	}
 	b.WriteString(relatedSessions(ctx, detail.Related.Sessions))
 	b.WriteString(relatedPeople(ctx, detail.Related.People))
 	b.WriteString(relatedRoles(ctx, detail.Related.Roles))
@@ -48,7 +50,7 @@ func AccountDetail(ctx render.Context, detail *models.AccountDetail) string {
 }
 
 // RoleDetail renders role activity, denied context, and exact relationships.
-func RoleDetail(ctx render.Context, detail *models.RoleDetail) string {
+func RoleDetail(ctx render.Context, detail *models.RoleDetail, includeDeniedDetails bool) string {
 	r := &detail.Role
 	var b strings.Builder
 	b.WriteString(ctx.Title(ctx.Style(render.Ident, r.Name)))
@@ -66,10 +68,14 @@ func RoleDetail(ctx render.Context, detail *models.RoleDetail) string {
 	}
 	b.WriteString(ctx.RenderKV(kv, 0))
 	b.WriteString(TopEvents(ctx, r.TopEventNames))
-	b.WriteString(DeniedEvents(ctx, r.TotalDeniedEvents, r.TopDeniedEventNames))
+	if includeDeniedDetails {
+		b.WriteString(DeniedEvents(ctx, r.TotalDeniedEvents, r.TopDeniedEventNames))
+	}
 	b.WriteString(countTable(ctx, "Services", "EVENT SOURCE", r.ServicesCount))
 	b.WriteString(RoleResourceActivity(ctx, r.ResourceAccesses))
-	b.WriteString(RoleDeniedActivity(ctx, r.DeniedResourceAccesses, r.DeniedEventAccesses))
+	if includeDeniedDetails {
+		b.WriteString(RoleDeniedActivity(ctx, r.DeniedResourceAccesses, r.DeniedEventAccesses))
+	}
 	b.WriteString(relatedSessions(ctx, detail.Related.Sessions))
 	b.WriteString(relatedPeople(ctx, detail.Related.People))
 	b.WriteString(nounNavigation(ctx, roleDetailCommands(detail)))
@@ -77,7 +83,7 @@ func RoleDetail(ctx render.Context, detail *models.RoleDetail) string {
 }
 
 // ServiceDetail renders the services detail view.
-func ServiceDetail(ctx render.Context, detail *models.ServiceDetail) string {
+func ServiceDetail(ctx render.Context, detail *models.ServiceDetail, includeDeniedDetails bool) string {
 	svc := &detail.Service
 	var b strings.Builder
 	b.WriteString(ctx.Title(ctx.Style(render.Ident, svc.EventSource)))
@@ -102,7 +108,9 @@ func ServiceDetail(ctx render.Context, detail *models.ServiceDetail) string {
 	b.WriteString(ctx.RenderKV(kv, 0))
 
 	b.WriteString(TopEvents(ctx, svc.TopEventNames))
-	b.WriteString(DeniedEvents(ctx, svc.TotalDeniedEvents, svc.TopDeniedEventNames))
+	if includeDeniedDetails {
+		b.WriteString(DeniedEvents(ctx, svc.TotalDeniedEvents, svc.TopDeniedEventNames))
+	}
 	b.WriteString(relatedRoles(ctx, detail.Related.Roles))
 	b.WriteString(relatedResources(ctx, detail.Related.Resources))
 	b.WriteString(relatedAccounts(ctx, detail.Related.Accounts))

@@ -101,6 +101,8 @@ totals remain lifetime totals. In `--clickops` mode, ClickOps rows and
 `clickops_count` describe only the requested period.
 Noun detail commands show up to 10 rows per related section by default. Pass
 `--limit <n>` to change the bound or `--all` to show every row.
+Denied totals remain visible. Pass `--include-denied-details` to show per-event
+denied breakdowns and denied resource-access rows.
 
 ## Workflows
 
