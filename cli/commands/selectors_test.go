@@ -46,27 +46,23 @@ func TestCanonicalDetailCommandsRequireOneSelector(t *testing.T) {
 	}
 }
 
-func TestSessionSelectorCompatibility(t *testing.T) {
+func TestSessionSelector(t *testing.T) {
 	tests := []struct {
-		name       string
-		args       []string
-		legacyFlag string
-		user       string
-		want       string
-		wantLegacy bool
-		wantError  string
+		name      string
+		args      []string
+		user      string
+		want      string
+		wantError string
 	}{
 		{name: "positional SID", args: []string{"k7m2qp"}, want: "k7m2qp"},
 		{name: "positional latest with user", args: []string{"latest"}, user: "alice@example.com", want: "latest"},
-		{name: "legacy SID", legacyFlag: "k7m2qp", want: "k7m2qp", wantLegacy: true},
 		{name: "missing", wantError: "required"},
-		{name: "both", args: []string{"k7m2qp"}, legacyFlag: "latest", wantError: "mutually exclusive"},
 		{name: "user with SID", args: []string{"k7m2qp"}, user: "alice@example.com", wantError: "only with latest"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, usedLegacy, err := sessionSelector(tt.args, tt.legacyFlag, tt.user)
+			got, err := sessionSelector(tt.args, tt.user)
 			if tt.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
 					t.Fatalf("error = %v, want substring %q", err, tt.wantError)
@@ -76,8 +72,8 @@ func TestSessionSelectorCompatibility(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sessionSelector() error = %v", err)
 			}
-			if got != tt.want || usedLegacy != tt.wantLegacy {
-				t.Fatalf("sessionSelector() = %q/%t, want %q/%t", got, usedLegacy, tt.want, tt.wantLegacy)
+			if got != tt.want {
+				t.Fatalf("sessionSelector() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -96,8 +92,8 @@ func TestSessionCommandsAcceptOnePositionalSelector(t *testing.T) {
 			if err := cmd.Args(cmd, []string{"one", "two"}); err == nil {
 				t.Fatal("multiple selectors were accepted")
 			}
-			if cmd.Flag("session") == nil {
-				t.Fatal("temporary --session compatibility flag is missing")
+			if cmd.Flag("session") != nil {
+				t.Fatal("removed --session flag is still registered")
 			}
 		})
 	}

@@ -306,7 +306,7 @@ const SidDisplayMin = 6
 
 // Sid derives a deterministic, typable id for a session from its ref
 // (person_key|sk). It is the sort key of the sessions sid_index GSI (partition key
-// customerId), so "--session <prefix>" resolves via a single begins_with Query.
+// customerId), so a positional SID prefix resolves via one begins_with Query.
 // Deterministic means merges and re-ingests keep the same sid; lowercase base32
 // avoids shell-quoting and visually ambiguous characters.
 func Sid(personKey, sk string) string {

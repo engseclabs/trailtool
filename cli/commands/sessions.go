@@ -109,7 +109,6 @@ func sessionsListCmd() *cobra.Command {
 }
 
 func sessionsDetailCmd() *cobra.Command {
-	var sessionID string
 	var user string
 
 	cmd := &cobra.Command{
@@ -125,12 +124,9 @@ Examples:
   trailtool sessions detail latest --user alice@example.com`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			selector, usedLegacyFlag, selectErr := sessionSelector(args, sessionID, user)
+			selector, selectErr := sessionSelector(args, user)
 			if selectErr != nil {
 				return fatal("%v", selectErr)
-			}
-			if usedLegacyFlag {
-				fmt.Fprintln(os.Stderr, "warning: --session is deprecated; pass the SID positionally")
 			}
 
 			ctx := context.Background()
@@ -235,14 +231,12 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&sessionID, "session", "", "Deprecated: pass the SID or \"latest\" positionally")
 	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
 
 	return cmd
 }
 
 func sessionsSummarizeCmd() *cobra.Command {
-	var sessionID string
 	var user string
 
 	cmd := &cobra.Command{
@@ -258,12 +252,9 @@ Examples:
   trailtool sessions summarize latest --user alice@example.com`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			selector, usedLegacyFlag, selectErr := sessionSelector(args, sessionID, user)
+			selector, selectErr := sessionSelector(args, user)
 			if selectErr != nil {
 				return fatal("%v", selectErr)
-			}
-			if usedLegacyFlag {
-				fmt.Fprintln(os.Stderr, "warning: --session is deprecated; pass the SID positionally")
 			}
 
 			ctx := context.Background()
@@ -307,14 +298,12 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&sessionID, "session", "", "Deprecated: pass the SID or \"latest\" positionally")
 	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
 
 	return cmd
 }
 
 func sessionsPolicyCmd() *cobra.Command {
-	var sessionID string
 	var user string
 	var includeDenied bool
 	var explain bool
@@ -332,12 +321,9 @@ Examples:
   trailtool sessions policy k7m2qp --include-denied --explain`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			selector, usedLegacyFlag, selectErr := sessionSelector(args, sessionID, user)
+			selector, selectErr := sessionSelector(args, user)
 			if selectErr != nil {
 				return fatal("%v", selectErr)
-			}
-			if usedLegacyFlag {
-				fmt.Fprintln(os.Stderr, "warning: --session is deprecated; pass the SID positionally")
 			}
 
 			ctx := context.Background()
@@ -378,7 +364,6 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&sessionID, "session", "", "Deprecated: pass the SID or \"latest\" positionally")
 	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
 	cmd.Flags().BoolVar(&includeDenied, "include-denied", false, "Include denied events in policy")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Show policy explanation on stderr")
@@ -386,21 +371,13 @@ Examples:
 	return cmd
 }
 
-func sessionSelector(args []string, legacyFlag, user string) (selector string, usedLegacyFlag bool, err error) {
-	if len(args) > 0 && legacyFlag != "" {
-		return "", false, fmt.Errorf("positional session id and --session are mutually exclusive")
+func sessionSelector(args []string, user string) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("session id argument is required (for example, k7m2qp or latest)")
 	}
-	if len(args) == 0 && legacyFlag == "" {
-		return "", false, fmt.Errorf("session id argument is required (for example, k7m2qp or latest)")
-	}
-	if len(args) > 0 {
-		selector = args[0]
-	} else {
-		selector = legacyFlag
-		usedLegacyFlag = true
-	}
+	selector := args[0]
 	if user != "" && selector != "latest" {
-		return "", false, fmt.Errorf("--user is valid only with latest")
+		return "", fmt.Errorf("--user is valid only with latest")
 	}
-	return selector, usedLegacyFlag, nil
+	return selector, nil
 }

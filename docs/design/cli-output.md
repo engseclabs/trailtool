@@ -2,8 +2,8 @@
 
 For status and rollout see https://github.com/engseclabs/trailtool/issues/25
 
-> The selector behavior documented here is superseded by
-> [Noun UX and Data Contracts](noun-ux-and-data-contracts.md).
+> This document records #25 as shipped. Its selector and noun-view behavior is
+> superseded by [Make CLI commands more consistent](noun-ux-and-data-contracts.md).
 
 ## 1. Summary
 

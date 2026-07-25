@@ -146,4 +146,4 @@ matching console session by principalId — the same mechanism used for
 - Whether the same fix (or a separate one) also resolves symptom 1.
 
 These are ingestor behaviors observed during 1.0 sandbox verification; they are
-independent of the CLI's sid/`--session` work.
+independent of the CLI's SID selector work.

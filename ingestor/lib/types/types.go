@@ -320,7 +320,7 @@ type DynamoDBSession struct {
 
 	// Sid is a deterministic short id derived from the ref (person_key|sk) via
 	// identity.Sid. Sort key of the sid_index GSI (partition customerId), so the
-	// CLI resolves "--session <prefix>" with a begins_with Query. Sticky across
+	// CLI resolves a positional SID prefix with a begins_with Query. Sticky across
 	// merges, like SK.
 	Sid string `dynamodbav:"sid"`
 
