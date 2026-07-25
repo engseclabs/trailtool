@@ -65,9 +65,9 @@ trailtool accounts detail <account-id>         # Account detail: people, roles, 
 ### Roles
 ```bash
 trailtool roles list                           # List all tracked IAM roles
-trailtool roles detail <role-name-or-arn>      # Role detail: services used, top events, denied events
-trailtool roles policy <role-name-or-arn>      # Generate least-privilege IAM policy from actual usage
-trailtool roles policy <role> --include-denied --explain  # Include denied events, show explanation
+trailtool roles detail <role-id>               # Role detail; ID comes from roles list
+trailtool roles policy <role-id>               # Generate least-privilege IAM policy from actual usage
+trailtool roles policy <role-id> --include-denied --explain  # Include denied events, show explanation
 ```
 
 ### Services
@@ -106,7 +106,7 @@ Tighten IAM roles by generating policies based on actual usage observed in Cloud
 
 **Role-scoped (lifetime of the role):**
 1. `trailtool roles list --format json` — identify roles to tighten
-2. `trailtool roles policy <RoleName> --format json` — generate least-privilege policy from all observed usage
+2. `trailtool roles policy <role-id> --format json` — generate least-privilege policy from all observed usage
 3. Compare the generated policy with the current Terraform `aws_iam_role_policy` or `aws_iam_policy` resource
 4. Propose a PR that narrows permissions to actual usage
 
@@ -129,8 +129,8 @@ Tighten IAM roles by generating policies based on actual usage observed in Cloud
 When a tightened IAM policy blocks legitimate access, use the denied event data to draft a targeted policy fix.
 
 **Steps:**
-1. `trailtool roles detail <RoleName> --format json` — check if the role has denied events
-2. `trailtool roles policy <RoleName> --include-denied --explain --format json` — generate a policy that includes the denied actions
+1. `trailtool roles detail <role-id> --format json` — check if the role has denied events
+2. `trailtool roles policy <role-id> --include-denied --explain --format json` — generate a policy that includes the denied actions
 3. Diff against the current Terraform IAM policy to identify what's missing
 4. Propose a minimal policy addition that grants only the denied actions, scoped to the appropriate resources
 

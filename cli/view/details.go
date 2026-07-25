@@ -39,6 +39,7 @@ func RoleDetail(ctx render.Context, r *models.Role) string {
 	var b strings.Builder
 	b.WriteString(ctx.Title(ctx.Style(render.Ident, r.Name)))
 	kv := render.NewKV().
+		Add("Role ID", ctx.Style(render.Ident, r.RoleID())).
 		Add("ARN", ctx.Style(render.Ident, r.ARN)).
 		Add("Account", r.AccountID).
 		Add("First Seen", ctx.Style(render.Time, r.FirstSeen)).

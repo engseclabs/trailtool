@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/engseclabs/trailtool/core/models"
 	"github.com/spf13/cobra"
 )
 
@@ -74,6 +75,40 @@ func TestSessionSelector(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("sessionSelector() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoleIDMatchResolution(t *testing.T) {
+	roles := []models.Role{
+		{RoleSelector: "abcdef1aaaaaaaaa", AccountID: "111", ARN: "arn:aws:iam::111:role/Admin"},
+		{RoleSelector: "abcdef2bbbbbbbbb", AccountID: "222", ARN: "arn:aws:iam::222:role/Admin"},
+	}
+	if got, err := resolveRoleIDMatches("missing", nil); err != nil || got != nil {
+		t.Fatalf("missing role match = %#v, %v", got, err)
+	}
+	if got, err := resolveRoleIDMatches("abcdef1", roles[:1]); err != nil || got == nil || got.AccountID != "111" {
+		t.Fatalf("unique role match = %#v, %v", got, err)
+	}
+	if _, err := resolveRoleIDMatches("abcdef", roles); err == nil ||
+		!strings.Contains(err.Error(), "abcdef1") ||
+		!strings.Contains(err.Error(), "abcdef2") {
+		t.Fatalf("ambiguous role error = %v", err)
+	}
+}
+
+func TestRoleCommandsUseRoleID(t *testing.T) {
+	for name, cmd := range map[string]*cobra.Command{
+		"detail": rolesDetailCmd(),
+		"policy": rolesPolicyCmd(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(cmd.Use, "<role-id>") {
+				t.Fatalf("Use = %q, want role ID selector", cmd.Use)
+			}
+			if !strings.Contains(cmd.Long, "full role ARN") || !strings.Contains(cmd.Long, "exact role name") {
+				t.Fatalf("fallback selectors missing from help: %q", cmd.Long)
 			}
 		})
 	}

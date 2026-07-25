@@ -162,8 +162,8 @@ func (s *Session) Normalize() *Session {
 	return s
 }
 
-// derivedIDLength is shared by PID, RID, and SID. The SID algorithm mirrors the
-// ingestor write side; the module trees do not import each other.
+// derivedIDLength is shared by PID, role ID, RID, and SID. The SID algorithm
+// mirrors the ingestor write side; the module trees do not import each other.
 const derivedIDLength = 16
 
 func digestID(input string) string {
@@ -175,6 +175,11 @@ func digestID(input string) string {
 // PIDForPersonKey derives a stable person selector from the canonical key.
 func PIDForPersonKey(personKey string) string {
 	return digestID("person:v1\x00" + personKey)
+}
+
+// RoleIDForARN derives a stable role selector from the canonical role ARN.
+func RoleIDForARN(roleARN string) string {
+	return digestID("role:v1\x00" + roleARN)
 }
 
 // RIDForResource derives a stable resource selector from its owner account and
@@ -213,6 +218,7 @@ func (s *Session) DetectSessionType() string {
 
 // Role represents an aggregated role record from the roles-aggregated table
 type Role struct {
+	RoleSelector     string               `json:"role_selector,omitempty" dynamodbav:"-"`
 	ARN              string               `json:"arn" dynamodbav:"arn"`
 	Name             string               `json:"name" dynamodbav:"name"`
 	AccountID        string               `json:"account_id" dynamodbav:"account_id"`
@@ -239,6 +245,14 @@ type Role struct {
 
 	// Enriched information
 	AccountName string `json:"account_name,omitempty"`
+}
+
+// RoleID returns the stable role selector derived from the canonical ARN.
+func (r *Role) RoleID() string {
+	if r.RoleSelector != "" {
+		return r.RoleSelector
+	}
+	return RoleIDForARN(r.ARN)
 }
 
 // ClientAggregate is one client's activity within a session, parsed from the

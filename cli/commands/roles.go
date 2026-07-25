@@ -53,9 +53,12 @@ func rolesDetailCmd() *cobra.Command {
 	var accountID string
 
 	cmd := &cobra.Command{
-		Use:   "detail <role-arn-or-name>",
+		Use:   "detail <role-id>",
 		Short: "Show role details",
-		Args:  cobra.ExactArgs(1),
+		Long: `Show role details using the ID from 'trailtool roles list'.
+An unambiguous ID prefix is accepted. A full role ARN or an exact role name
+also works.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
@@ -68,7 +71,7 @@ func rolesDetailCmd() *cobra.Command {
 				return fatal("%v", err)
 			}
 			if role == nil {
-				return fatal("role not found")
+				return fatal("role not found: %s (check 'trailtool roles list')", args[0])
 			}
 
 			if Format == "json" {
@@ -91,9 +94,12 @@ func rolesPolicyCmd() *cobra.Command {
 	var accountID string
 
 	cmd := &cobra.Command{
-		Use:   "policy <role-arn-or-name>",
+		Use:   "policy <role-id>",
 		Short: "Generate least-privilege IAM policy for a role",
-		Args:  cobra.ExactArgs(1),
+		Long: `Generate a policy using the ID from 'trailtool roles list'.
+An unambiguous ID prefix is accepted. A full role ARN or an exact role name
+also works.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
@@ -106,7 +112,7 @@ func rolesPolicyCmd() *cobra.Command {
 				return fatal("%v", err)
 			}
 			if role == nil {
-				return fatal("role not found: %s", args[0])
+				return fatal("role not found: %s (check 'trailtool roles list')", args[0])
 			}
 
 			result, err := policy.GeneratePolicy(role, includeDenied)

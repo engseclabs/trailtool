@@ -153,7 +153,22 @@ func (s *Store) GetRole(ctx context.Context, customerID, roleARN string) (*model
 	if err := attributevalue.UnmarshalMap(result.Item, &role); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal role: %w", err)
 	}
+	role.RoleSelector = role.RoleID()
 	return &role, nil
+}
+
+// FindRolesByRoleIDPrefix returns roles whose derived role ID starts with
+// prefix. Role IDs are read-side selectors, so resolution scans the customer's
+// role partition rather than requiring a derived-ID index.
+func (s *Store) FindRolesByRoleIDPrefix(ctx context.Context, customerID, prefix string) ([]models.Role, error) {
+	if prefix == "" {
+		return nil, fmt.Errorf("empty role id prefix")
+	}
+	roles, err := s.ListRoles(ctx, customerID)
+	if err != nil {
+		return nil, err
+	}
+	return rolesByRoleIDPrefix(roles, prefix), nil
 }
 
 // GetRoleByName finds a role by name (searches all roles for the customer).
@@ -177,7 +192,7 @@ func (s *Store) GetRoleByName(ctx context.Context, customerID, roleName, account
 		for _, m := range matches {
 			msg += fmt.Sprintf("  %s (account %s)\n", m.ARN, m.AccountID)
 		}
-		msg += "Use the full ARN or --account to disambiguate."
+		msg += "Use the role ID, full ARN, or --account to disambiguate."
 		return nil, fmt.Errorf("%s", msg)
 	}
 }
@@ -669,12 +684,28 @@ func sortPeople(people []models.Person) {
 }
 
 func sortRoles(roles []models.Role) {
+	for i := range roles {
+		roles[i].RoleSelector = roles[i].RoleID()
+	}
 	sort.Slice(roles, func(i, j int) bool {
 		if roles[i].LastSeen != roles[j].LastSeen {
 			return roles[i].LastSeen > roles[j].LastSeen
 		}
 		return roles[i].ARN < roles[j].ARN
 	})
+}
+
+func rolesByRoleIDPrefix(roles []models.Role, prefix string) []models.Role {
+	var matches []models.Role
+	for i := range roles {
+		if strings.HasPrefix(roles[i].RoleID(), prefix) {
+			matches = append(matches, roles[i])
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].RoleID() < matches[j].RoleID()
+	})
+	return matches
 }
 
 func rolesByExactName(roles []models.Role, roleName, accountID string) []models.Role {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/engseclabs/trailtool/cli/view"
@@ -138,12 +139,41 @@ func resolveSession(ctx context.Context, s *store.Store, sel, user string) (*mod
 	}
 }
 
-// lookupRole resolves a role by ARN or by name (optionally scoped to an account).
-func lookupRole(ctx context.Context, s *store.Store, nameOrARN, accountID string) (*models.Role, error) {
-	if len(nameOrARN) >= 3 && nameOrARN[:3] == "arn" {
-		return s.GetRole(ctx, CustomerID, nameOrARN)
+// lookupRole resolves the primary short role ID, then the full ARN or an exact
+// role name. --account scopes only the name fallback.
+func lookupRole(ctx context.Context, s *store.Store, selector, accountID string) (*models.Role, error) {
+	if strings.HasPrefix(selector, "arn:") {
+		return s.GetRole(ctx, CustomerID, selector)
 	}
-	return s.GetRoleByName(ctx, CustomerID, nameOrARN, accountID)
+	matches, err := s.FindRolesByRoleIDPrefix(ctx, CustomerID, selector)
+	if err != nil {
+		return nil, err
+	}
+	role, err := resolveRoleIDMatches(selector, matches)
+	if err != nil || role != nil {
+		return role, err
+	}
+	return s.GetRoleByName(ctx, CustomerID, selector, accountID)
+}
+
+func resolveRoleIDMatches(selector string, matches []models.Role) (*models.Role, error) {
+	switch len(matches) {
+	case 0:
+		return nil, nil
+	case 1:
+		return &matches[0], nil
+	default:
+		width := view.RoleIDDisplayWidth(matches)
+		if width <= len(selector) {
+			width = min(len(selector)+1, 16)
+		}
+		msg := fmt.Sprintf("%d roles match id %q: use a longer id:\n", len(matches), selector)
+		for i := range matches {
+			m := &matches[i]
+			msg += fmt.Sprintf("  %s  %s  %s\n", view.ShortRoleID(m, width), m.AccountID, m.ARN)
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
 }
 
 // Debug is bound to the global --debug flag; TRAILTOOL_DEBUG=1 also enables it.

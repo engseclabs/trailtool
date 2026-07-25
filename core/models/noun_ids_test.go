@@ -23,10 +23,20 @@ func TestRIDForResourceGolden(t *testing.T) {
 	}
 }
 
+func TestRoleIDForARNGolden(t *testing.T) {
+	if got, want := RoleIDForARN("arn:aws:iam::123456789012:role/AdministratorAccess"), "jlnjlxnbnhfqudhf"; got != want {
+		t.Fatalf("RoleIDForARN() = %q, want %q", got, want)
+	}
+}
+
 func TestDerivedNounIDMethodsPreferPopulatedJSONFields(t *testing.T) {
 	person := Person{Pid: "custom", PersonKey: "email#alice@example.com"}
 	if got := person.PID(); got != "custom" {
 		t.Fatalf("Person.PID() = %q, want custom", got)
+	}
+	role := Role{RoleSelector: "custom", ARN: "arn:aws:iam::111111111111:role/example"}
+	if got := role.RoleID(); got != "custom" {
+		t.Fatalf("Role.RoleID() = %q, want custom", got)
 	}
 	resource := Resource{Rid: "custom", AccountID: "111111111111", Identifier: "s3:bucket:example"}
 	if got := resource.RID(); got != "custom" {

@@ -33,6 +33,11 @@ func TestNounListSorters(t *testing.T) {
 	if roles[0].ARN != "arn:role/a" || roles[1].ARN != "arn:role/b" || roles[2].ARN != "arn:role/c" {
 		t.Fatalf("roles order = %#v", roles)
 	}
+	for i := range roles {
+		if roles[i].RoleSelector == "" {
+			t.Fatalf("role %q has no derived role ID", roles[i].ARN)
+		}
+	}
 
 	resources := []models.Resource{
 		{AccountID: "222", Identifier: "lambda:function:a", LastSeen: "2026-07-24"},
@@ -71,6 +76,22 @@ func TestNounListSorters(t *testing.T) {
 		services[1].EventSource != "s3.amazonaws.com" ||
 		services[2].EventSource != "sts.amazonaws.com" {
 		t.Fatalf("services order = %#v", services)
+	}
+}
+
+func TestRolesByRoleIDPrefix(t *testing.T) {
+	roles := []models.Role{
+		{RoleSelector: "abcdef1aaaaaaaaa", ARN: "arn:aws:iam::111:role/Admin"},
+		{RoleSelector: "abcdef2bbbbbbbbb", ARN: "arn:aws:iam::222:role/Admin"},
+		{RoleSelector: "ghijkl3ccccccccc", ARN: "arn:aws:iam::111:role/ReadOnly"},
+	}
+
+	got := rolesByRoleIDPrefix(roles, "abcdef")
+	if len(got) != 2 || got[0].RoleSelector != "abcdef1aaaaaaaaa" || got[1].RoleSelector != "abcdef2bbbbbbbbb" {
+		t.Fatalf("prefix matches = %#v", got)
+	}
+	if got := rolesByRoleIDPrefix(roles, "missing"); len(got) != 0 {
+		t.Fatalf("missing prefix matches = %#v", got)
 	}
 }
 

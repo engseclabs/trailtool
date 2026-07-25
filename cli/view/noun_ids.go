@@ -17,6 +17,16 @@ func PersonIDDisplayWidth(people []models.Person) int {
 	return uniqueIDWidth(ids)
 }
 
+// RoleIDDisplayWidth returns the shortest prefix that identifies every role in
+// the list.
+func RoleIDDisplayWidth(roles []models.Role) int {
+	ids := make([]string, len(roles))
+	for i := range roles {
+		ids[i] = roles[i].RoleID()
+	}
+	return uniqueIDWidth(ids)
+}
+
 // ResourceIDDisplayWidth returns the shortest prefix that identifies every
 // resource in the list.
 func ResourceIDDisplayWidth(resources []models.Resource) int {
@@ -25,6 +35,11 @@ func ResourceIDDisplayWidth(resources []models.Resource) int {
 		ids[i] = resources[i].RID()
 	}
 	return uniqueIDWidth(ids)
+}
+
+// ShortRoleID renders a role ID at the requested unambiguous display width.
+func ShortRoleID(role *models.Role, width int) string {
+	return shortID(role.RoleID(), width)
 }
 
 func uniqueIDWidth(ids []string) int {

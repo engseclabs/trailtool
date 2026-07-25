@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/engseclabs/trailtool/core/models"
 	"github.com/engseclabs/trailtool/internal/render"
@@ -149,10 +150,19 @@ func TestClickOpsUsesStableResourceSelectors(t *testing.T) {
 	}
 }
 
-func TestRoleARNRemainsCopyableAtNarrowWidths(t *testing.T) {
+func TestRoleIDRemainsCopyableAtNarrowWidths(t *testing.T) {
 	roles := sampleRoles()
 	got := Roles(ctxFor(60, false, true), roles[:1])
-	if !strings.Contains(got, roles[0].ARN) {
-		t.Fatalf("role ARN was shortened:\n%s", got)
+	want := roles[0].RoleID()[:nounIDDisplayMin]
+	if !strings.Contains(got, want) {
+		t.Fatalf("role ID %q is missing:\n%s", want, got)
+	}
+	if strings.Contains(got, roles[0].ARN) {
+		t.Fatalf("role list still exposes the ARN as its selector:\n%s", got)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(got), "\n") {
+		if width := utf8.RuneCountInString(line); width > 60 {
+			t.Fatalf("role list line is %d columns wide:\n%s", width, got)
+		}
 	}
 }

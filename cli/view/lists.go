@@ -130,28 +130,37 @@ func Roles(ctx render.Context, roles []models.Role) string {
 	}
 	showWide := ctx.Width >= 132
 	columns := []render.Column{
-		{Header: "ROLE ARN", Align: render.AlignLeft},
+		{Header: "ROLE ID", Align: render.AlignLeft},
+		{Header: "ROLE", Align: render.AlignLeft},
 		{Header: "EVENTS", Align: render.AlignRight},
 		{Header: "DENIED", Align: render.AlignRight},
 		{Header: "LAST SEEN", Align: render.AlignLeft},
 	}
 	if showWide {
 		columns = append(columns,
+			render.Column{Header: "ACCOUNT", Align: render.AlignLeft},
 			render.Column{Header: "SESSIONS", Align: render.AlignRight},
 			render.Column{Header: "PEOPLE", Align: render.AlignRight},
 		)
 	}
 	t := render.NewTable(columns...)
+	roleIDWidth := RoleIDDisplayWidth(roles)
+	roleNameWidth := min(40, max(8, ctx.Width-47))
+	if showWide {
+		roleNameWidth = min(40, max(8, ctx.Width-79))
+	}
 	for i := range roles {
 		r := &roles[i]
 		row := []string{
-			ident(ctx, r.ARN),
+			ident(ctx, ShortRoleID(r, roleIDWidth)),
+			ctx.Truncate(r.Name, roleNameWidth),
 			count(ctx, r.TotalEvents),
 			denied(ctx, r.TotalDeniedEvents),
 			ctx.Style(render.Time, r.LastSeen),
 		}
 		if showWide {
 			row = append(row,
+				r.AccountID,
 				count(ctx, r.SessionsCount),
 				count(ctx, r.PeopleCount),
 			)

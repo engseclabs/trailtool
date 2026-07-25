@@ -78,9 +78,9 @@ trailtool accounts detail 123456789012
 
 # Roles
 trailtool roles list
-trailtool roles detail arn:aws:iam::123456789012:role/MyRole
-trailtool roles policy arn:aws:iam::123456789012:role/MyRole
-trailtool roles policy arn:aws:iam::123456789012:role/MyRole --include-denied --explain
+trailtool roles detail jlnjlx              # by role ID (prefix ok)
+trailtool roles policy jlnjlx
+trailtool roles policy jlnjlx --include-denied --explain
 
 # Session-scoped policy (tighter: only what this session actually did)
 trailtool sessions policy latest
