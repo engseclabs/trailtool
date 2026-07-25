@@ -10,11 +10,15 @@ import (
 
 var version = "dev"
 
-func main() {
+func newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "trailtool",
-		Short: "TrailTool - AWS CloudTrail analysis CLI",
-		Long:  "Analyze AWS CloudTrail data for people, sessions, accounts, roles, services, and resources.",
+		Use:          "trailtool",
+		Short:        "TrailTool - AWS CloudTrail analysis CLI",
+		Long:         "Analyze AWS CloudTrail data for people, sessions, accounts, roles, services, and resources.",
+		SilenceUsage: true,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return commands.ValidateGlobalFlags()
+		},
 	}
 
 	rootCmd.PersistentFlags().StringVar(&commands.Format, "format", "text", "Output format: text or json")
@@ -29,8 +33,11 @@ func main() {
 	rootCmd.AddCommand(commands.RolesCmd())
 	rootCmd.AddCommand(commands.ServicesCmd())
 	rootCmd.AddCommand(commands.ResourcesCmd())
+	return rootCmd
+}
 
-	if err := rootCmd.Execute(); err != nil {
+func main() {
+	if err := newRootCmd().Execute(); err != nil {
 		os.Exit(1)
 	}
 }

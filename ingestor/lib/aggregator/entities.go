@@ -35,19 +35,19 @@ func setLen(m map[string]map[string]bool, key string) int {
 // emails_seen: emails always (lowercased; the first becomes the email_index
 // key), non-email names only for tier-1 groups — they're Identity Center
 // usernames, whereas chained/link session names are arbitrary strings.
-func processPersonEvent(people map[string]*types.DynamoDBPerson, p identity.Person, event types.CloudTrailRecord, eventDate string) {
+func processPersonEvent(people map[string]*types.DynamoDBPerson, p identity.Person, event types.CloudTrailRecord, observedAt string) {
 	person, exists := people[p.Key]
 	if !exists {
 		person = &types.DynamoDBPerson{
 			PersonKey:           p.Key,
 			Tier:                p.Tier,
-			FirstSeen:           eventDate,
-			LastSeen:            eventDate,
+			FirstSeen:           observedAt,
+			LastSeen:            observedAt,
 			TopDeniedEventNames: make(map[string]int),
 		}
 		people[p.Key] = person
 	}
-	person.LastSeen = eventDate
+	updateObservedBounds(&person.FirstSeen, &person.LastSeen, observedAt)
 	person.EventsCount++
 	if session.IsAccessDeniedError(event.ErrorCode) {
 		person.DeniedEventCount++
@@ -70,19 +70,19 @@ func processPersonEvent(people map[string]*types.DynamoDBPerson, p identity.Pers
 }
 
 // processAccountEvent tracks aggregated data for an account.
-func processAccountEvent(accounts map[string]*types.DynamoDBAccount, accountID string, event types.CloudTrailRecord, eventDate string, clickOps bool) {
+func processAccountEvent(accounts map[string]*types.DynamoDBAccount, accountID string, event types.CloudTrailRecord, observedAt string, clickOps bool) {
 	account, exists := accounts[accountID]
 	if !exists {
 		account = &types.DynamoDBAccount{
 			AccountID:           accountID,
-			FirstSeen:           eventDate,
-			LastSeen:            eventDate,
+			FirstSeen:           observedAt,
+			LastSeen:            observedAt,
 			TopEventNames:       make(map[string]int),
 			TopDeniedEventNames: make(map[string]int),
 		}
 		accounts[accountID] = account
 	}
-	account.LastSeen = eventDate
+	updateObservedBounds(&account.FirstSeen, &account.LastSeen, observedAt)
 	account.EventsCount++
 	eventKey := event.EventSource + ":" + event.EventName
 	if session.IsAccessDeniedError(event.ErrorCode) {
@@ -97,15 +97,15 @@ func processAccountEvent(accounts map[string]*types.DynamoDBAccount, accountID s
 }
 
 // processRoleEvent aggregates an event for a role.
-func processRoleEvent(roles map[string]*types.DynamoDBRole, event types.CloudTrailRecord, roleARN string, resourceList []types.ResourceIdentity, eventDate string) {
+func processRoleEvent(roles map[string]*types.DynamoDBRole, event types.CloudTrailRecord, roleARN string, resourceList []types.ResourceIdentity, observedAt string) {
 	role, exists := roles[roleARN]
 	if !exists {
 		role = &types.DynamoDBRole{
 			ARN:                    roleARN,
 			Name:                   session.ExtractRoleNameFromARN(roleARN),
 			AccountID:              session.ExtractAccountIDFromARN(roleARN),
-			FirstSeen:              eventDate,
-			LastSeen:               eventDate,
+			FirstSeen:              observedAt,
+			LastSeen:               observedAt,
 			TotalEvents:            0,
 			ServicesCount:          make(map[string]int),
 			ResourcesCount:         make(map[string]int),
@@ -221,11 +221,11 @@ func processRoleEvent(roles map[string]*types.DynamoDBRole, event types.CloudTra
 		}
 	}
 
-	role.LastSeen = eventDate
+	updateObservedBounds(&role.FirstSeen, &role.LastSeen, observedAt)
 }
 
 // processServiceEvent aggregates an event for a service.
-func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event types.CloudTrailRecord, roleARN string, resourceList []types.ResourceIdentity, eventDate string) {
+func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event types.CloudTrailRecord, roleARN string, resourceList []types.ResourceIdentity, observedAt string) {
 	eventSource := event.EventSource
 	svc, exists := serviceMap[eventSource]
 	if !exists {
@@ -233,8 +233,8 @@ func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event typ
 			EventSource:         eventSource,
 			DisplayName:         resources.GetServiceDisplayName(eventSource),
 			Category:            resources.GetServiceCategory(eventSource),
-			FirstSeen:           eventDate,
-			LastSeen:            eventDate,
+			FirstSeen:           observedAt,
+			LastSeen:            observedAt,
 			TotalEvents:         0,
 			TopEventNames:       make(map[string]int),
 			TotalDeniedEvents:   0,
@@ -252,7 +252,7 @@ func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event typ
 		svc.TopEventNames[event.EventName]++
 	}
 
-	svc.LastSeen = eventDate
+	updateObservedBounds(&svc.FirstSeen, &svc.LastSeen, observedAt)
 
 	if roleARN != "" {
 		if svc.RolesUsing == nil {
@@ -266,7 +266,7 @@ func processServiceEvent(serviceMap map[string]*types.DynamoDBService, event typ
 }
 
 // processResourceEvent aggregates an event for a resource.
-func processResourceEvent(resourceMap map[string]*types.DynamoDBResource, event types.CloudTrailRecord, identity types.ResourceIdentity, eventDate string) {
+func processResourceEvent(resourceMap map[string]*types.DynamoDBResource, event types.CloudTrailRecord, identity types.ResourceIdentity, observedAt string) {
 	resourceKey := resources.ResourceKey(identity.AccountID, identity.Identifier)
 	resource, exists := resourceMap[resourceKey]
 	if !exists {
@@ -277,8 +277,8 @@ func processResourceEvent(resourceMap map[string]*types.DynamoDBResource, event 
 			Name:                identity.Name,
 			AccountID:           identity.AccountID,
 			ARN:                 identity.ARN,
-			FirstSeen:           eventDate,
-			LastSeen:            eventDate,
+			FirstSeen:           observedAt,
+			LastSeen:            observedAt,
 			TotalEvents:         0,
 			TopEventNames:       make(map[string]int),
 			TotalDeniedEvents:   0,
@@ -296,7 +296,7 @@ func processResourceEvent(resourceMap map[string]*types.DynamoDBResource, event 
 		resource.TopEventNames[event.EventName]++
 	}
 
-	resource.LastSeen = eventDate
+	updateObservedBounds(&resource.FirstSeen, &resource.LastSeen, observedAt)
 
 	if roleARN := session.GetRoleARN(event); roleARN != "" {
 		if resource.RolesUsing == nil {
@@ -309,4 +309,16 @@ func processResourceEvent(resourceMap map[string]*types.DynamoDBResource, event 
 		resource.ServicesUsed = []string{}
 	}
 	appendUnique(&resource.ServicesUsed, event.EventSource)
+}
+
+func updateObservedBounds(firstSeen, lastSeen *string, observedAt string) {
+	if observedAt == "" {
+		return
+	}
+	if *firstSeen == "" || observedAt < *firstSeen {
+		*firstSeen = observedAt
+	}
+	if observedAt > *lastSeen {
+		*lastSeen = observedAt
+	}
 }

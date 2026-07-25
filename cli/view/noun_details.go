@@ -1,7 +1,6 @@
 package view
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 
@@ -11,7 +10,7 @@ import (
 
 // PersonDetail renders identity facts, activity, relationships, and
 // copy-pasteable commands for a person.
-func PersonDetail(ctx render.Context, detail *models.PersonDetail) string {
+func PersonDetail(ctx render.Context, detail *models.PersonDetail, includeDeniedDetails bool) string {
 	person := &detail.Person
 	var b strings.Builder
 	b.WriteString(ctx.Title(person.DisplayLabel()))
@@ -28,8 +27,8 @@ func PersonDetail(ctx render.Context, detail *models.PersonDetail) string {
 		sort.Strings(aliases)
 		kv.Add("Email Aliases", strings.Join(aliases, ", "))
 	}
-	kv.Add("First Seen", ctx.Style(render.Time, person.FirstSeen)).
-		Add("Last Seen", ctx.Style(render.Time, person.LastSeen)).
+	kv.Add("First Seen", ctx.Style(render.Time, ctx.Timestamp(person.FirstSeen))).
+		Add("Last Seen", ctx.Style(render.Time, ctx.Timestamp(person.LastSeen))).
 		Add("Events", count(ctx, person.EventsCount)).
 		Add("Sessions", count(ctx, person.SessionsCount)).
 		Add("Accounts", count(ctx, person.AccountsCount)).
@@ -41,19 +40,20 @@ func PersonDetail(ctx render.Context, detail *models.PersonDetail) string {
 	}
 	b.WriteString(ctx.RenderKV(kv, 0))
 
-	b.WriteString(DeniedEvents(ctx, person.DeniedEventCount, person.TopDeniedEventNames))
+	if includeDeniedDetails {
+		b.WriteString(DeniedEvents(ctx, person.DeniedEventCount, person.TopDeniedEventNames))
+	}
 	b.WriteString(relatedSessions(ctx, detail.Related.Sessions))
 	b.WriteString(relatedAccounts(ctx, detail.Related.Accounts))
 	b.WriteString(relatedRoles(ctx, detail.Related.Roles))
 	b.WriteString(relatedServices(ctx, detail.Related.Services))
 	b.WriteString(relatedResources(ctx, detail.Related.Resources))
-	b.WriteString(nounNavigation(ctx, personDetailCommands(detail)))
 	return b.String()
 }
 
 // ResourceDetail renders resource facts, activity, relationships, ClickOps
 // history, and copy-pasteable commands.
-func ResourceDetail(ctx render.Context, detail *models.ResourceDetail) string {
+func ResourceDetail(ctx render.Context, detail *models.ResourceDetail, includeDeniedDetails bool) string {
 	resource := &detail.Resource
 	title := resource.Name
 	if title == "" {
@@ -75,8 +75,8 @@ func ResourceDetail(ctx render.Context, detail *models.ResourceDetail) string {
 		kv.Add("Name", resource.Name)
 	}
 	kv.Add("Account", ident(ctx, resource.AccountID)).
-		Add("First Seen", ctx.Style(render.Time, resource.FirstSeen)).
-		Add("Last Seen", ctx.Style(render.Time, resource.LastSeen)).
+		Add("First Seen", ctx.Style(render.Time, ctx.Timestamp(resource.FirstSeen))).
+		Add("Last Seen", ctx.Style(render.Time, ctx.Timestamp(resource.LastSeen))).
 		Add("Events", count(ctx, resource.TotalEvents)).
 		Add("Roles", count(ctx, resource.RolesCount)).
 		Add("People", count(ctx, resource.PeopleCount)).
@@ -90,13 +90,14 @@ func ResourceDetail(ctx render.Context, detail *models.ResourceDetail) string {
 	b.WriteString(ctx.RenderKV(kv, 0))
 
 	b.WriteString(TopEvents(ctx, resource.TopEventNames))
-	b.WriteString(DeniedEvents(ctx, resource.TotalDeniedEvents, resource.TopDeniedEventNames))
+	if includeDeniedDetails {
+		b.WriteString(DeniedEvents(ctx, resource.TotalDeniedEvents, resource.TopDeniedEventNames))
+	}
 	b.WriteString(relatedRoles(ctx, detail.Related.Roles))
 	b.WriteString(relatedServices(ctx, detail.Related.Services))
 	b.WriteString(relatedPeople(ctx, detail.Related.People))
 	b.WriteString(relatedSessions(ctx, detail.Related.Sessions))
 	b.WriteString(resourceClickOps(ctx, detail))
-	b.WriteString(nounNavigation(ctx, resourceDetailCommands(detail)))
 	return b.String()
 }
 
@@ -150,7 +151,7 @@ func relatedSessions(ctx render.Context, sessions []models.RelatedSession) strin
 			session.AccountID,
 			session.DetectSessionType(),
 			count(ctx, session.EventsCount),
-			ctx.Style(render.Time, session.StartTime),
+			ctx.Style(render.Time, ctx.Relative(session.StartTime)),
 		)
 	}
 	return ctx.Section(render.Heading("Recent Sessions", len(sessions)), ctx.RenderTable(t, render.BodyIndent))
@@ -169,7 +170,7 @@ func relatedAccounts(ctx render.Context, accounts []models.RelatedAccount) strin
 		t.Row(
 			ident(ctx, accounts[i].AccountID),
 			accounts[i].AccountName,
-			ctx.Style(render.Time, accounts[i].RelationshipLastSeen),
+			ctx.Style(render.Time, ctx.Relative(accounts[i].RelationshipLastSeen)),
 		)
 	}
 	return ctx.Section(render.Heading("Accounts", len(accounts)), ctx.RenderTable(t, render.BodyIndent))
@@ -186,7 +187,7 @@ func relatedRoles(ctx render.Context, roles []models.RelatedRole) string {
 	for i := range roles {
 		t.Row(
 			ident(ctx, roles[i].ARN),
-			ctx.Style(render.Time, roles[i].RelationshipLastSeen),
+			ctx.Style(render.Time, ctx.Relative(roles[i].RelationshipLastSeen)),
 		)
 	}
 	return ctx.Section(render.Heading("Roles", len(roles)), ctx.RenderTable(t, render.BodyIndent))
@@ -203,7 +204,7 @@ func relatedServices(ctx render.Context, services []models.RelatedService) strin
 	for i := range services {
 		t.Row(
 			ident(ctx, services[i].EventSource),
-			ctx.Style(render.Time, services[i].RelationshipLastSeen),
+			ctx.Style(render.Time, ctx.Relative(services[i].RelationshipLastSeen)),
 		)
 	}
 	return ctx.Section(render.Heading("Services", len(services)), ctx.RenderTable(t, render.BodyIndent))
@@ -230,7 +231,7 @@ func relatedResources(ctx render.Context, resources []models.RelatedResource) st
 			ident(ctx, ShortResourceID(resource, ridWidth)),
 			ident(ctx, resource.Identifier),
 			resource.AccountID,
-			ctx.Style(render.Time, resources[i].RelationshipLastSeen),
+			ctx.Style(render.Time, ctx.Relative(resources[i].RelationshipLastSeen)),
 		)
 	}
 	return ctx.Section(render.Heading("Resources", len(resources)), ctx.RenderTable(t, render.BodyIndent))
@@ -255,7 +256,7 @@ func relatedPeople(ctx render.Context, people []models.RelatedPerson) string {
 		t.Row(
 			ident(ctx, ShortPersonID(person, pidWidth)),
 			person.DisplayLabel(),
-			ctx.Style(render.Time, people[i].RelationshipLastSeen),
+			ctx.Style(render.Time, ctx.Relative(people[i].RelationshipLastSeen)),
 		)
 	}
 	return ctx.Section(render.Heading("People", len(people)), ctx.RenderTable(t, render.BodyIndent))
@@ -301,136 +302,11 @@ func resourceClickOps(ctx render.Context, detail *models.ResourceDetail) string 
 			actor,
 			ident(ctx, access.EventName),
 			clickops(ctx, access.EventCount),
-			ctx.Style(render.Time, access.AccessTime),
+			ctx.Style(render.Time, ctx.Relative(access.AccessTime)),
 			ident(ctx, sid),
 		)
 	}
 	return ctx.Section(render.Heading("Console Operations", len(accesses)), ctx.RenderTable(t, render.BodyIndent))
-}
-
-func personDetailCommands(detail *models.PersonDetail) []string {
-	var commands []string
-	for i := range detail.Related.Sessions {
-		commands = append(commands, "trailtool sessions detail "+sessionSelector(&detail.Related.Sessions[i].Session))
-	}
-	for i := range detail.Related.Accounts {
-		commands = append(commands, "trailtool accounts detail "+detail.Related.Accounts[i].AccountID)
-	}
-	for i := range detail.Related.Roles {
-		commands = append(commands, "trailtool roles detail "+detail.Related.Roles[i].ARN)
-	}
-	for i := range detail.Related.Services {
-		commands = append(commands, "trailtool services detail "+detail.Related.Services[i].EventSource)
-	}
-	for i := range detail.Related.Resources {
-		commands = append(commands, "trailtool resources detail "+detail.Related.Resources[i].RID())
-	}
-	return commands
-}
-
-func resourceDetailCommands(detail *models.ResourceDetail) []string {
-	commands := []string{"trailtool accounts detail " + detail.AccountID}
-	for i := range detail.Related.Roles {
-		commands = append(commands, "trailtool roles detail "+detail.Related.Roles[i].ARN)
-	}
-	for i := range detail.Related.Services {
-		commands = append(commands, "trailtool services detail "+detail.Related.Services[i].EventSource)
-	}
-	for i := range detail.Related.People {
-		commands = append(commands, "trailtool people detail "+detail.Related.People[i].PID())
-	}
-	for i := range detail.Related.Sessions {
-		commands = append(commands, "trailtool sessions detail "+sessionSelector(&detail.Related.Sessions[i].Session))
-	}
-	for _, access := range detail.ClickOpsAccesses {
-		if access.SessionRef != "" {
-			commands = append(commands, "trailtool sessions detail "+models.SidForRef(access.SessionRef))
-		}
-	}
-	return commands
-}
-
-func accountDetailCommands(detail *models.AccountDetail) []string {
-	var commands []string
-	for i := range detail.Related.Sessions {
-		commands = append(commands, "trailtool sessions detail "+sessionSelector(&detail.Related.Sessions[i].Session))
-	}
-	for i := range detail.Related.People {
-		commands = append(commands, "trailtool people detail "+detail.Related.People[i].PID())
-	}
-	for i := range detail.Related.Roles {
-		commands = append(commands, "trailtool roles detail "+detail.Related.Roles[i].ARN)
-	}
-	for i := range detail.Related.Services {
-		commands = append(commands, "trailtool services detail "+detail.Related.Services[i].EventSource)
-	}
-	for i := range detail.Related.Resources {
-		commands = append(commands, "trailtool resources detail "+detail.Related.Resources[i].RID())
-	}
-	return commands
-}
-
-func roleDetailCommands(detail *models.RoleDetail) []string {
-	commands := []string{
-		"trailtool accounts detail " + detail.AccountID,
-		"trailtool roles policy " + detail.ARN,
-	}
-	for i := range detail.Related.Services {
-		commands = append(commands, "trailtool services detail "+detail.Related.Services[i].EventSource)
-	}
-	for i := range detail.Related.Resources {
-		commands = append(commands, "trailtool resources detail "+detail.Related.Resources[i].RID())
-	}
-	for i := range detail.Related.Sessions {
-		commands = append(commands, "trailtool sessions detail "+sessionSelector(&detail.Related.Sessions[i].Session))
-	}
-	for i := range detail.Related.People {
-		commands = append(commands, "trailtool people detail "+detail.Related.People[i].PID())
-	}
-	return commands
-}
-
-func serviceDetailCommands(detail *models.ServiceDetail) []string {
-	var commands []string
-	for i := range detail.Related.Roles {
-		commands = append(commands, "trailtool roles detail "+detail.Related.Roles[i].ARN)
-	}
-	for i := range detail.Related.Resources {
-		commands = append(commands, "trailtool resources detail "+detail.Related.Resources[i].RID())
-	}
-	for i := range detail.Related.Accounts {
-		commands = append(commands, "trailtool accounts detail "+detail.Related.Accounts[i].AccountID)
-	}
-	for i := range detail.Related.People {
-		commands = append(commands, "trailtool people detail "+detail.Related.People[i].PID())
-	}
-	for i := range detail.Related.Sessions {
-		commands = append(commands, "trailtool sessions detail "+sessionSelector(&detail.Related.Sessions[i].Session))
-	}
-	return commands
-}
-
-func sessionDetailCommands(detail *models.SessionDetail) []string {
-	var commands []string
-	if detail.AccountID != "" {
-		commands = append(commands, "trailtool accounts detail "+detail.AccountID)
-	}
-	if detail.RoleARN != "" {
-		commands = append(commands, "trailtool roles detail "+detail.RoleARN)
-	}
-	if detail.PersonKey != "" {
-		commands = append(commands, "trailtool people detail "+models.PIDForPersonKey(detail.PersonKey))
-	}
-	for i := range detail.Related.Services {
-		commands = append(commands, "trailtool services detail "+detail.Related.Services[i].EventSource)
-	}
-	for i := range detail.Related.Resources {
-		commands = append(commands, "trailtool resources detail "+detail.Related.Resources[i].RID())
-	}
-	for i := range detail.Related.Sessions {
-		commands = append(commands, "trailtool sessions detail "+sessionSelector(&detail.Related.Sessions[i].Session))
-	}
-	return commands
 }
 
 // SessionRelationships renders the non-canonical related nouns. Account, role,
@@ -440,36 +316,4 @@ func SessionRelationships(ctx render.Context, detail *models.SessionDetail) stri
 	b.WriteString(relatedServices(ctx, detail.Related.Services))
 	b.WriteString(relatedResources(ctx, detail.Related.Resources))
 	return b.String()
-}
-
-// SessionNavigation renders copy-paste commands for canonical and related
-// nouns.
-func SessionNavigation(ctx render.Context, detail *models.SessionDetail) string {
-	return nounNavigation(ctx, sessionDetailCommands(detail))
-}
-
-func sessionSelector(session *models.Session) string {
-	if session.Sid != "" {
-		return session.Sid
-	}
-	return models.SidForRef(session.Ref())
-}
-
-func nounNavigation(ctx render.Context, commands []string) string {
-	if len(commands) == 0 {
-		return ""
-	}
-	seen := make(map[string]bool, len(commands))
-	var b strings.Builder
-	for _, command := range commands {
-		if command == "" || seen[command] {
-			continue
-		}
-		seen[command] = true
-		fmt.Fprintf(&b, "  %s\n", ctx.Style(render.Nav, ctx.Symbol(render.SymNav)+" "+command))
-	}
-	if b.Len() == 0 {
-		return ""
-	}
-	return ctx.Section(render.Heading("Explore", -1), b.String())
 }

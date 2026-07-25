@@ -25,11 +25,22 @@ var ColorMode = "auto"
 
 // renderContext resolves the terminal capabilities once per command, per §4.1.
 // Views are threaded the returned Context and never re-read the environment.
-// An unrecognized --color value falls back to auto (the flag's help lists the
-// valid values; Cobra does not enum-validate it).
+// Global flag validation runs before commands reach this helper.
 func renderContext() render.Context {
 	mode, _ := render.ParseColorMode(ColorMode)
 	return render.Detect(mode, os.Stdout, os.Stderr)
+}
+
+// ValidateGlobalFlags rejects unsupported output modes before a command loads
+// AWS configuration or opens the data store.
+func ValidateGlobalFlags() error {
+	if Format != "text" && Format != "json" {
+		return fmt.Errorf("invalid --format %q (want text or json)", Format)
+	}
+	if _, ok := render.ParseColorMode(ColorMode); !ok {
+		return fmt.Errorf("invalid --color %q (want auto, always, or never)", ColorMode)
+	}
+	return nil
 }
 
 // CustomerID identifies the tenant whose data the CLI queries. It defaults to
@@ -100,16 +111,11 @@ func printChildRow(rctx render.Context, child *models.Session, displayRole, ref 
 // error.
 func resolveSession(ctx context.Context, s *store.Store, sel, user string) (*models.Session, error) {
 	if sel == "latest" {
-		filter := store.SessionFilter{Days: 90}
-		sessions, _, err := session.ListSessions(ctx, s, CustomerID, user, filter)
+		sessions, _, err := session.ListSessions(ctx, s, CustomerID, user, store.SessionFilter{})
 		if err != nil {
 			return nil, err
 		}
-		if len(sessions) == 0 {
-			return nil, fmt.Errorf("no sessions found")
-		}
-		latest := sessions[len(sessions)-1]
-		return &latest, nil
+		return latestSession(sessions)
 	}
 
 	matches, err := s.FindSessionsBySidPrefix(ctx, CustomerID, sel)
@@ -129,14 +135,24 @@ func resolveSession(ctx context.Context, s *store.Store, sel, user string) (*mod
 			width = len(sel) + 1
 		}
 		label := personLabels(ctx, s)
+		now := time.Now()
 		msg := fmt.Sprintf("%d sessions match id %q: use a longer id:\n", len(matches), sel)
 		for i := range matches {
 			m := &matches[i]
 			msg += fmt.Sprintf("  %s  %s  %s  %s\n",
-				view.ShortSid(m, width), m.StartTime, label(m.PersonKey), m.RoleName)
+				view.ShortSid(m, width), render.Timestamp(m.StartTime, now), label(m.PersonKey), m.RoleName)
 		}
 		return nil, fmt.Errorf("%s", msg)
 	}
+}
+
+func latestSession(sessions []models.Session) (*models.Session, error) {
+	if len(sessions) == 0 {
+		return nil, fmt.Errorf("no sessions found")
+	}
+	models.SortSessionsForList(sessions, false)
+	latest := sessions[len(sessions)-1]
+	return &latest, nil
 }
 
 // lookupRole resolves the primary short role ID, then the full ARN or an exact

@@ -99,46 +99,48 @@ func sampleResourceDetail() *models.ResourceDetail {
 
 func TestGoldenPersonDetail(t *testing.T) {
 	for _, width := range []int{60, 80, 100, 132} {
-		assertGolden(t, "person_detail_w"+n(width)+"_plain", PersonDetail(ctxFor(width, false, true), samplePersonDetail()))
+		assertGolden(t, "person_detail_w"+n(width)+"_plain", PersonDetail(ctxFor(width, false, true), samplePersonDetail(), true))
 	}
 }
 
 func TestGoldenResourceDetail(t *testing.T) {
 	for _, width := range []int{60, 80, 100, 132} {
-		assertGolden(t, "resource_detail_w"+n(width)+"_plain", ResourceDetail(ctxFor(width, false, true), sampleResourceDetail()))
-	}
-}
-
-func TestNounDetailsIncludeCopyPasteNavigation(t *testing.T) {
-	person := PersonDetail(ctxFor(100, false, true), samplePersonDetail())
-	for _, command := range []string{
-		"trailtool sessions detail " + models.SidForRef("email#alice@example.com|sis#session-1"),
-		"trailtool accounts detail 123456789012",
-		"trailtool roles detail arn:aws:iam::123456789012:role/DeployRole",
-		"trailtool services detail lambda.amazonaws.com",
-		"trailtool resources detail fyf7wfyglmgloz65",
-	} {
-		if !strings.Contains(person, command) {
-			t.Fatalf("person detail missing %q:\n%s", command, person)
-		}
-	}
-
-	resource := ResourceDetail(ctxFor(100, false, true), sampleResourceDetail())
-	for _, command := range []string{
-		"trailtool accounts detail 123456789012",
-		"trailtool people detail 5nmamaaeshnhs6xu",
-		"trailtool sessions detail " + models.SidForRef("email#alice@example.com|sis#session-1"),
-	} {
-		if !strings.Contains(resource, command) {
-			t.Fatalf("resource detail missing %q:\n%s", command, resource)
-		}
+		assertGolden(t, "resource_detail_w"+n(width)+"_plain", ResourceDetail(ctxFor(width, false, true), sampleResourceDetail(), true))
 	}
 }
 
 func TestNounDetailsNoColorParity(t *testing.T) {
-	colored := PersonDetail(ctxFor(100, true, true), samplePersonDetail())
-	plain := PersonDetail(ctxFor(100, false, true), samplePersonDetail())
+	colored := PersonDetail(ctxFor(100, true, true), samplePersonDetail(), true)
+	plain := PersonDetail(ctxFor(100, false, true), samplePersonDetail(), true)
 	if render.StripANSI(colored) != plain {
 		t.Fatal("stripped colored person detail differs from plain output")
+	}
+}
+
+func TestNounDetailsOmitExploreSection(t *testing.T) {
+	ctx := ctxFor(100, false, true)
+	for _, output := range []string{
+		PersonDetail(ctx, samplePersonDetail(), true),
+		ResourceDetail(ctx, sampleResourceDetail(), true),
+	} {
+		if strings.Contains(output, "Explore:") {
+			t.Fatalf("detail included Explore section:\n%s", output)
+		}
+	}
+}
+
+func TestNounDeniedBreakdownsAreOptIn(t *testing.T) {
+	ctx := ctxFor(100, false, true)
+	outputs := map[string]string{
+		"person":   PersonDetail(ctx, samplePersonDetail(), false),
+		"resource": ResourceDetail(ctx, sampleResourceDetail(), false),
+	}
+	for name, output := range outputs {
+		if strings.Contains(output, "CreateRole") || strings.Contains(output, "DeleteFunction") {
+			t.Fatalf("%s detail included denied breakdown by default:\n%s", name, output)
+		}
+		if !strings.Contains(output, "Denied Events") {
+			t.Fatalf("%s detail lost denied summary count:\n%s", name, output)
+		}
 	}
 }

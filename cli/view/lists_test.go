@@ -20,7 +20,7 @@ var update = flag.Bool("update", false, "update golden files")
 
 // ctxFor builds a render.Context for golden tests without touching the terminal.
 func ctxFor(width int, color, unicode bool) render.Context {
-	return render.Context{Color: color, Unicode: unicode, Width: width}
+	return render.Context{Color: color, Unicode: unicode, Width: width, Now: fixedNow}
 }
 
 func samplePeople() []models.Person {
@@ -122,10 +122,10 @@ func TestGoldenOtherNounLists(t *testing.T) {
 
 func TestGoldenSessionList(t *testing.T) {
 	// Responsive tiers: wide shows all columns, narrow drops collapsible ones.
-	assertGolden(t, "sessions_w132_plain", SessionList(ctxFor(132, false, true), sampleSessions(), 6, false, label, fixedNow))
-	assertGolden(t, "sessions_w80_plain", SessionList(ctxFor(80, false, true), sampleSessions(), 6, false, label, fixedNow))
-	assertGolden(t, "sessions_w60_ascii", SessionList(ctxFor(60, false, false), sampleSessions(), 6, false, label, fixedNow))
-	assertGolden(t, "sessions_empty", SessionList(ctxFor(80, false, true), nil, 6, false, label, fixedNow))
+	assertGolden(t, "sessions_w132_plain", SessionList(ctxFor(132, false, true), sampleSessions(), 6, false, label))
+	assertGolden(t, "sessions_w80_plain", SessionList(ctxFor(80, false, true), sampleSessions(), 6, false, label))
+	assertGolden(t, "sessions_w60_ascii", SessionList(ctxFor(60, false, false), sampleSessions(), 6, false, label))
+	assertGolden(t, "sessions_empty", SessionList(ctxFor(80, false, true), nil, 6, false, label))
 }
 
 // TestListsNoColorParity proves color is additive for the list views: stripping
@@ -136,8 +136,8 @@ func TestListsNoColorParity(t *testing.T) {
 	if render.StripANSI(colored) != plain {
 		t.Error("stripped colored Roles != plain Roles")
 	}
-	cSess := SessionList(ctxFor(132, true, true), sampleSessions(), 6, false, label, fixedNow)
-	pSess := SessionList(ctxFor(132, false, true), sampleSessions(), 6, false, label, fixedNow)
+	cSess := SessionList(ctxFor(132, true, true), sampleSessions(), 6, false, label)
+	pSess := SessionList(ctxFor(132, false, true), sampleSessions(), 6, false, label)
 	if render.StripANSI(cSess) != pSess {
 		t.Error("stripped colored SessionList != plain SessionList")
 	}

@@ -10,19 +10,22 @@ import (
 // the tier-prefixed person key (idc#…, email#…, iamuser#…, root#…) resolved by
 // the ingestor's identity tiers.
 type Person struct {
-	Pid                 string         `json:"pid,omitempty" dynamodbav:"-"`
-	PersonKey           string         `json:"person_key" dynamodbav:"person_key"`
-	Tier                int            `json:"tier,omitempty" dynamodbav:"tier"`
-	Email               string         `json:"email,omitempty" dynamodbav:"email"`
-	EmailsSeen          []string       `json:"emails_seen,omitempty" dynamodbav:"emails_seen"`
-	DisplayName         string         `json:"display_name,omitempty" dynamodbav:"display_name"`
-	FirstSeen           string         `json:"first_seen" dynamodbav:"first_seen"`
-	LastSeen            string         `json:"last_seen" dynamodbav:"last_seen"`
-	SessionsCount       int            `json:"sessions_count" dynamodbav:"sessions_count"`
-	AccountsCount       int            `json:"accounts_count" dynamodbav:"accounts_count"`
-	RolesCount          int            `json:"roles_count" dynamodbav:"roles_count"`
-	ServicesCount       int            `json:"services_count" dynamodbav:"services_count"`
-	ResourcesCount      int            `json:"resources_count" dynamodbav:"resources_count"`
+	Pid         string   `json:"pid,omitempty" dynamodbav:"-"`
+	PersonKey   string   `json:"person_key" dynamodbav:"person_key"`
+	Tier        int      `json:"tier,omitempty" dynamodbav:"tier"`
+	Email       string   `json:"email,omitempty" dynamodbav:"email"`
+	EmailsSeen  []string `json:"emails_seen,omitempty" dynamodbav:"emails_seen"`
+	DisplayName string   `json:"display_name,omitempty" dynamodbav:"display_name"`
+	FirstSeen   string   `json:"first_seen" dynamodbav:"first_seen"`
+	LastSeen    string   `json:"last_seen" dynamodbav:"last_seen"`
+	// Cross-noun fallback counts, replaced from relation _summary on CLI reads.
+	SessionsCount  int `json:"sessions_count" dynamodbav:"sessions_count"`
+	AccountsCount  int `json:"accounts_count" dynamodbav:"accounts_count"`
+	RolesCount     int `json:"roles_count" dynamodbav:"roles_count"`
+	ServicesCount  int `json:"services_count" dynamodbav:"services_count"`
+	ResourcesCount int `json:"resources_count" dynamodbav:"resources_count"`
+
+	// Activity aggregates.
 	EventsCount         int            `json:"events_count" dynamodbav:"events_count"`
 	DeniedEventCount    int            `json:"denied_event_count,omitempty" dynamodbav:"denied_event_count"`
 	TopDeniedEventNames map[string]int `json:"top_denied_event_names,omitempty" dynamodbav:"top_denied_event_names"`
@@ -101,6 +104,7 @@ type Session struct {
 	SummaryGeneratedAt string `json:"summary_generated_at,omitempty" dynamodbav:"summary_generated_at,omitempty"`
 	SummaryModel       string `json:"summary_model,omitempty" dynamodbav:"summary_model,omitempty"`
 	SummaryTokensUsed  int    `json:"summary_tokens_used,omitempty" dynamodbav:"summary_tokens_used,omitempty"`
+	SummaryInputDigest string `json:"summary_input_digest,omitempty" dynamodbav:"summary_input_digest,omitempty"`
 
 	// Display enrichment (not stored)
 	PersonLabel string `json:"person_label,omitempty" dynamodbav:"-"`
@@ -238,7 +242,7 @@ type Role struct {
 	DeniedResourceAccesses []ResourceAccessItem `json:"denied_resource_accesses,omitempty" dynamodbav:"denied_resource_accesses"`
 	DeniedEventAccesses    []EventAccessItem    `json:"denied_event_accesses,omitempty" dynamodbav:"denied_event_accesses"`
 
-	// Counts
+	// Cross-noun fallback counts, replaced from relation _summary on CLI reads.
 	PeopleCount   int `json:"people_count" dynamodbav:"people_count"`
 	SessionsCount int `json:"sessions_count" dynamodbav:"sessions_count"`
 	AccountsCount int `json:"accounts_count" dynamodbav:"accounts_count"`
@@ -350,7 +354,7 @@ type Resource struct {
 	TotalDeniedEvents   int            `json:"total_denied_events,omitempty" dynamodbav:"total_denied_events"`
 	TopDeniedEventNames map[string]int `json:"top_denied_event_names,omitempty" dynamodbav:"top_denied_event_names"`
 
-	// Noun-based architecture counts
+	// Cross-noun fallback counts, replaced from relation _summary on CLI reads.
 	PeopleCount   int `json:"people_count" dynamodbav:"people_count"`
 	SessionsCount int `json:"sessions_count" dynamodbav:"sessions_count"`
 
@@ -389,12 +393,14 @@ type Account struct {
 	FirstSeen   string `json:"first_seen" dynamodbav:"first_seen"`
 	LastSeen    string `json:"last_seen" dynamodbav:"last_seen"`
 
-	// Aggregated counts
-	PeopleCount         int            `json:"people_count" dynamodbav:"people_count"`
-	SessionsCount       int            `json:"sessions_count" dynamodbav:"sessions_count"`
-	RolesCount          int            `json:"roles_count" dynamodbav:"roles_count"`
-	ServicesCount       int            `json:"services_count" dynamodbav:"services_count"`
-	ResourcesCount      int            `json:"resources_count" dynamodbav:"resources_count"`
+	// Cross-noun fallback counts, replaced from relation _summary on CLI reads.
+	PeopleCount    int `json:"people_count" dynamodbav:"people_count"`
+	SessionsCount  int `json:"sessions_count" dynamodbav:"sessions_count"`
+	RolesCount     int `json:"roles_count" dynamodbav:"roles_count"`
+	ServicesCount  int `json:"services_count" dynamodbav:"services_count"`
+	ResourcesCount int `json:"resources_count" dynamodbav:"resources_count"`
+
+	// Activity aggregates.
 	EventsCount         int            `json:"events_count" dynamodbav:"events_count"`
 	TopEventNames       map[string]int `json:"top_event_names,omitempty" dynamodbav:"top_event_names"`
 	TotalDeniedEvents   int            `json:"total_denied_events,omitempty" dynamodbav:"total_denied_events"`
@@ -420,7 +426,7 @@ type Service struct {
 	TotalDeniedEvents   int            `json:"total_denied_events,omitempty" dynamodbav:"total_denied_events"`
 	TopDeniedEventNames map[string]int `json:"top_denied_event_names,omitempty" dynamodbav:"top_denied_event_names"`
 
-	// Noun-based architecture counts
+	// Cross-noun fallback counts, replaced from relation _summary on CLI reads.
 	PeopleCount   int `json:"people_count" dynamodbav:"people_count"`
 	SessionsCount int `json:"sessions_count" dynamodbav:"sessions_count"`
 	AccountsCount int `json:"accounts_count" dynamodbav:"accounts_count"`

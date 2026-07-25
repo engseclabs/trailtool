@@ -1,8 +1,8 @@
 DeployRole
 ARN:            arn:aws:iam::123456789012:role/DeployRole
 Account:        123456789012
-First Seen:     2026-07-01T08:00:00Z
-Last Seen:      2026-07-24T09:45:00Z
+First Seen:     2026-07-01T08:00:00Z [23d ago]
+Last Seen:      2026-07-24T09:45:00Z [2h ago]
 Total Events:   120
 People:         1
 Sessions:       4
@@ -32,16 +32,8 @@ Event to Resource Activity (1):
 
 Recent Sessions (1):
   SID     ROLE        ACCOUNT       TYPE  EVENTS  TIME
-  cj6bhl  DeployRole  123456789012  WEB       12  2026-07-24T09:00:00Z
+  cj6bhl  DeployRole  123456789012  WEB       12  3h ago
 
 People (1):
   PID     PERSON         LAST RELATED
-  5nmama  Alice Example  2026-07-24T09:45:00Z
-
-Explore:
-  → trailtool accounts detail 123456789012
-  → trailtool roles policy arn:aws:iam::123456789012:role/DeployRole
-  → trailtool services detail lambda.amazonaws.com
-  → trailtool resources detail fyf7wfyglmgloz65
-  → trailtool sessions detail cj6bhlwrp6hfapnw
-  → trailtool people detail 5nmamaaeshnhs6xu
+  5nmama  Alice Example  2h ago

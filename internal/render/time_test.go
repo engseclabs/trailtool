@@ -16,6 +16,8 @@ func TestRelative(t *testing.T) {
 		{"just now", "2026-07-24T11:59:30Z", "just now"},
 		{"minutes", "2026-07-24T11:55:00Z", "5m ago"},
 		{"hours", "2026-07-24T09:00:00Z", "3h ago"},
+		{"date today", "2026-07-24", "today"},
+		{"date yesterday", "2026-07-23", "yesterday"},
 		{"yesterday", "2026-07-23T10:00:00Z", "yesterday"},
 		{"days", "2026-07-20T12:00:00Z", "4d ago"},
 		{"empty", "", ""},
@@ -38,6 +40,7 @@ func TestTimestamp(t *testing.T) {
 	}{
 		{"utc with suffix", "2026-07-24T11:55:00Z", "2026-07-24T11:55:00Z [5m ago]"},
 		{"normalizes offset to utc", "2026-07-24T07:55:00-04:00", "2026-07-24T11:55:00Z [5m ago]"},
+		{"date with suffix", "2026-07-24", "2026-07-24 [today]"},
 		{"empty", "", ""},
 		{"unparseable verbatim", "garbage", "garbage"},
 	}
@@ -51,23 +54,33 @@ func TestTimestamp(t *testing.T) {
 }
 
 func TestInterval(t *testing.T) {
-	uni := Context{Unicode: true}
-	asc := Context{Unicode: false}
+	uni := Context{Unicode: true, Now: refNow}
+	asc := Context{Unicode: false, Now: refNow}
 	start, end := "2026-07-24T10:00:00Z", "2026-07-24T11:00:00Z"
 
-	if got := uni.Interval(start, end); got != "2026-07-24T10:00:00Z → 2026-07-24T11:00:00Z" {
+	if got := uni.Interval(start, end); got != "2026-07-24T10:00:00Z → 2026-07-24T11:00:00Z [1h ago]" {
 		t.Errorf("unicode interval = %q", got)
 	}
-	if got := asc.Interval(start, end); got != "2026-07-24T10:00:00Z -> 2026-07-24T11:00:00Z" {
+	if got := asc.Interval(start, end); got != "2026-07-24T10:00:00Z -> 2026-07-24T11:00:00Z [1h ago]" {
 		t.Errorf("ascii interval = %q", got)
 	}
-	if got := uni.Interval(start, ""); got != "2026-07-24T10:00:00Z" {
+	if got := uni.Interval(start, ""); got != "2026-07-24T10:00:00Z [2h ago]" {
 		t.Errorf("missing end = %q, want start only", got)
 	}
-	if got := uni.Interval("", end); got != "2026-07-24T11:00:00Z" {
+	if got := uni.Interval("", end); got != "2026-07-24T11:00:00Z [1h ago]" {
 		t.Errorf("missing start = %q, want end only", got)
 	}
 	if got := uni.Interval("", ""); got != "" {
 		t.Errorf("both empty = %q, want empty", got)
+	}
+}
+
+func TestContextTimestampUsesInjectedClock(t *testing.T) {
+	ctx := Context{Now: refNow}
+	if got := ctx.Timestamp("2026-07-24T11:00:00Z"); got != "2026-07-24T11:00:00Z [1h ago]" {
+		t.Fatalf("Context.Timestamp() = %q", got)
+	}
+	if got := ctx.Relative("2026-07-24T11:00:00Z"); got != "1h ago" {
+		t.Fatalf("Context.Relative() = %q", got)
 	}
 }

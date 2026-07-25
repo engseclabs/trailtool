@@ -30,6 +30,25 @@ func winSession(sk, start, end string, events int, version int64) *types.DynamoD
 	}
 }
 
+func TestMergeSessionPreservesSummaryMetadata(t *testing.T) {
+	existing := winSession("win#role#2026-07-24T10:00:00Z", "2026-07-24T10:00:00Z", "2026-07-24T10:05:00Z", 1, 1)
+	existing.Summary = "Inspected a bucket."
+	existing.SummaryGeneratedAt = "2026-07-24T10:10:00Z"
+	existing.SummaryModel = "model"
+	existing.SummaryTokensUsed = 23
+	existing.SummaryInputDigest = "old-input"
+	incoming := winSession("win#role#2026-07-24T10:00:00Z", "2026-07-24T10:05:00Z", "2026-07-24T10:10:00Z", 2, 1)
+
+	got := MergeSession(existing, incoming)
+	if got.Summary != existing.Summary ||
+		got.SummaryGeneratedAt != existing.SummaryGeneratedAt ||
+		got.SummaryModel != existing.SummaryModel ||
+		got.SummaryTokensUsed != existing.SummaryTokensUsed ||
+		got.SummaryInputDigest != existing.SummaryInputDigest {
+		t.Fatalf("summary metadata was not preserved: %#v", got)
+	}
+}
+
 func TestFoldWindowsCreatesWhenNothingAdjacent(t *testing.T) {
 	incoming := winSession("win#AIDADEPLOYBOT1234567#2026-07-15T10:00:00Z", "2026-07-15T10:00:00Z", "2026-07-15T10:10:00Z", 2, 1)
 	merged, expectedVersion, deletions := FoldWindows(nil, incoming, 30*time.Minute)

@@ -76,3 +76,27 @@ func TestReachedLimit(t *testing.T) {
 		t.Fatal("limit was reached early")
 	}
 }
+
+func TestMergeNounRelationPageReturnsSummaryAndEdges(t *testing.T) {
+	page := []nounRelation{
+		{
+			SK: relationSummarySK,
+			Counts: models.RelationshipCounts{
+				People: 7, Sessions: 8,
+			},
+		},
+		{
+			SK:          "person#alice",
+			RelatedKind: RelationKindPerson,
+			RelatedID:   "alice",
+		},
+	}
+
+	relations, counts := mergeNounRelationPage(nil, models.RelationshipCounts{}, page)
+	if len(relations) != 1 || relations[0].RelatedID != "alice" {
+		t.Fatalf("relations = %#v", relations)
+	}
+	if !counts.Exact || counts.People != 7 || counts.Sessions != 8 {
+		t.Fatalf("counts = %#v", counts)
+	}
+}

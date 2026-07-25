@@ -83,7 +83,7 @@ func TestGoldenSessionTitleKV(t *testing.T) {
 		AccountID: "123456789012", EventsCount: 30, ServicesCount: 3,
 		StartTime: "2026-07-24T09:00:00Z", EndTime: "2026-07-24T09:45:00Z", DurationMinutes: 45,
 	}
-	timeLine := ctxFor(100, false, true).Interval(sess.StartTime, sess.EndTime) + " (45m) [3h ago]"
+	timeLine := ctxFor(100, false, true).Interval(sess.StartTime, sess.EndTime) + " (45m)"
 	assertGolden(t, "session_title_kv", SessionTitleKV(ctxFor(100, false, true), sess, "Alice Example", timeLine))
 }
 

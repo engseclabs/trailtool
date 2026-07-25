@@ -11,6 +11,7 @@ package render
 import (
 	"io"
 	"os"
+	"time"
 
 	"golang.org/x/term"
 )
@@ -53,6 +54,7 @@ type Context struct {
 	Width   int       // terminal columns; DefaultWidth when unknown
 	Out     io.Writer // stdout
 	Err     io.Writer // stderr
+	Now     time.Time // one clock snapshot for relative timestamps
 }
 
 // DefaultWidth is the assumed terminal width when the real width is unknown
@@ -131,5 +133,6 @@ func detect(mode ColorMode, out, errw io.Writer, e env) Context {
 		Width:   width,
 		Out:     out,
 		Err:     errw,
+		Now:     time.Now().UTC(),
 	}
 }

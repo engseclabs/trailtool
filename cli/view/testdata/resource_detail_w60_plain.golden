@@ -5,8 +5,8 @@ ARN:            arn:aws:lambda:us-east-1:123456789012:function:worker
 Type:           lambda:function
 Name:           worker
 Account:        123456789012
-First Seen:     2026-07-01T08:00:00Z
-Last Seen:      2026-07-24T09:45:00Z
+First Seen:     2026-07-01T08:00:00Z [23d ago]
+Last Seen:      2026-07-24T09:45:00Z [2h ago]
 Events:         80
 Roles:          2
 People:         1
@@ -25,27 +25,20 @@ Top Events (2):
 
 Roles (1):
   ROLE ARN                                   LAST RELATED
-  arn:aws:iam::123456789012:role/DeployRole  2026-07-24T09:45:00Z
+  arn:aws:iam::123456789012:role/DeployRole  2h ago
 
 Services (1):
   EVENT SOURCE          LAST RELATED
-  lambda.amazonaws.com  2026-07-24T09:44:00Z
+  lambda.amazonaws.com  2h ago
 
 People (1):
   PID     PERSON         LAST RELATED
-  5nmama  Alice Example  2026-07-24T09:45:00Z
+  5nmama  Alice Example  2h ago
 
 Recent Sessions (1):
   SID     ROLE        ACCOUNT       TYPE  EVENTS  TIME
-  cj6bhl  DeployRole  123456789012  WEB       12  2026-07-24T09:00:00Z
+  cj6bhl  DeployRole  123456789012  WEB       12  3h ago
 
 Console Operations (1):
-  ACTOR          EVENT               COUNT  TIME                  SID
-  Alice Example  UpdateFunctionCode      3  2026-07-24T09:30:00Z  cj6bhl
-
-Explore:
-  → trailtool accounts detail 123456789012
-  → trailtool roles detail arn:aws:iam::123456789012:role/DeployRole
-  → trailtool services detail lambda.amazonaws.com
-  → trailtool people detail 5nmamaaeshnhs6xu
-  → trailtool sessions detail cj6bhlwrp6hfapnw
+  ACTOR          EVENT               COUNT  TIME    SID
+  Alice Example  UpdateFunctionCode      3  2h ago  cj6bhl

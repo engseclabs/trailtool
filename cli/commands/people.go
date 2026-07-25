@@ -50,6 +50,7 @@ func peopleListCmd() *cobra.Command {
 func peopleDetailCmd() *cobra.Command {
 	var limit int
 	var all bool
+	var includeDeniedDetails bool
 
 	cmd := &cobra.Command{
 		Use:   "detail <pid>",
@@ -91,18 +92,20 @@ Example:
 			if err != nil {
 				return fatal("%v", err)
 			}
+			person.ApplyRelationshipCounts(related.Counts)
 			detail := models.PersonDetail{Person: *person, Related: related}
 
 			if Format == "json" {
 				return printJSON(detail)
 			}
 
-			fmt.Print(view.PersonDetail(renderContext(), &detail))
+			fmt.Print(view.PersonDetail(renderContext(), &detail, includeDeniedDetails))
 			return nil
 		},
 	}
 
 	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
 	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
+	cmd.Flags().BoolVar(&includeDeniedDetails, "include-denied-details", false, "Show denied event breakdowns")
 	return cmd
 }

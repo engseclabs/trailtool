@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -90,7 +89,8 @@ func sessionsListCmd() *cobra.Command {
 
 			label := personLabels(ctx, s)
 			sidWidth := view.SidDisplayWidth(sessions)
-			fmt.Print(view.SessionList(renderContext(), sessions, sidWidth, long, label, time.Now()))
+			rctx := renderContext()
+			fmt.Print(view.SessionList(rctx, sessions, sidWidth, long, label))
 			return nil
 		},
 	}
@@ -112,6 +112,7 @@ func sessionsDetailCmd() *cobra.Command {
 	var user string
 	var limit int
 	var all bool
+	var includeDeniedDetails bool
 
 	cmd := &cobra.Command{
 		Use:   "detail [sid-or-latest]",
@@ -156,6 +157,7 @@ Examples:
 			if err != nil {
 				return fatal("%v", err)
 			}
+			sess.ApplyRelationshipCounts(related.Counts)
 			detail := models.SessionDetail{Session: *sess, Related: related}
 
 			if Format == "json" {
@@ -163,26 +165,29 @@ Examples:
 			}
 
 			rctx := renderContext()
-			now := time.Now()
+			now := rctx.Now
 			label := personLabels(ctx, s)
 
-			// Title + key facts (§5). The time line uses the centralized interval +
-			// relative rule (§4.5); the command owns "now".
-			timeLine := fmt.Sprintf("%s (%dm) [%s]",
-				rctx.Interval(sess.StartTime, sess.EndTime), sess.DurationMinutes, render.Relative(sess.StartTime, now))
+			// Title + key facts (§5). The time line uses the render context's
+			// centralized clock and interval rule (§4.5).
+			timeLine := fmt.Sprintf("%s (%dm)",
+				rctx.Interval(sess.StartTime, sess.EndTime), sess.DurationMinutes)
 			fmt.Print(view.SessionTitleKV(rctx, sess, label(sess.PersonKey), timeLine))
 
 			// Clients (§5.1) — restyle plus the empty-ambiguity note.
 			fmt.Print(view.Clients(rctx, sess.Clients, sess.EventsCount > 0))
 
 			fmt.Print(view.SessionTags(rctx, sess.SessionTags))
-			fmt.Print(view.DeniedEvents(rctx, sess.DeniedEventCount, sess.DeniedEventCounts))
+			if includeDeniedDetails {
+				fmt.Print(view.DeniedEvents(rctx, sess.DeniedEventCount, sess.DeniedEventCounts))
+			}
 			fmt.Print(view.SessionClickOps(rctx, sess.ClickOpsEventCount, sess.ClickOpsEventCounts))
-			// Top Events / Resources Accessed now sort count-descending (§5).
+			// Top Events sort count-descending (§5).
 			fmt.Print(view.TopEvents(rctx, sess.EventCounts))
-			fmt.Print(view.ResourcesAccessed(rctx, sess.ResourcesAccessed))
 			fmt.Print(view.SessionResourceActivity(rctx, sess.ResourceAccesses))
-			fmt.Print(view.SessionDeniedActivity(rctx, sess.DeniedResourceAccesses, sess.DeniedEventAccesses))
+			if includeDeniedDetails {
+				fmt.Print(view.SessionDeniedActivity(rctx, sess.DeniedResourceAccesses, sess.DeniedEventAccesses))
+			}
 			fmt.Print(view.SessionSummary(rctx, sess))
 			fmt.Print(view.SessionRelationships(rctx, &detail))
 
@@ -249,7 +254,6 @@ Examples:
 			}
 
 			fmt.Print(view.SessionPolicy(rctx, sess.SessionPolicy))
-			fmt.Print(view.SessionNavigation(rctx, &detail))
 
 			return nil
 		},
@@ -258,12 +262,14 @@ Examples:
 	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
 	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
 	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
+	cmd.Flags().BoolVar(&includeDeniedDetails, "include-denied-details", false, "Show denied event breakdowns and access details")
 
 	return cmd
 }
 
 func sessionsSummarizeCmd() *cobra.Command {
 	var user string
+	var refresh bool
 
 	cmd := &cobra.Command{
 		Use:   "summarize [sid-or-latest]",
@@ -294,39 +300,59 @@ Examples:
 				return fatal("%v", err)
 			}
 
-			// Check for cached summary
-			if sess.Summary != "" {
+			if !refresh && session.SummaryIsCurrent(sess) {
 				if Format == "json" {
-					return printJSON(map[string]string{
-						"summary":      sess.Summary,
-						"generated_at": sess.SummaryGeneratedAt,
-						"model":        sess.SummaryModel,
-						"cached":       "true",
-					})
+					return printJSON(summaryOutput(sess, true))
 				}
 				fmt.Println(sess.Summary)
 				return nil
 			}
 
-			summary, err := session.SummarizeSession(ctx, sess)
+			result, err := session.SummarizeSession(ctx, sess)
 			if err != nil {
-				return fatal("bedrock invocation failed: %v", err)
+				return fatal("%v", err)
 			}
+			sess.Summary = result.Summary
+			sess.SummaryGeneratedAt = result.GeneratedAt
+			sess.SummaryModel = result.Model
+			sess.SummaryTokensUsed = result.TokensUsed
+			sess.SummaryInputDigest = result.InputDigest
 
-			if Format == "json" {
-				return printJSON(map[string]string{
-					"summary": summary,
-					"cached":  "false",
-				})
+			if err := s.SaveSessionSummary(ctx, CustomerID, sess); err != nil {
+				return fatal("could not save session summary: %v", err)
 			}
-			fmt.Println(summary)
+			if Format == "json" {
+				return printJSON(summaryOutput(sess, false))
+			}
+			fmt.Println(sess.Summary)
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "Generate a new summary even when the cached summary is current")
 
 	return cmd
+}
+
+type sessionSummaryOutput struct {
+	Summary            string `json:"summary"`
+	GeneratedAt        string `json:"generated_at"`
+	Model              string `json:"model"`
+	TokensUsed         int    `json:"tokens_used"`
+	SummaryInputDigest string `json:"summary_input_digest"`
+	Cached             bool   `json:"cached"`
+}
+
+func summaryOutput(sess *models.Session, cached bool) sessionSummaryOutput {
+	return sessionSummaryOutput{
+		Summary:            sess.Summary,
+		GeneratedAt:        sess.SummaryGeneratedAt,
+		Model:              sess.SummaryModel,
+		TokensUsed:         sess.SummaryTokensUsed,
+		SummaryInputDigest: sess.SummaryInputDigest,
+		Cached:             cached,
+	}
 }
 
 func sessionsPolicyCmd() *cobra.Command {
@@ -369,10 +395,12 @@ Examples:
 			}
 
 			if Format == "json" {
-				return printJSON(result)
+				if err := printJSON(result); err != nil {
+					return err
+				}
+			} else {
+				fmt.Println(result.PolicyJSON)
 			}
-
-			fmt.Println(result.PolicyJSON)
 
 			if explain {
 				fmt.Fprintf(os.Stderr, "\n--- Policy Summary ---\n")

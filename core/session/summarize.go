@@ -2,8 +2,11 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -11,6 +14,17 @@ import (
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/engseclabs/trailtool/core/models"
 )
+
+const SummaryModelID = "us.amazon.nova-lite-v1:0"
+
+// SummaryResult is the generated summary and the metadata persisted with it.
+type SummaryResult struct {
+	Summary     string `json:"summary"`
+	GeneratedAt string `json:"generated_at"`
+	Model       string `json:"model"`
+	TokensUsed  int    `json:"tokens_used"`
+	InputDigest string `json:"input_digest"`
+}
 
 // systemPrompt is the system prompt used for AI summarization (copied verbatim from SaaS)
 const systemPrompt = `Summarize AWS session activity for a dashboard viewer. Focus on what resources were accessed or modified.
@@ -76,11 +90,11 @@ Omit: user identity, timestamps, role names, location (already shown in UI)
 
 Output: Max 3 sentences or 4 bullets. Be direct and factual.`
 
-// SummarizeSession generates an AI summary of a session using Amazon Bedrock
-func SummarizeSession(ctx context.Context, session *models.Session) (string, error) {
+// SummarizeSession generates an AI summary of a session using Amazon Bedrock.
+func SummarizeSession(ctx context.Context, session *models.Session) (*SummaryResult, error) {
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
-		return "", fmt.Errorf("failed to load AWS config: %w", err)
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
 	client := bedrockruntime.NewFromConfig(cfg)
@@ -89,11 +103,9 @@ func SummarizeSession(ctx context.Context, session *models.Session) (string, err
 	complexity := calculateComplexity(session)
 	maxTokens := getMaxTokensForComplexity(complexity)
 
-	modelID := "us.amazon.nova-lite-v1:0"
-
 	temp := float32(0.3)
 	out, err := client.Converse(ctx, &bedrockruntime.ConverseInput{
-		ModelId: aws.String(modelID),
+		ModelId: aws.String(SummaryModelID),
 		Messages: []brtypes.Message{
 			{
 				Role:    brtypes.ConversationRoleUser,
@@ -109,52 +121,133 @@ func SummarizeSession(ctx context.Context, session *models.Session) (string, err
 		},
 	})
 	if err != nil {
-		return "", fmt.Errorf("bedrock invocation failed: %w", err)
+		return nil, fmt.Errorf("bedrock invocation failed: %w", err)
 	}
 
+	summary := "(no content)"
 	if out.Output == nil {
-		return "(no content)", nil
+		return summaryResult(summary, out, userPrompt), nil
 	}
 	msgOutput, ok := out.Output.(*brtypes.ConverseOutputMemberMessage)
-	if !ok || len(msgOutput.Value.Content) == 0 {
-		return "(no content)", nil
+	if ok && len(msgOutput.Value.Content) > 0 {
+		if textBlock, textOK := msgOutput.Value.Content[0].(*brtypes.ContentBlockMemberText); textOK {
+			summary = textBlock.Value
+		}
 	}
-	textBlock, ok := msgOutput.Value.Content[0].(*brtypes.ContentBlockMemberText)
-	if !ok {
-		return "(no content)", nil
+	return summaryResult(summary, out, userPrompt), nil
+}
+
+func summaryResult(summary string, out *bedrockruntime.ConverseOutput, prompt string) *SummaryResult {
+	tokensUsed := 0
+	if out.Usage != nil {
+		tokensUsed = int(aws.ToInt32(out.Usage.TotalTokens))
 	}
-	return textBlock.Value, nil
+	return &SummaryResult{
+		Summary:     summary,
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Model:       SummaryModelID,
+		TokensUsed:  tokensUsed,
+		InputDigest: summaryDigest(prompt),
+	}
+}
+
+// SummaryInputDigest returns the digest for the current canonical prompt input.
+func SummaryInputDigest(session *models.Session) string {
+	return summaryDigest(buildSessionPrompt(session))
+}
+
+// SummaryIsCurrent reports whether the persisted summary describes the current
+// session data. Historical summaries without a digest are stale.
+func SummaryIsCurrent(session *models.Session) bool {
+	return session.Summary != "" &&
+		session.SummaryInputDigest != "" &&
+		session.SummaryInputDigest == SummaryInputDigest(session)
+}
+
+func summaryDigest(prompt string) string {
+	sum := sha256.Sum256([]byte(prompt))
+	return fmt.Sprintf("%x", sum)
 }
 
 func buildSessionPrompt(session *models.Session) string {
 	sessionType := session.DetectSessionType()
 
 	data := map[string]interface{}{
-		"session_type":       sessionType,
-		"event_counts":       session.EventCounts,
-		"resources_accessed": session.ResourcesAccessed,
-		"clients":            summarizeClients(session.Clients),
-	}
-
-	if session.DeniedEventCount > 0 {
-		data["denied_event_count"] = session.DeniedEventCount
-		data["denied_event_counts"] = session.DeniedEventCounts
-		data["denied_resources_accessed"] = session.DeniedResourcesAccessed
+		"schema_version":           1,
+		"session_type":             sessionType,
+		"event_counts":             session.EventCounts,
+		"resource_accesses":        sortedResourceAccesses(session.ResourceAccesses),
+		"denied_event_count":       session.DeniedEventCount,
+		"denied_event_counts":      session.DeniedEventCounts,
+		"denied_resource_accesses": sortedResourceAccesses(session.DeniedResourceAccesses),
+		"denied_event_accesses":    sortedEventAccesses(session.DeniedEventAccesses),
+		"clients":                  summarizeClients(session.Clients),
+		"clickops_event_count":     session.ClickOpsEventCount,
+		"clickops_event_counts":    session.ClickOpsEventCounts,
 	}
 
 	jsonData, _ := json.MarshalIndent(data, "", "  ")
 	return string(jsonData)
 }
 
+func sortedResourceAccesses(accesses []models.ResourceAccess) []models.ResourceAccess {
+	out := append([]models.ResourceAccess{}, accesses...)
+	sort.Slice(out, func(i, j int) bool {
+		left, right := out[i], out[j]
+		if left.Service != right.Service {
+			return left.Service < right.Service
+		}
+		if left.EventName != right.EventName {
+			return left.EventName < right.EventName
+		}
+		if left.ResourceAccountID != right.ResourceAccountID {
+			return left.ResourceAccountID < right.ResourceAccountID
+		}
+		if left.Resource != right.Resource {
+			return left.Resource < right.Resource
+		}
+		if left.PolicyARN != right.PolicyARN {
+			return left.PolicyARN < right.PolicyARN
+		}
+		if left.PolicyType != right.PolicyType {
+			return left.PolicyType < right.PolicyType
+		}
+		return left.ErrorMessage < right.ErrorMessage
+	})
+	return out
+}
+
+func sortedEventAccesses(accesses []models.EventAccess) []models.EventAccess {
+	out := append([]models.EventAccess{}, accesses...)
+	sort.Slice(out, func(i, j int) bool {
+		left, right := out[i], out[j]
+		if left.Service != right.Service {
+			return left.Service < right.Service
+		}
+		if left.EventName != right.EventName {
+			return left.EventName < right.EventName
+		}
+		if left.PolicyARN != right.PolicyARN {
+			return left.PolicyARN < right.PolicyARN
+		}
+		if left.PolicyType != right.PolicyType {
+			return left.PolicyType < right.PolicyType
+		}
+		return left.ErrorMessage < right.ErrorMessage
+	})
+	return out
+}
+
 // summarizeClients projects the per-client aggregates down to the identity the
 // summarizer cares about (name/version/platform + event count), dropping the
 // bulky fields (raw samples, per-command maps) that would just spend tokens.
 func summarizeClients(clients []models.ClientAggregate) []map[string]interface{} {
-	if len(clients) == 0 {
-		return nil
-	}
-	out := make([]map[string]interface{}, 0, len(clients))
-	for _, c := range clients {
+	sorted := append([]models.ClientAggregate{}, clients...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Key < sorted[j].Key
+	})
+	out := make([]map[string]interface{}, 0, len(sorted))
+	for _, c := range sorted {
 		entry := map[string]interface{}{
 			"category": c.Category,
 			"name":     c.Name,

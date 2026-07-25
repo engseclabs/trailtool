@@ -133,47 +133,56 @@ func sampleSessionDetail() *models.SessionDetail {
 	}
 }
 
-func renderSampleSessionDetail(width int) string {
+func renderSampleSessionDetail(width int, includeDeniedDetails bool) string {
 	detail := sampleSessionDetail()
 	session := &detail.Session
-	timeLine := "2026-07-24T09:00:00Z → 2026-07-24T09:45:00Z (45m) [3h ago]"
 	ctx := ctxFor(width, false, true)
+	timeLine := ctx.Interval(session.StartTime, session.EndTime) + " (45m)"
 	var b strings.Builder
 	b.WriteString(SessionTitleKV(ctx, session, "Alice Example", timeLine))
-	b.WriteString(DeniedEvents(ctx, session.DeniedEventCount, session.DeniedEventCounts))
+	if includeDeniedDetails {
+		b.WriteString(DeniedEvents(ctx, session.DeniedEventCount, session.DeniedEventCounts))
+	}
 	b.WriteString(SessionClickOps(ctx, session.ClickOpsEventCount, session.ClickOpsEventCounts))
 	b.WriteString(TopEvents(ctx, session.EventCounts))
-	b.WriteString(ResourcesAccessed(ctx, session.ResourcesAccessed))
 	b.WriteString(SessionResourceActivity(ctx, session.ResourceAccesses))
-	b.WriteString(SessionDeniedActivity(ctx, session.DeniedResourceAccesses, session.DeniedEventAccesses))
+	if includeDeniedDetails {
+		b.WriteString(SessionDeniedActivity(ctx, session.DeniedResourceAccesses, session.DeniedEventAccesses))
+	}
 	b.WriteString(SessionSummary(ctx, session))
 	b.WriteString(SessionRelationships(ctx, detail))
-	b.WriteString(SessionNavigation(ctx, detail))
 	return b.String()
 }
 
 func TestGoldenEnrichedDetails(t *testing.T) {
-	assertGolden(t, "account_detail_w132_plain", AccountDetail(ctxFor(132, false, true), sampleAccountDetail()))
-	assertGolden(t, "role_detail_w132_plain", RoleDetail(ctxFor(132, false, true), sampleRoleDetail()))
-	assertGolden(t, "service_detail_w132_plain", ServiceDetail(ctxFor(132, false, true), sampleServiceDetail()))
-	assertGolden(t, "session_detail_enriched_w132_plain", renderSampleSessionDetail(132))
+	assertGolden(t, "account_detail_w132_plain", AccountDetail(ctxFor(132, false, true), sampleAccountDetail(), true))
+	assertGolden(t, "role_detail_w132_plain", RoleDetail(ctxFor(132, false, true), sampleRoleDetail(), true))
+	assertGolden(t, "service_detail_w132_plain", ServiceDetail(ctxFor(132, false, true), sampleServiceDetail(), true))
+	assertGolden(t, "session_detail_enriched_w132_plain", renderSampleSessionDetail(132, true))
+}
+
+func TestSessionDetailDoesNotDuplicateResourceSummary(t *testing.T) {
+	output := renderSampleSessionDetail(132, false)
+	if strings.Contains(output, "Resources Accessed") {
+		t.Fatal("session detail includes the redundant Resources Accessed section")
+	}
+	for _, section := range []string{"Event to Resource Activity", "Resources (1)"} {
+		if !strings.Contains(output, section) {
+			t.Fatalf("session detail missing %q", section)
+		}
+	}
 }
 
 func TestEnrichedDetailsKeepSelectorsAtNarrowWidths(t *testing.T) {
 	for _, width := range []int{60, 80, 100} {
-		role := RoleDetail(ctxFor(width, false, true), sampleRoleDetail())
+		role := RoleDetail(ctxFor(width, false, true), sampleRoleDetail(), true)
 		if !strings.Contains(role, "arn:aws:iam::123456789012:role/DeployRole") {
 			t.Fatalf("width %d lost role ARN:\n%s", width, role)
 		}
-		session := renderSampleSessionDetail(width)
-		for _, selector := range []string{
-			models.SidForRef(enrichedSessionRef),
-			"trailtool people detail " + models.PIDForPersonKey("email#alice@example.com"),
-			"trailtool resources detail fyf7wfyglmgloz65",
-		} {
-			if !strings.Contains(session, selector) {
-				t.Fatalf("width %d lost %q:\n%s", width, selector, session)
-			}
+		session := renderSampleSessionDetail(width, true)
+		sid := models.SidForRef(enrichedSessionRef)
+		if !strings.Contains(session, sid) {
+			t.Fatalf("width %d lost session SID %q:\n%s", width, sid, session)
 		}
 	}
 }
@@ -186,9 +195,42 @@ func TestBoundedErrorNormalizesAndTruncates(t *testing.T) {
 }
 
 func TestEnrichedDetailsNoColorParity(t *testing.T) {
-	colored := RoleDetail(ctxFor(132, true, true), sampleRoleDetail())
-	plain := RoleDetail(ctxFor(132, false, true), sampleRoleDetail())
+	colored := RoleDetail(ctxFor(132, true, true), sampleRoleDetail(), true)
+	plain := RoleDetail(ctxFor(132, false, true), sampleRoleDetail(), true)
 	if render.StripANSI(colored) != plain {
 		t.Fatal("stripped colored role detail differs from plain output")
+	}
+}
+
+func TestDeniedActivityDetailsAreOptIn(t *testing.T) {
+	ctx := ctxFor(132, false, true)
+	outputs := map[string]string{
+		"account": AccountDetail(ctx, sampleAccountDetail(), false),
+		"role":    RoleDetail(ctx, sampleRoleDetail(), false),
+		"service": ServiceDetail(ctx, sampleServiceDetail(), false),
+		"session": renderSampleSessionDetail(132, false),
+	}
+	for name, output := range outputs {
+		if strings.Contains(output, "DeleteFunction") || strings.Contains(output, "Denied Activity Details") {
+			t.Fatalf("%s detail included denied breakdown by default:\n%s", name, output)
+		}
+		if !strings.Contains(output, "Denied Events") {
+			t.Fatalf("%s detail lost denied summary count:\n%s", name, output)
+		}
+	}
+}
+
+func TestEnrichedDetailsOmitExploreSection(t *testing.T) {
+	ctx := ctxFor(132, false, true)
+	outputs := []string{
+		AccountDetail(ctx, sampleAccountDetail(), true),
+		RoleDetail(ctx, sampleRoleDetail(), true),
+		ServiceDetail(ctx, sampleServiceDetail(), true),
+		renderSampleSessionDetail(132, true),
+	}
+	for _, output := range outputs {
+		if strings.Contains(output, "Explore:") {
+			t.Fatalf("detail included Explore section:\n%s", output)
+		}
 	}
 }

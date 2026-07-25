@@ -50,6 +50,7 @@ func accountsListCmd() *cobra.Command {
 func accountsDetailCmd() *cobra.Command {
 	var limit int
 	var all bool
+	var includeDeniedDetails bool
 
 	cmd := &cobra.Command{
 		Use:   "detail <account-id>",
@@ -86,18 +87,20 @@ func accountsDetailCmd() *cobra.Command {
 			if err != nil {
 				return fatal("%v", err)
 			}
+			account.ApplyRelationshipCounts(related.Counts)
 			detail := models.AccountDetail{Account: *account, Related: related}
 
 			if Format == "json" {
 				return printJSON(detail)
 			}
 
-			fmt.Print(view.AccountDetail(renderContext(), &detail))
+			fmt.Print(view.AccountDetail(renderContext(), &detail, includeDeniedDetails))
 			return nil
 		},
 	}
 
 	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
 	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
+	cmd.Flags().BoolVar(&includeDeniedDetails, "include-denied-details", false, "Show denied event breakdowns")
 	return cmd
 }

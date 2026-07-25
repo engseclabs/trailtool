@@ -139,3 +139,59 @@ func TestDetailedAccessesKeepResourceAccountsDistinct(t *testing.T) {
 		t.Fatalf("session resource accesses = %d, want 2", got)
 	}
 }
+
+func TestNounAggregatesKeepFullTimestampBounds(t *testing.T) {
+	const (
+		early = "2026-07-25T09:15:00Z"
+		late  = "2026-07-25T17:45:00Z"
+	)
+	earlyEvent := types.CloudTrailRecord{EventSource: "lambda.amazonaws.com", EventName: "GetFunction"}
+	lateEvent := types.CloudTrailRecord{EventSource: "lambda.amazonaws.com", EventName: "Invoke"}
+	person := identity.Person{Key: "iam#111111111111#alex", Tier: identity.TierIAMUser}
+	roleARN := "arn:aws:iam::111111111111:role/operator"
+	resourceIdentity := types.ResourceIdentity{
+		Identifier: "lambda:function:worker",
+		AccountID:  "111111111111",
+		Type:       "lambda:function",
+		Name:       "worker",
+	}
+
+	people := make(map[string]*types.DynamoDBPerson)
+	accounts := make(map[string]*types.DynamoDBAccount)
+	roles := make(map[string]*types.DynamoDBRole)
+	services := make(map[string]*types.DynamoDBService)
+	resourceMap := make(map[string]*types.DynamoDBResource)
+
+	// Process the later event first to prove bounds do not depend on event order.
+	for _, observation := range []struct {
+		event      types.CloudTrailRecord
+		observedAt string
+	}{
+		{event: lateEvent, observedAt: late},
+		{event: earlyEvent, observedAt: early},
+	} {
+		processPersonEvent(people, person, observation.event, observation.observedAt)
+		processAccountEvent(accounts, resourceIdentity.AccountID, observation.event, observation.observedAt, false)
+		processRoleEvent(roles, observation.event, roleARN, []types.ResourceIdentity{resourceIdentity}, observation.observedAt)
+		processServiceEvent(services, observation.event, roleARN, []types.ResourceIdentity{resourceIdentity}, observation.observedAt)
+		processResourceEvent(resourceMap, observation.event, resourceIdentity, observation.observedAt)
+	}
+
+	resourceKey := resources.ResourceKey(resourceIdentity.AccountID, resourceIdentity.Identifier)
+	bounds := []struct {
+		noun      string
+		firstSeen string
+		lastSeen  string
+	}{
+		{noun: "person", firstSeen: people[person.Key].FirstSeen, lastSeen: people[person.Key].LastSeen},
+		{noun: "account", firstSeen: accounts[resourceIdentity.AccountID].FirstSeen, lastSeen: accounts[resourceIdentity.AccountID].LastSeen},
+		{noun: "role", firstSeen: roles[roleARN].FirstSeen, lastSeen: roles[roleARN].LastSeen},
+		{noun: "service", firstSeen: services[lateEvent.EventSource].FirstSeen, lastSeen: services[lateEvent.EventSource].LastSeen},
+		{noun: "resource", firstSeen: resourceMap[resourceKey].FirstSeen, lastSeen: resourceMap[resourceKey].LastSeen},
+	}
+	for _, got := range bounds {
+		if got.firstSeen != early || got.lastSeen != late {
+			t.Errorf("%s bounds = %q/%q, want %q/%q", got.noun, got.firstSeen, got.lastSeen, early, late)
+		}
+	}
+}

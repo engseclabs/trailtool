@@ -54,6 +54,7 @@ func rolesDetailCmd() *cobra.Command {
 	var accountID string
 	var limit int
 	var all bool
+	var includeDeniedDetails bool
 
 	cmd := &cobra.Command{
 		Use:   "detail <role-id>",
@@ -92,13 +93,14 @@ also works.`,
 			if err != nil {
 				return fatal("%v", err)
 			}
+			role.ApplyRelationshipCounts(related.Counts)
 			detail := models.RoleDetail{Role: *role, Related: related}
 
 			if Format == "json" {
 				return printJSON(detail)
 			}
 
-			fmt.Print(view.RoleDetail(renderContext(), &detail))
+			fmt.Print(view.RoleDetail(renderContext(), &detail, includeDeniedDetails))
 			return nil
 		},
 	}
@@ -106,6 +108,7 @@ also works.`,
 	cmd.Flags().StringVar(&accountID, "account", "", "Filter by AWS account ID (disambiguates roles with the same name)")
 	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
 	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
+	cmd.Flags().BoolVar(&includeDeniedDetails, "include-denied-details", false, "Show denied event breakdowns and access details")
 
 	return cmd
 }

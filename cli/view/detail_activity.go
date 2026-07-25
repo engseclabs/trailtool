@@ -220,7 +220,7 @@ func SessionSummary(ctx render.Context, session *models.Session) string {
 			kv.Add("Model", session.SummaryModel)
 		}
 		if session.SummaryGeneratedAt != "" {
-			kv.Add("Generated", ctx.Style(render.Time, session.SummaryGeneratedAt))
+			kv.Add("Generated", ctx.Style(render.Time, ctx.Timestamp(session.SummaryGeneratedAt)))
 		}
 		body.WriteString(ctx.RenderKV(kv, render.BodyIndent))
 	}

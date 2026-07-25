@@ -40,7 +40,12 @@ func NewStore(ctx context.Context) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
-	return &Store{client: dynamodb.NewFromConfig(cfg)}, nil
+	return NewStoreFromConfig(cfg), nil
+}
+
+// NewStoreFromConfig creates a Store from an already-loaded AWS config.
+func NewStoreFromConfig(cfg aws.Config) *Store {
+	return &Store{client: dynamodb.NewFromConfig(cfg)}
 }
 
 // explainError wraps a DynamoDB error: when a 1.0 table is missing because the
@@ -93,6 +98,9 @@ func (s *Store) ListPeople(ctx context.Context, customerID string) ([]models.Per
 		lastKey = result.LastEvaluatedKey
 	}
 
+	if err := s.enrichPeopleRelationshipCounts(ctx, customerID, people); err != nil {
+		return nil, err
+	}
 	sortPeople(people)
 	return people, nil
 }
@@ -129,6 +137,9 @@ func (s *Store) ListRoles(ctx context.Context, customerID string) ([]models.Role
 		lastKey = result.LastEvaluatedKey
 	}
 
+	if err := s.enrichRoleRelationshipCounts(ctx, customerID, roles); err != nil {
+		return nil, err
+	}
 	sortRoles(roles)
 	return roles, nil
 }
@@ -388,16 +399,68 @@ func (s *Store) ListSessions(ctx context.Context, customerID, user string, filte
 	}
 
 	models.SortSessionsForList(sessions, false)
-
 	return sessions, personKeys, nil
+}
+
+// SaveSessionSummary persists the generated summary metadata without replacing
+// activity fields that the ingestor may be updating concurrently.
+func (s *Store) SaveSessionSummary(ctx context.Context, customerID string, session *models.Session) error {
+	input, err := sessionSummaryUpdateInput(customerID, session)
+	if err != nil {
+		return err
+	}
+	if _, err := s.client.UpdateItem(ctx, input); err != nil {
+		return s.explainError(ctx, err, "save session summary")
+	}
+	return nil
+}
+
+func sessionSummaryUpdateInput(customerID string, session *models.Session) (*dynamodb.UpdateItemInput, error) {
+	if session.PersonKey == "" || session.SK == "" {
+		return nil, fmt.Errorf("session is missing its storage key")
+	}
+	pk := session.PK
+	if pk == "" {
+		pk = customerID + "#" + session.PersonKey
+	}
+	values, err := attributevalue.MarshalMap(map[string]interface{}{
+		":summary":      session.Summary,
+		":generated_at": session.SummaryGeneratedAt,
+		":model":        session.SummaryModel,
+		":tokens_used":  session.SummaryTokensUsed,
+		":input_digest": session.SummaryInputDigest,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal session summary: %w", err)
+	}
+	return &dynamodb.UpdateItemInput{
+		TableName: aws.String(SessionsTableName),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: pk},
+			"sk": &types.AttributeValueMemberS{Value: session.SK},
+		},
+		UpdateExpression: aws.String(
+			"SET #summary = :summary, #generated_at = :generated_at, #model = :model, #tokens_used = :tokens_used, #input_digest = :input_digest",
+		),
+		ExpressionAttributeNames: map[string]string{
+			"#summary":      "summary",
+			"#generated_at": "summary_generated_at",
+			"#model":        "summary_model",
+			"#tokens_used":  "summary_tokens_used",
+			"#input_digest": "summary_input_digest",
+		},
+		ExpressionAttributeValues: values,
+	}, nil
 }
 
 // ResourceFilter controls which resources are returned by ListResources
 type ResourceFilter struct {
 	ClickOpsOnly     bool   // Only return resources with ClickOps activity
 	ServiceType      string // Filter by service type prefix (e.g. "s3", "iam")
-	StartTime        string // Only include ClickOps accesses after this time (ISO8601)
-	EndTime          string // Only include ClickOps accesses before this time (ISO8601)
+	StartDate        string // Only include resources last seen on or after this date (YYYY-MM-DD)
+	EndDate          string // Only include resources last seen on or before this date (YYYY-MM-DD)
+	StartTime        string // Only include ClickOps accesses at or after this time (RFC3339)
+	EndTime          string // Only include ClickOps accesses at or before this time (RFC3339)
 	MinClickOpsCount int    // Minimum ClickOps event count (only applies when ClickOpsOnly=true)
 }
 
@@ -432,16 +495,16 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 				continue
 			}
 
-			// Time range filter on last_seen (applies to all resources)
-			if filter.StartTime != "" && resource.LastSeen < filter.StartTime {
-				continue
-			}
-			if filter.EndTime != "" && resource.LastSeen > filter.EndTime {
+			// Time range filter on last_seen (applies to all resources).
+			// Compare the date component so legacy date-only values and current
+			// RFC3339 timestamps have identical inclusive-day semantics.
+			if !resourceSeenInDateRange(resource.LastSeen, filter.StartDate, filter.EndDate) {
 				continue
 			}
 
 			// ClickOps filters
 			if filter.ClickOpsOnly {
+				filterClickOpsActivity(&resource, filter.StartTime, filter.EndTime)
 				if len(resource.ClickOpsAccesses) == 0 {
 					continue
 				}
@@ -451,23 +514,6 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 				}
 				if resource.ClickOpsCount < minCount {
 					continue
-				}
-				// Time range filter on ClickOps accesses
-				if filter.StartTime != "" || filter.EndTime != "" {
-					hasMatch := false
-					for _, access := range resource.ClickOpsAccesses {
-						if filter.StartTime != "" && access.AccessTime < filter.StartTime {
-							continue
-						}
-						if filter.EndTime != "" && access.AccessTime > filter.EndTime {
-							continue
-						}
-						hasMatch = true
-						break
-					}
-					if !hasMatch {
-						continue
-					}
 				}
 			}
 
@@ -480,8 +526,48 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 		lastKey = result.LastEvaluatedKey
 	}
 
+	if err := s.enrichResourceRelationshipCounts(ctx, customerID, resources); err != nil {
+		return nil, err
+	}
 	sortResources(resources)
 	return resources, nil
+}
+
+func resourceSeenInDateRange(lastSeen, startDate, endDate string) bool {
+	seenDate := lastSeen
+	if len(seenDate) >= len("YYYY-MM-DD") {
+		seenDate = seenDate[:len("YYYY-MM-DD")]
+	}
+	return (startDate == "" || seenDate >= startDate) &&
+		(endDate == "" || seenDate <= endDate)
+}
+
+// filterClickOpsActivity makes the time-windowed ClickOps view internally
+// consistent: rows and their displayed count describe the same period.
+func filterClickOpsActivity(resource *models.Resource, startTime, endTime string) {
+	filtered := make([]models.ClickOpsAccess, 0, len(resource.ClickOpsAccesses))
+	count := 0
+	for _, access := range resource.ClickOpsAccesses {
+		if startTime != "" && access.AccessTime < startTime {
+			continue
+		}
+		if endTime != "" && access.AccessTime > endTime {
+			continue
+		}
+		filtered = append(filtered, access)
+		count += access.EventCount
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].AccessTime != filtered[j].AccessTime {
+			return filtered[i].AccessTime > filtered[j].AccessTime
+		}
+		if filtered[i].SessionRef != filtered[j].SessionRef {
+			return filtered[i].SessionRef < filtered[j].SessionRef
+		}
+		return filtered[i].EventName < filtered[j].EventName
+	})
+	resource.ClickOpsAccesses = filtered
+	resource.ClickOpsCount = count
 }
 
 // ListAccounts returns all accounts for a customer
@@ -516,6 +602,9 @@ func (s *Store) ListAccounts(ctx context.Context, customerID string) ([]models.A
 		lastKey = result.LastEvaluatedKey
 	}
 
+	if err := s.enrichAccountRelationshipCounts(ctx, customerID, accounts); err != nil {
+		return nil, err
+	}
 	sortAccounts(accounts)
 	return accounts, nil
 }
@@ -575,6 +664,9 @@ func (s *Store) ListServices(ctx context.Context, customerID string) ([]models.S
 		lastKey = result.LastEvaluatedKey
 	}
 
+	if err := s.enrichServiceRelationshipCounts(ctx, customerID, services); err != nil {
+		return nil, err
+	}
 	sortServices(services)
 	return services, nil
 }

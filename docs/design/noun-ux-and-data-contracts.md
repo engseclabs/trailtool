@@ -138,8 +138,7 @@ returns every row and cannot be combined with `--limit`.
 
 Denied totals remain in key facts. Per-event denied breakdowns and denied
 resource rows require `--include-denied-details`. `--include-denied` remains
-specific to policy generation.
-
+specific to policy generation. Detail JSON remains complete without the flag.
 Counts and top maps sort by count descending, then canonical identity.
 Relationship rows sort by last seen descending, then identity.
 
@@ -269,8 +268,8 @@ identifier define identity.
 Account and service writes merge with the stored aggregate instead of replacing
 it. Every noun merge uses the same rules:
 
-- `first_seen`: minimum non-empty timestamp;
-- `last_seen`: maximum timestamp;
+- `first_seen`: minimum non-empty CloudTrail `eventTime`, stored as RFC3339;
+- `last_seen`: maximum CloudTrail `eventTime`, stored as RFC3339;
 - event maps and totals: addition;
 - string relationships: set union;
 - optional labels: first defined value from a documented source;

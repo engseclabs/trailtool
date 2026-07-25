@@ -46,7 +46,7 @@ func ClickOps(ctx render.Context, resources []models.Resource, label func(string
 			r.Type,
 			r.AccountID,
 			clickops(ctx, r.ClickOpsCount),
-			ctx.Style(render.Time, r.LastSeen),
+			ctx.Style(render.Time, ctx.Relative(r.LastSeen)),
 		)
 	}
 	b.WriteString(ctx.RenderTable(t, 0))
@@ -60,15 +60,11 @@ func ClickOps(ctx render.Context, resources []models.Resource, label func(string
 		}
 		fmt.Fprintf(&ops, "\n%s %s\n", ident(ctx, resourceLabel), ctx.Style(render.Muted, "("+r.Type+")"))
 		for _, access := range r.ClickOpsAccesses {
-			date := access.AccessTime
-			if len(date) >= 10 {
-				date = date[:10]
-			}
 			fmt.Fprintf(&ops, "  %s by %s %s - %s\n",
 				access.EventName,
 				label(access.PersonKey),
 				ctx.Style(render.Warn, fmt.Sprintf("(%dx)", access.EventCount)),
-				ctx.Style(render.Time, date))
+				ctx.Style(render.Time, ctx.Relative(access.AccessTime)))
 		}
 	}
 	b.WriteString(ctx.Section(render.Heading("Console Operations", -1), ops.String()))

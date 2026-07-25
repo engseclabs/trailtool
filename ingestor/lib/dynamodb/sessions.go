@@ -102,6 +102,7 @@ func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSessi
 	if incoming.SessionType == "agent" || existing.SessionType == "agent" {
 		sessionType = "agent"
 	}
+	summary := selectSessionSummary(existing, incoming)
 
 	return &types.DynamoDBSession{
 		PK:          existing.PK,
@@ -139,6 +140,12 @@ func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSessi
 		DeniedResourceAccesses:  MergeResourceAccesses(existing.DeniedResourceAccesses, incoming.DeniedResourceAccesses),
 		DeniedEventAccesses:     MergeEventAccesses(existing.DeniedEventAccesses, incoming.DeniedEventAccesses),
 
+		Summary:            summary.Summary,
+		SummaryGeneratedAt: summary.SummaryGeneratedAt,
+		SummaryModel:       summary.SummaryModel,
+		SummaryTokensUsed:  summary.SummaryTokensUsed,
+		SummaryInputDigest: summary.SummaryInputDigest,
+
 		ClickOpsEventCount:  existing.ClickOpsEventCount + incoming.ClickOpsEventCount,
 		ClickOpsEventCounts: MergeIntMaps(existing.ClickOpsEventCounts, incoming.ClickOpsEventCounts),
 
@@ -158,6 +165,18 @@ func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSessi
 		MCPResource:              firstNonEmpty(existing.MCPResource, incoming.MCPResource),
 		AgentAuthorizedBySession: firstNonEmpty(existing.AgentAuthorizedBySession, incoming.AgentAuthorizedBySession),
 	}
+}
+
+func selectSessionSummary(a, b *types.DynamoDBSession) *types.DynamoDBSession {
+	if b.Summary == "" {
+		return a
+	}
+	if a.Summary == "" ||
+		b.SummaryGeneratedAt > a.SummaryGeneratedAt ||
+		(b.SummaryGeneratedAt == a.SummaryGeneratedAt && b.SummaryInputDigest > a.SummaryInputDigest) {
+		return b
+	}
+	return a
 }
 
 // MergeResourceAccesses merges two ResourceAccess slices, combining counts for

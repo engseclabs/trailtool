@@ -44,7 +44,7 @@ func resourcesListCmd() *cobra.Command {
 				MinClickOpsCount: minClickOps,
 			}
 			if days > 0 {
-				filter.StartTime = time.Now().AddDate(0, 0, -days).Format("2006-01-02")
+				filter.StartDate, filter.StartTime = resourceWindowStart(time.Now(), days)
 			}
 
 			resources, err := s.ListResources(ctx, CustomerID, filter)
@@ -71,7 +71,7 @@ func resourcesListCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().IntVar(&days, "days", 0, "Filter to last N days")
+	cmd.Flags().IntVar(&days, "days", 0, "Filter resources last seen in the last N days; activity totals remain lifetime totals")
 	cmd.Flags().StringVar(&serviceType, "service", "", "Filter by AWS service type (e.g. s3, lambda, ec2)")
 	cmd.Flags().BoolVar(&clickops, "clickops", false, "Only show resources created/modified via web console")
 	cmd.Flags().IntVar(&minClickOps, "min-clickops", 1, "Minimum ClickOps events (used with --clickops)")
@@ -79,9 +79,16 @@ func resourcesListCmd() *cobra.Command {
 	return cmd
 }
 
+func resourceWindowStart(now time.Time, days int) (date, timestamp string) {
+	cutoff := now.UTC().AddDate(0, 0, -days)
+	midnight := time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, time.UTC)
+	return midnight.Format(time.DateOnly), midnight.Format(time.RFC3339)
+}
+
 func resourcesDetailCmd() *cobra.Command {
 	var limit int
 	var all bool
+	var includeDeniedDetails bool
 
 	cmd := &cobra.Command{
 		Use:   "detail <rid>",
@@ -123,18 +130,20 @@ Example:
 			if err != nil {
 				return fatal("%v", err)
 			}
+			resource.ApplyRelationshipCounts(related.Counts)
 			detail := models.ResourceDetail{Resource: *resource, Related: related}
 
 			if Format == "json" {
 				return printJSON(detail)
 			}
 
-			fmt.Print(view.ResourceDetail(renderContext(), &detail))
+			fmt.Print(view.ResourceDetail(renderContext(), &detail, includeDeniedDetails))
 			return nil
 		},
 	}
 
 	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
 	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
+	cmd.Flags().BoolVar(&includeDeniedDetails, "include-denied-details", false, "Show denied event breakdowns")
 	return cmd
 }

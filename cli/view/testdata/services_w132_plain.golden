@@ -1,3 +1,3 @@
-EVENT SOURCE          EVENTS  DENIED  LAST SEEN             ROLES  RESOURCES  PEOPLE  SESSIONS  ACCOUNTS
-s3.amazonaws.com         300       4  2026-07-24T11:00:00Z      5         10       4        20         2
-lambda.amazonaws.com     120       0  2026-07-23T09:00:00Z      3          6       2         8         1
+EVENT SOURCE          EVENTS  DENIED  LAST SEEN  ROLES  RESOURCES  PEOPLE  SESSIONS  ACCOUNTS
+s3.amazonaws.com         300       4  1h ago         5         10       4        20         2
+lambda.amazonaws.com     120       0  yesterday      3          6       2         8         1

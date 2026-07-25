@@ -182,11 +182,12 @@ reads every relationship correctly.
 
 ### 4.5 Timestamps (one rule everywhere)
 
-Absolute RFC3339 UTC, with a relative suffix in brackets for recency:
-`2026-07-22T16:43:18Z [5m ago]`. Relative form: `just now`, `Nm ago`, `Nh ago`,
-`yesterday`, `Nd ago` (today's `relativeTime` logic, centralized in
-`render/time.go`). Intervals: `start → end` on a `Time`-styled line. No view
-invents its own timestamp format.
+Key facts use absolute RFC3339 UTC with a relative suffix:
+`2026-07-22T16:43:18Z [5m ago]`. Compact table cells use the relative form:
+`just now`, `Nm ago`, `Nh ago`, `today`, `yesterday`, or `Nd ago`. Date-only
+aggregates render as `YYYY-MM-DD [relative]`. Intervals render
+`start → end [relative end]`. The clock and formatting live in
+`render/time.go`; no view prints a raw human-facing timestamp.
 
 ## 5. Information architecture (per view)
 
@@ -207,9 +208,10 @@ policy**. Views differ in which sections appear, never in order or style.
   list **count-descending**.
 - **`sessions detail`:** `Title` (user), `KV` (role, ARN, account, type, SID,
   time, events), `Clients (N)` section (§5.1), Session Tags, Denied Events, Top
-  Events (**count desc**, fixes today's alphabetical sort), Resources Accessed,
-  agent/login/parent/child lineage (word-led, §4.3), Session Policy (indented
-  JSON). Order preserved from current code; only styling and sorting change.
+  Events (**count desc**, fixes today's alphabetical sort), Event to Resource
+  Activity, related Services and Resources, agent/login/parent/child lineage
+  (word-led, §4.3), Session Policy (indented JSON). Resource counts remain in the
+  header; the Resources section contains the resource records.
 - **`status`:** three `Status` lines to **stdout** (`✓/⚠/✗` plus label); every
   diagnostic detail to **stderr**, emitted *after* its own status line so
   `Data access: FAIL` precedes its detail (fixes today's interleaving).

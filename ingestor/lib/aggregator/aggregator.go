@@ -174,7 +174,6 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 				log.Printf("WARNING: skipping event with malformed eventTime %q (%s:%s)", eventTime, event.EventSource, event.EventName)
 				continue
 			}
-			eventDate := eventTime[:10] // YYYY-MM-DD
 
 			personKey := ""
 			if rg.ok {
@@ -271,7 +270,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 			// === Person ===
 			if rg.ok {
-				processPersonEvent(people, rg.person, event, eventDate)
+				processPersonEvent(people, rg.person, event, eventTime)
 				addToSet(personAccounts, personKey, accountID)
 				addToSet(personRoles, personKey, roleARN)
 				addToSet(personServices, personKey, event.EventSource)
@@ -280,7 +279,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 			// === Account ===
 			if accountID != "" {
-				processAccountEvent(accounts, accountID, event, eventDate, clickOps)
+				processAccountEvent(accounts, accountID, event, eventTime, clickOps)
 				addToSet(accountPeople, accountID, personKey)
 				addToSet(accountSessions, accountID, sessRef)
 				addToSet(accountRoles, accountID, roleARN)
@@ -289,14 +288,14 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 			// === Role ===
 			if roleARN != "" {
-				processRoleEvent(roles, event, roleARN, resourceList, eventDate)
+				processRoleEvent(roles, event, roleARN, resourceList, eventTime)
 				addToSet(rolePeople, roleARN, personKey)
 				addToSet(roleSessions, roleARN, sessRef)
 				addToSet(roleAccounts, roleARN, accountID)
 			}
 
 			// === Service ===
-			processServiceEvent(services, event, roleARN, resourceList, eventDate)
+			processServiceEvent(services, event, roleARN, resourceList, eventTime)
 			addToSet(servicePeople, event.EventSource, personKey)
 			addToSet(serviceSessions, event.EventSource, sessRef)
 			addToSet(serviceAccounts, event.EventSource, accountID)
@@ -304,7 +303,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			// === Resources ===
 			for _, resource := range resourceList {
 				resourceKey := resources.ResourceKey(resource.AccountID, resource.Identifier)
-				processResourceEvent(resourceMap, event, resource, eventDate)
+				processResourceEvent(resourceMap, event, resource, eventTime)
 
 				// Track ClickOps operations: console modifications by the human
 				// (never service fan-out with the human's credentials).
