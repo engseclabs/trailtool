@@ -139,6 +139,30 @@ func TestFilterClickOpsActivityFiltersRowsAndRecomputesCount(t *testing.T) {
 	}
 }
 
+func TestResourceSeenInDateRangeAcceptsFullTimestampsAtDayBoundaries(t *testing.T) {
+	tests := []struct {
+		name     string
+		lastSeen string
+		start    string
+		end      string
+		want     bool
+	}{
+		{name: "timestamp on start day", lastSeen: "2026-07-17T23:59:59Z", start: "2026-07-17", want: true},
+		{name: "timestamp on end day", lastSeen: "2026-07-24T23:59:59Z", end: "2026-07-24", want: true},
+		{name: "legacy date", lastSeen: "2026-07-24", start: "2026-07-24", end: "2026-07-24", want: true},
+		{name: "before start", lastSeen: "2026-07-16T23:59:59Z", start: "2026-07-17", want: false},
+		{name: "after end", lastSeen: "2026-07-25T00:00:00Z", end: "2026-07-24", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resourceSeenInDateRange(tt.lastSeen, tt.start, tt.end); got != tt.want {
+				t.Fatalf("resourceSeenInDateRange(%q, %q, %q) = %t, want %t",
+					tt.lastSeen, tt.start, tt.end, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSessionSummaryUpdatePersistsAllMetadata(t *testing.T) {
 	sess := &models.Session{
 		PersonKey:          "email#alice@example.com",

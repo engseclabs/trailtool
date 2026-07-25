@@ -495,11 +495,10 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 				continue
 			}
 
-			// Time range filter on last_seen (applies to all resources)
-			if filter.StartDate != "" && resource.LastSeen < filter.StartDate {
-				continue
-			}
-			if filter.EndDate != "" && resource.LastSeen > filter.EndDate {
+			// Time range filter on last_seen (applies to all resources).
+			// Compare the date component so legacy date-only values and current
+			// RFC3339 timestamps have identical inclusive-day semantics.
+			if !resourceSeenInDateRange(resource.LastSeen, filter.StartDate, filter.EndDate) {
 				continue
 			}
 
@@ -532,6 +531,15 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 	}
 	sortResources(resources)
 	return resources, nil
+}
+
+func resourceSeenInDateRange(lastSeen, startDate, endDate string) bool {
+	seenDate := lastSeen
+	if len(seenDate) >= len("YYYY-MM-DD") {
+		seenDate = seenDate[:len("YYYY-MM-DD")]
+	}
+	return (startDate == "" || seenDate >= startDate) &&
+		(endDate == "" || seenDate <= endDate)
 }
 
 // filterClickOpsActivity makes the time-windowed ClickOps view internally

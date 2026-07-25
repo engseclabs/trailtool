@@ -268,8 +268,8 @@ identifier define identity.
 Account and service writes merge with the stored aggregate instead of replacing
 it. Every noun merge uses the same rules:
 
-- `first_seen`: minimum non-empty timestamp;
-- `last_seen`: maximum timestamp;
+- `first_seen`: minimum non-empty CloudTrail `eventTime`, stored as RFC3339;
+- `last_seen`: maximum CloudTrail `eventTime`, stored as RFC3339;
 - event maps and totals: addition;
 - string relationships: set union;
 - optional labels: first defined value from a documented source;
