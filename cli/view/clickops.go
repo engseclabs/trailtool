@@ -26,18 +26,23 @@ func ClickOps(ctx render.Context, resources []models.Resource, label func(string
 		fmt.Sprintf("Found %d resources created/modified via web console:", len(resources))))
 
 	t := render.NewTable(
-		render.Column{Header: "#", Align: render.AlignRight},
+		render.Column{Header: "RID", Align: render.AlignLeft},
 		render.Column{Header: "RESOURCE", Align: render.AlignLeft},
 		render.Column{Header: "TYPE", Align: render.AlignLeft},
 		render.Column{Header: "ACCOUNT", Align: render.AlignLeft},
 		render.Column{Header: "CLICKOPS EVENTS", Align: render.AlignRight},
 		render.Column{Header: "LAST SEEN", Align: render.AlignLeft},
 	)
+	ridWidth := ResourceIDDisplayWidth(resources)
 	for i := range resources {
 		r := &resources[i]
+		resourceLabel := r.Identifier
+		if resourceLabel == "" {
+			resourceLabel = r.Name
+		}
 		t.Row(
-			n(i+1),
-			ident(ctx, r.Name),
+			ident(ctx, shortID(r.RID(), ridWidth)),
+			ident(ctx, resourceLabel),
 			r.Type,
 			r.AccountID,
 			clickops(ctx, r.ClickOpsCount),
@@ -49,7 +54,11 @@ func ClickOps(ctx render.Context, resources []models.Resource, label func(string
 	var ops strings.Builder
 	for i := range resources {
 		r := &resources[i]
-		fmt.Fprintf(&ops, "\n%s %s\n", ident(ctx, r.Name), ctx.Style(render.Muted, "("+r.Type+")"))
+		resourceLabel := r.Identifier
+		if resourceLabel == "" {
+			resourceLabel = r.Name
+		}
+		fmt.Fprintf(&ops, "\n%s %s\n", ident(ctx, resourceLabel), ctx.Style(render.Muted, "("+r.Type+")"))
 		for _, access := range r.ClickOpsAccesses {
 			date := access.AccessTime
 			if len(date) >= 10 {

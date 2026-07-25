@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/engseclabs/trailtool/cli/view"
+	"github.com/engseclabs/trailtool/core/models"
 	"github.com/engseclabs/trailtool/core/policy"
 	"github.com/engseclabs/trailtool/core/session"
 	"github.com/engseclabs/trailtool/core/store"
@@ -80,9 +81,7 @@ func sessionsListCmd() *cobra.Command {
 			}
 
 			if reverse {
-				for i, j := 0, len(sessions)-1; i < j; i, j = i+1, j-1 {
-					sessions[i], sessions[j] = sessions[j], sessions[i]
-				}
+				models.SortSessionsForList(sessions, true)
 			}
 
 			if Format == "json" {
@@ -110,23 +109,24 @@ func sessionsListCmd() *cobra.Command {
 }
 
 func sessionsDetailCmd() *cobra.Command {
-	var sessionID string
 	var user string
 
 	cmd := &cobra.Command{
-		Use:   "detail",
+		Use:   "detail [sid-or-latest]",
 		Short: "Show session details",
 		Long: `Show details for a session identified by its id (the SID column from
 'trailtool sessions list'). A short prefix is enough; "latest" jumps to the
 most recent session.
 
 Examples:
-  trailtool sessions detail --session k7m2qp
-  trailtool sessions detail --session latest
-  trailtool sessions detail --session latest --user alice@example.com`,
+  trailtool sessions detail k7m2qp
+  trailtool sessions detail latest
+  trailtool sessions detail latest --user alice@example.com`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if sessionID == "" {
-				return fatal("--session is required (e.g. --session k7m2qp or --session latest)")
+			selector, selectErr := sessionSelector(args, user)
+			if selectErr != nil {
+				return fatal("%v", selectErr)
 			}
 
 			ctx := context.Background()
@@ -135,7 +135,7 @@ Examples:
 				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
-			sess, err := resolveSession(ctx, s, sessionID, user)
+			sess, err := resolveSession(ctx, s, selector, user)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -231,30 +231,30 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&sessionID, "session", "", "Session id from the SID column (prefix ok), or \"latest\"")
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with --session latest)")
+	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
 
 	return cmd
 }
 
 func sessionsSummarizeCmd() *cobra.Command {
-	var sessionID string
 	var user string
 
 	cmd := &cobra.Command{
-		Use:   "summarize",
+		Use:   "summarize [sid-or-latest]",
 		Short: "Generate AI summary of a session via Bedrock",
 		Long: `Generate an AI summary of a session identified by its id (the SID column
 from 'trailtool sessions list'). A short prefix is enough; "latest" jumps to
 the most recent session.
 
 Examples:
-  trailtool sessions summarize --session k7m2qp
-  trailtool sessions summarize --session latest
-  trailtool sessions summarize --session latest --user alice@example.com`,
+  trailtool sessions summarize k7m2qp
+  trailtool sessions summarize latest
+  trailtool sessions summarize latest --user alice@example.com`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if sessionID == "" {
-				return fatal("--session is required (e.g. --session k7m2qp or --session latest)")
+			selector, selectErr := sessionSelector(args, user)
+			if selectErr != nil {
+				return fatal("%v", selectErr)
 			}
 
 			ctx := context.Background()
@@ -263,7 +263,7 @@ Examples:
 				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
-			sess, err := resolveSession(ctx, s, sessionID, user)
+			sess, err := resolveSession(ctx, s, selector, user)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -298,32 +298,32 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&sessionID, "session", "", "Session id from the SID column (prefix ok), or \"latest\"")
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with --session latest)")
+	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
 
 	return cmd
 }
 
 func sessionsPolicyCmd() *cobra.Command {
-	var sessionID string
 	var user string
 	var includeDenied bool
 	var explain bool
 
 	cmd := &cobra.Command{
-		Use:   "policy",
+		Use:   "policy [sid-or-latest]",
 		Short: "Generate least-privilege IAM policy for a session",
 		Long: `Generate a least-privilege IAM policy scoped to a specific session,
 identified by its id (the SID column from 'trailtool sessions list'). A short
 prefix is enough; "latest" jumps to the most recent session.
 
 Examples:
-  trailtool sessions policy --session k7m2qp
-  trailtool sessions policy --session latest --user alice@example.com
-  trailtool sessions policy --session k7m2qp --include-denied --explain`,
+  trailtool sessions policy k7m2qp
+  trailtool sessions policy latest --user alice@example.com
+  trailtool sessions policy k7m2qp --include-denied --explain`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if sessionID == "" {
-				return fatal("--session is required (e.g. --session k7m2qp or --session latest)")
+			selector, selectErr := sessionSelector(args, user)
+			if selectErr != nil {
+				return fatal("%v", selectErr)
 			}
 
 			ctx := context.Background()
@@ -332,7 +332,7 @@ Examples:
 				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
-			sess, err := resolveSession(ctx, s, sessionID, user)
+			sess, err := resolveSession(ctx, s, selector, user)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -364,10 +364,20 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&sessionID, "session", "", "Session id from the SID column (prefix ok), or \"latest\"")
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with --session latest)")
+	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
 	cmd.Flags().BoolVar(&includeDenied, "include-denied", false, "Include denied events in policy")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Show policy explanation on stderr")
 
 	return cmd
+}
+
+func sessionSelector(args []string, user string) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("session id argument is required (for example, k7m2qp or latest)")
+	}
+	selector := args[0]
+	if user != "" && selector != "latest" {
+		return "", fmt.Errorf("--user is valid only with latest")
+	}
+	return selector, nil
 }

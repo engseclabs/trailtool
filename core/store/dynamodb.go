@@ -93,6 +93,7 @@ func (s *Store) ListPeople(ctx context.Context, customerID string) ([]models.Per
 		lastKey = result.LastEvaluatedKey
 	}
 
+	sortPeople(people)
 	return people, nil
 }
 
@@ -128,6 +129,7 @@ func (s *Store) ListRoles(ctx context.Context, customerID string) ([]models.Role
 		lastKey = result.LastEvaluatedKey
 	}
 
+	sortRoles(roles)
 	return roles, nil
 }
 
@@ -151,7 +153,22 @@ func (s *Store) GetRole(ctx context.Context, customerID, roleARN string) (*model
 	if err := attributevalue.UnmarshalMap(result.Item, &role); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal role: %w", err)
 	}
+	role.RoleSelector = role.RoleID()
 	return &role, nil
+}
+
+// FindRolesByRoleIDPrefix returns roles whose derived role ID starts with
+// prefix. Role IDs are read-side selectors, so resolution scans the customer's
+// role partition rather than requiring a derived-ID index.
+func (s *Store) FindRolesByRoleIDPrefix(ctx context.Context, customerID, prefix string) ([]models.Role, error) {
+	if prefix == "" {
+		return nil, fmt.Errorf("empty role id prefix")
+	}
+	roles, err := s.ListRoles(ctx, customerID)
+	if err != nil {
+		return nil, err
+	}
+	return rolesByRoleIDPrefix(roles, prefix), nil
 }
 
 // GetRoleByName finds a role by name (searches all roles for the customer).
@@ -163,16 +180,7 @@ func (s *Store) GetRoleByName(ctx context.Context, customerID, roleName, account
 		return nil, err
 	}
 
-	var matches []models.Role
-	for i := range roles {
-		if roles[i].Name != roleName && !strings.Contains(roles[i].ARN, roleName) {
-			continue
-		}
-		if accountID != "" && roles[i].AccountID != accountID {
-			continue
-		}
-		matches = append(matches, roles[i])
-	}
+	matches := rolesByExactName(roles, roleName, accountID)
 
 	switch len(matches) {
 	case 0:
@@ -180,11 +188,11 @@ func (s *Store) GetRoleByName(ctx context.Context, customerID, roleName, account
 	case 1:
 		return &matches[0], nil
 	default:
-		msg := fmt.Sprintf("role name %q is ambiguous — found %d matches:\n", roleName, len(matches))
+		msg := fmt.Sprintf("role name %q is ambiguous: found %d matches:\n", roleName, len(matches))
 		for _, m := range matches {
 			msg += fmt.Sprintf("  %s (account %s)\n", m.ARN, m.AccountID)
 		}
-		msg += "Use the full ARN or --account to disambiguate."
+		msg += "Use the role ID, full ARN, or --account to disambiguate."
 		return nil, fmt.Errorf("%s", msg)
 	}
 }
@@ -379,9 +387,7 @@ func (s *Store) ListSessions(ctx context.Context, customerID, user string, filte
 		}
 	}
 
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].StartTime < sessions[j].StartTime
-	})
+	models.SortSessionsForList(sessions, false)
 
 	return sessions, personKeys, nil
 }
@@ -474,6 +480,7 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 		lastKey = result.LastEvaluatedKey
 	}
 
+	sortResources(resources)
 	return resources, nil
 }
 
@@ -509,6 +516,7 @@ func (s *Store) ListAccounts(ctx context.Context, customerID string) ([]models.A
 		lastKey = result.LastEvaluatedKey
 	}
 
+	sortAccounts(accounts)
 	return accounts, nil
 }
 
@@ -567,6 +575,7 @@ func (s *Store) ListServices(ctx context.Context, customerID string) ([]models.S
 		lastKey = result.LastEvaluatedKey
 	}
 
+	sortServices(services)
 	return services, nil
 }
 
@@ -656,5 +665,95 @@ func (s *Store) FindSessionsBySidPrefix(ctx context.Context, customerID, prefix 
 		}
 		lastKey = result.LastEvaluatedKey
 	}
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].Sid < sessions[j].Sid
+	})
 	return sessions, nil
+}
+
+func sortPeople(people []models.Person) {
+	for i := range people {
+		people[i].Pid = people[i].PID()
+	}
+	sort.Slice(people, func(i, j int) bool {
+		if people[i].LastSeen != people[j].LastSeen {
+			return people[i].LastSeen > people[j].LastSeen
+		}
+		return people[i].PersonKey < people[j].PersonKey
+	})
+}
+
+func sortRoles(roles []models.Role) {
+	for i := range roles {
+		roles[i].RoleSelector = roles[i].RoleID()
+	}
+	sort.Slice(roles, func(i, j int) bool {
+		if roles[i].LastSeen != roles[j].LastSeen {
+			return roles[i].LastSeen > roles[j].LastSeen
+		}
+		return roles[i].ARN < roles[j].ARN
+	})
+}
+
+func rolesByRoleIDPrefix(roles []models.Role, prefix string) []models.Role {
+	var matches []models.Role
+	for i := range roles {
+		if strings.HasPrefix(roles[i].RoleID(), prefix) {
+			matches = append(matches, roles[i])
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].RoleID() < matches[j].RoleID()
+	})
+	return matches
+}
+
+func rolesByExactName(roles []models.Role, roleName, accountID string) []models.Role {
+	var matches []models.Role
+	for i := range roles {
+		if roles[i].Name != roleName {
+			continue
+		}
+		if accountID != "" && roles[i].AccountID != accountID {
+			continue
+		}
+		matches = append(matches, roles[i])
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].ARN < matches[j].ARN
+	})
+	return matches
+}
+
+func sortResources(resources []models.Resource) {
+	for i := range resources {
+		resources[i].Rid = resources[i].RID()
+	}
+	sort.Slice(resources, func(i, j int) bool {
+		if resources[i].LastSeen != resources[j].LastSeen {
+			return resources[i].LastSeen > resources[j].LastSeen
+		}
+		if resources[i].AccountID != resources[j].AccountID {
+			return resources[i].AccountID < resources[j].AccountID
+		}
+		return resources[i].Identifier < resources[j].Identifier
+	})
+}
+
+func sortAccounts(accounts []models.Account) {
+	sort.Slice(accounts, func(i, j int) bool {
+		if accounts[i].LastSeen != accounts[j].LastSeen {
+			return accounts[i].LastSeen > accounts[j].LastSeen
+		}
+		return accounts[i].AccountID < accounts[j].AccountID
+	})
+}
+
+func sortServices(services []models.Service) {
+	sort.Slice(services, func(i, j int) bool {
+		if services[i].LastSeen != services[j].LastSeen {
+			return services[i].LastSeen > services[j].LastSeen
+		}
+		return services[i].EventSource < services[j].EventSource
+	})
 }

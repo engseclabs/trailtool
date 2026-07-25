@@ -28,24 +28,24 @@ trailtool people list                          # List all tracked identities
 
 ### Sessions
 ```bash
-trailtool sessions list                        # List all sessions (# column shows index)
+trailtool sessions list                        # List all sessions
 trailtool sessions list --user <email> --days 7  # Filter by user and recency
 trailtool sessions list --role <name> --user <email>  # Filter by role name (substring match)
 trailtool sessions list --account <id>         # Filter by AWS account ID
 trailtool sessions list --after 2026-01-01T00:00:00Z --before 2026-01-02T00:00:00Z  # Time range
 trailtool sessions list --long                 # Show full role names (SSO roles shortened by default)
-trailtool sessions detail --session k7m2qp                # Session detail by id (SID column, prefix ok)
-trailtool sessions detail --session latest                # Most recent session
-trailtool sessions detail --session latest --user alice@example.com  # Most recent for one user
-trailtool sessions summarize --session k7m2qp             # AI-generated session summary (requires Bedrock)
-trailtool sessions summarize --session latest --user alice@example.com
-trailtool sessions policy --session k7m2qp                # Least-privilege policy for this session only
-trailtool sessions policy --session latest --user alice@example.com --include-denied --explain
+trailtool sessions detail k7m2qp                # Session detail by id (SID column, prefix ok)
+trailtool sessions detail latest                # Most recent session
+trailtool sessions detail latest --user alice@example.com  # Most recent for one user
+trailtool sessions summarize k7m2qp             # AI-generated session summary (requires Bedrock)
+trailtool sessions summarize latest --user alice@example.com
+trailtool sessions policy k7m2qp                # Least-privilege policy for this session only
+trailtool sessions policy latest --user alice@example.com --include-denied --explain
 ```
 
 **Filtering tips:** Combine flags to narrow results. `--role` does substring matching (e.g. `--role BreakGlass` matches `AWSReservedSSO_BreakGlassEmergency_...`). `--after`/`--before` take ISO8601 timestamps and override `--days` if both are set.
 
-**Session detail tips:** `--session` takes the id shown in the SID column of `sessions list`. It's a stable, deterministic handle for one specific session — a short prefix (the 6 chars shown) is enough, and the CLI asks you to lengthen it in the rare case a prefix is ambiguous. Use `--session latest` to jump to the most recent session (add `--user` to scope "latest" to one person). The detail view shows role chaining: if a session assumed another role, it prints the parent session with a ready-to-run `--session` command, and vice versa for child sessions.
+**Session detail tips:** Pass the id shown in the SID column of `sessions list` as the positional selector. It is a stable, deterministic handle for one specific session. A short prefix (the 6 characters shown) is enough, and the CLI asks you to lengthen it if a prefix is ambiguous. Use `latest` to jump to the most recent session, with `--user` to scope it to one person.
 
 **SSO role names:** The ROLE column in `sessions list` displays the short permission-set name (e.g. `AdministratorAccess`) rather than the full SSO path. Use `--long` to show the full role name. The full path and ARN are always shown in `sessions detail`.
 
@@ -58,25 +58,22 @@ trailtool sessions policy --session latest --user alice@example.com --include-de
 
 ### Accounts
 ```bash
-trailtool accounts list                        # List all tracked AWS accounts (# column shows index)
+trailtool accounts list                        # List all tracked AWS accounts
 trailtool accounts detail <account-id>         # Account detail: people, roles, services, resources
-trailtool accounts detail --index <n>          # Same, by list position
 ```
 
 ### Roles
 ```bash
-trailtool roles list                           # List all tracked IAM roles (# column shows index)
-trailtool roles detail <role-name-or-arn>      # Role detail: services used, top events, denied events
-trailtool roles detail --index <n>             # Same, by list position
-trailtool roles policy <role-name-or-arn>      # Generate least-privilege IAM policy from actual usage
-trailtool roles policy <role> --include-denied --explain  # Include denied events, show explanation
+trailtool roles list                           # List all tracked IAM roles
+trailtool roles detail <role-id>               # Role detail; ID comes from roles list
+trailtool roles policy <role-id>               # Generate least-privilege IAM policy from actual usage
+trailtool roles policy <role-id> --include-denied --explain  # Include denied events, show explanation
 ```
 
 ### Services
 ```bash
-trailtool services list                        # List all tracked AWS services (# column shows index)
-trailtool services detail <event-source>       # e.g. s3.amazonaws.com — top events, roles, resources
-trailtool services detail --index <n>          # Same, by list position
+trailtool services list                        # List all tracked AWS services
+trailtool services detail <event-source>       # e.g. s3.amazonaws.com
 ```
 
 ### Resources
@@ -109,14 +106,14 @@ Tighten IAM roles by generating policies based on actual usage observed in Cloud
 
 **Role-scoped (lifetime of the role):**
 1. `trailtool roles list --format json` — identify roles to tighten
-2. `trailtool roles policy <RoleName> --format json` — generate least-privilege policy from all observed usage
+2. `trailtool roles policy <role-id> --format json` — generate least-privilege policy from all observed usage
 3. Compare the generated policy with the current Terraform `aws_iam_role_policy` or `aws_iam_policy` resource
 4. Propose a PR that narrows permissions to actual usage
 
 **Session-scoped (a specific recording window):**
 1. Run the workflow you want to capture (deploy, migration, agent run, etc.)
 2. `trailtool sessions list --user <email> --days 1` — find the session
-3. `trailtool sessions policy --session <sid> --format json` — generate a policy covering only that session's API calls (the SID is the id column from step 2)
+3. `trailtool sessions policy <sid> --format json`: generate a policy covering only that session's API calls (the SID is the id column from step 2)
 4. Use this as the tightest possible baseline for the specific task
 
 **Options (both variants):**
@@ -132,8 +129,8 @@ Tighten IAM roles by generating policies based on actual usage observed in Cloud
 When a tightened IAM policy blocks legitimate access, use the denied event data to draft a targeted policy fix.
 
 **Steps:**
-1. `trailtool roles detail <RoleName> --format json` — check if the role has denied events
-2. `trailtool roles policy <RoleName> --include-denied --explain --format json` — generate a policy that includes the denied actions
+1. `trailtool roles detail <role-id> --format json` — check if the role has denied events
+2. `trailtool roles policy <role-id> --include-denied --explain --format json` — generate a policy that includes the denied actions
 3. Diff against the current Terraform IAM policy to identify what's missing
 4. Propose a minimal policy addition that grants only the denied actions, scoped to the appropriate resources
 
@@ -145,9 +142,9 @@ If you are an AI agent with credentials vended via `aws login`, you can look up 
 
 **Steps:**
 1. `trailtool sessions list --days 1 --format json` — find sessions with `"session_type": "login"` or `"chained": "← login"` in the output
-2. `trailtool sessions detail --session <sid> --format json` — get your session detail; look for the `login_granted_by_session` attribution
+2. `trailtool sessions detail <sid> --format json`: get your session detail and look for the `login_granted_by_session` attribution
 3. Use the printed drilldown command to inspect the authorizing human session:
-   `trailtool sessions detail --session <sid>`
+   `trailtool sessions detail <sid>`
 
 **Context:** This is useful for self-audit — understanding what credentials you are using, who authorized them, and what the authorizing session has done. It also lets you show a human reviewer the audit trail for a sensitive operation.
 
@@ -157,7 +154,7 @@ When someone uses emergency/break-glass access, compare what they said they woul
 
 **Steps:**
 1. `trailtool sessions list --user <email> --role <break-glass-role> --after <time> --before <time> --format json` — find the specific break-glass session using role name, user, and time range
-2. `trailtool sessions detail --session <sid> --format json` — get the full session: events, resources accessed, services used, denied actions (the SID is the id column from step 1's list)
+2. `trailtool sessions detail <sid> --format json`: get the full session, including events, resources, services, and denied actions (the SID is the id column from step 1's list)
 3. Compare the session activity against the stated justification
 4. Flag discrepancies: actions that don't align with the justification, unexpected services accessed, or resources modified that weren't mentioned
 

@@ -2,6 +2,9 @@
 
 For status and rollout see https://github.com/engseclabs/trailtool/issues/25
 
+> This document records #25 as shipped. Its selector and noun-view behavior is
+> superseded by [Make CLI commands more consistent](noun-ux-and-data-contracts.md).
+
 ## 1. Summary
 
 TrailTool's human-readable output grew organically inside a single 1550-line

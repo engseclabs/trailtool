@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/engseclabs/trailtool/cli/view"
@@ -73,7 +74,7 @@ func printRefNav(ctx context.Context, rctx render.Context, s *store.Store, headi
 	}
 	fmt.Fprintf(rctx.Out, "%s %s: %s at %s\n",
 		src, rctx.Style(render.Header, heading), who, rctx.Style(render.Time, render.Timestamp(target.StartTime, now)))
-	fmt.Fprintf(rctx.Out, "  %s\n", rctx.Style(render.Nav, rctx.Symbol(render.SymNav)+" trailtool sessions detail --session "+view.SidForRefShort(ref)))
+	fmt.Fprintf(rctx.Out, "  %s\n", rctx.Style(render.Nav, rctx.Symbol(render.SymNav)+" trailtool sessions detail "+view.SidForRefShort(ref)))
 }
 
 // printChildRow renders one child/grant session row in the lineage sections:
@@ -91,10 +92,10 @@ func printChildRow(rctx render.Context, child *models.Session, displayRole, ref 
 		child.DurationMinutes,
 		rctx.Style(render.Time, render.Timestamp(child.StartTime, now)))
 	fmt.Fprintf(rctx.Out, "    %s\n",
-		rctx.Style(render.Nav, rctx.Symbol(render.SymNav)+" trailtool sessions detail --session "+view.SidForRefShort(ref)))
+		rctx.Style(render.Nav, rctx.Symbol(render.SymNav)+" trailtool sessions detail "+view.SidForRefShort(ref)))
 }
 
-// resolveSession finds a single session by --session: a sid prefix, or "latest".
+// resolveSession finds a single session by selector: a SID prefix, or "latest".
 // An empty prefix, no match, or an ambiguous prefix each return an actionable
 // error.
 func resolveSession(ctx context.Context, s *store.Store, sel, user string) (*models.Session, error) {
@@ -128,7 +129,7 @@ func resolveSession(ctx context.Context, s *store.Store, sel, user string) (*mod
 			width = len(sel) + 1
 		}
 		label := personLabels(ctx, s)
-		msg := fmt.Sprintf("%d sessions match id %q — use a longer id:\n", len(matches), sel)
+		msg := fmt.Sprintf("%d sessions match id %q: use a longer id:\n", len(matches), sel)
 		for i := range matches {
 			m := &matches[i]
 			msg += fmt.Sprintf("  %s  %s  %s  %s\n",
@@ -138,12 +139,41 @@ func resolveSession(ctx context.Context, s *store.Store, sel, user string) (*mod
 	}
 }
 
-// lookupRole resolves a role by ARN or by name (optionally scoped to an account).
-func lookupRole(ctx context.Context, s *store.Store, nameOrARN, accountID string) (*models.Role, error) {
-	if len(nameOrARN) >= 3 && nameOrARN[:3] == "arn" {
-		return s.GetRole(ctx, CustomerID, nameOrARN)
+// lookupRole resolves the primary short role ID, then the full ARN or an exact
+// role name. --account scopes only the name fallback.
+func lookupRole(ctx context.Context, s *store.Store, selector, accountID string) (*models.Role, error) {
+	if strings.HasPrefix(selector, "arn:") {
+		return s.GetRole(ctx, CustomerID, selector)
 	}
-	return s.GetRoleByName(ctx, CustomerID, nameOrARN, accountID)
+	matches, err := s.FindRolesByRoleIDPrefix(ctx, CustomerID, selector)
+	if err != nil {
+		return nil, err
+	}
+	role, err := resolveRoleIDMatches(selector, matches)
+	if err != nil || role != nil {
+		return role, err
+	}
+	return s.GetRoleByName(ctx, CustomerID, selector, accountID)
+}
+
+func resolveRoleIDMatches(selector string, matches []models.Role) (*models.Role, error) {
+	switch len(matches) {
+	case 0:
+		return nil, nil
+	case 1:
+		return &matches[0], nil
+	default:
+		width := view.RoleIDDisplayWidth(matches)
+		if width <= len(selector) {
+			width = min(len(selector)+1, 16)
+		}
+		msg := fmt.Sprintf("%d roles match id %q: use a longer id:\n", len(matches), selector)
+		for i := range matches {
+			m := &matches[i]
+			msg += fmt.Sprintf("  %s  %s  %s\n", view.ShortRoleID(m, width), m.AccountID, m.ARN)
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
 }
 
 // Debug is bound to the global --debug flag; TRAILTOOL_DEBUG=1 also enables it.

@@ -67,31 +67,28 @@ trailtool people list
 # Sessions
 trailtool sessions list --user alice@example.com --days 7
 trailtool sessions list --user alice@example.com --days 7 --long  # show full role names
-trailtool sessions detail --session k7m2qp          # by id (SID column, prefix ok)
-trailtool sessions detail --session latest
-trailtool sessions detail --session latest --user alice@example.com
-trailtool sessions summarize --session k7m2qp        # requires Bedrock
+trailtool sessions detail k7m2qp          # by id (SID column, prefix ok)
+trailtool sessions detail latest
+trailtool sessions detail latest --user alice@example.com
+trailtool sessions summarize k7m2qp        # requires Bedrock
 
 # Accounts
 trailtool accounts list
 trailtool accounts detail 123456789012
-trailtool accounts detail --index 1      # by list position
 
 # Roles
 trailtool roles list
-trailtool roles detail MyRole
-trailtool roles detail --index 2         # by list position
-trailtool roles policy MyRole
-trailtool roles policy MyRole --include-denied --explain
+trailtool roles detail jlnjlx              # by role ID (prefix ok)
+trailtool roles policy jlnjlx
+trailtool roles policy jlnjlx --include-denied --explain
 
 # Session-scoped policy (tighter: only what this session actually did)
-trailtool sessions policy --session latest
-trailtool sessions policy --session k7m2qp --explain
+trailtool sessions policy latest
+trailtool sessions policy k7m2qp --explain
 
 # Services
 trailtool services list
 trailtool services detail s3.amazonaws.com
-trailtool services detail --index 3      # by list position
 
 # Resources
 trailtool resources list --days 30

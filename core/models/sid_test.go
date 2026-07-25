@@ -5,8 +5,8 @@ import "testing"
 // The sid algorithm is duplicated in ingestor/lib/identity.Sid (write side) and
 // SidForRef here (read side) because the two module trees don't import each
 // other. These golden values pin the algorithm so the copies can't silently
-// drift — a divergence would make the CLI compute a different sid than the
-// ingestor stored, breaking --session lookups and drilldown hints. If you change
+// drift. A divergence would make the CLI compute a different sid than the
+// ingestor stored, breaking positional lookups and drilldown hints. If you change
 // the algorithm, update identity.Sid to match and re-pin both.
 func TestSidForRefGolden(t *testing.T) {
 	cases := map[string]string{
@@ -23,8 +23,8 @@ func TestSidForRefGolden(t *testing.T) {
 
 func TestSidForRefProperties(t *testing.T) {
 	sid := SidForRef("email#alice@example.com|sis#session-1")
-	if len(sid) != sidLength {
-		t.Errorf("sid length = %d, want %d", len(sid), sidLength)
+	if len(sid) != derivedIDLength {
+		t.Errorf("sid length = %d, want %d", len(sid), derivedIDLength)
 	}
 	// Deterministic.
 	if again := SidForRef("email#alice@example.com|sis#session-1"); again != sid {

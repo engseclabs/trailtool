@@ -34,7 +34,7 @@ derived schemas.
 | People | `people list` | `people detail <pid>` | none |
 | Sessions | `sessions list` | `sessions detail <sid-or-latest>` | `summarize <sid-or-latest>`, `policy <sid-or-latest>` |
 | Accounts | `accounts list` | `accounts detail <account-id>` | none |
-| Roles | `roles list` | `roles detail <role-arn>` | `roles policy <role-arn>` |
+| Roles | `roles list` | `roles detail <role-id>` | `roles policy <role-id>` |
 | Services | `services list` | `services detail <event-source>` | none |
 | Resources | `resources list` | `resources detail <rid>` | none |
 
@@ -50,7 +50,7 @@ $ trailtool sessions detail k7m2qp
 $ trailtool sessions summarize latest --user alice@example.com
 $ trailtool sessions policy k7m2qp --include-denied
 $ trailtool accounts detail 123456789012
-$ trailtool roles detail arn:aws:iam::123456789012:role/DeployRole
+$ trailtool roles detail jlnjlx
 $ trailtool services detail lambda.amazonaws.com
 $ trailtool resources detail cx4m7q
 ```
@@ -64,13 +64,13 @@ $ trailtool resources detail cx4m7q
 | Person | `person_key` | PID |
 | Session | `person_key` and session SK | SID |
 | Account | AWS account ID | account ID |
-| Role | role ARN | role ARN |
+| Role | role ARN | role ID |
 | Service | CloudTrail event source | event source |
 | Resource | account ID and normalized identifier | RID |
 
-Role detail and policy also accept an exact role name when it resolves to one
-role. Ambiguous names return candidate ARNs and require a role ARN or
-`--account`.
+Role detail and policy accept an unambiguous role ID prefix. A full role ARN or
+an exact role name also works. Ambiguous names return candidate ARNs and require
+a role ID, full ARN, or `--account`.
 
 Service detail accepts the stored event source. A bare token such as `s3` is
 retried as `s3.amazonaws.com`. TrailTool does not infer aliases such as `ses`
@@ -79,13 +79,14 @@ for `email.amazonaws.com`.
 Friendly labels never define identity. Emails, role names, account labels, and
 resource names may change or collide.
 
-### PID and RID
+### Derived IDs
 
-PID and RID follow the SID pattern: a 16-character lowercase base32 prefix of a
-SHA-256 digest. Type and version prefixes prevent accidental reuse:
+PID, role ID, and RID follow the SID pattern: a 16-character lowercase base32
+prefix of a SHA-256 digest. Type and version prefixes prevent accidental reuse:
 
 ```text
 PID = base32lower(sha256("person:v1\0" + person_key))[:16]
+RoleID = base32lower(sha256("role:v1\0" + role_arn))[:16]
 RID = base32lower(sha256("resource:v1\0" + account_id + "\0" + identifier))[:16]
 ```
 
@@ -96,8 +97,9 @@ accepts any unambiguous prefix:
 - one match: return the entity;
 - multiple matches: return candidates with distinguishing prefixes.
 
-PID and RID are derived. The resolver performs a paginated projection query
-over the customer partition.
+These IDs are derived. Resolvers scan the relevant customer noun partition.
+Role JSON exposes the derived value as `role_selector`, distinct from the AWS
+principal `role_id` stored on sessions.
 
 ### Ordering and columns
 
@@ -111,7 +113,7 @@ order while retaining SID as the tie-breaker.
 | People | `PID PERSON EVENTS LAST SEEN` | `SESSIONS ROLES ACCOUNTS DENIED` |
 | Sessions | essential columns from `cli-output.md` | existing collapsible columns |
 | Accounts | `ACCOUNT ID EVENTS LAST SEEN` | `SESSIONS PEOPLE ROLES SERVICES RESOURCES DENIED` |
-| Roles | `ROLE ARN EVENTS DENIED LAST SEEN` | `SESSIONS PEOPLE` |
+| Roles | `ROLE ID ROLE EVENTS DENIED LAST SEEN` | `ACCOUNT SESSIONS PEOPLE` |
 | Services | `EVENT SOURCE EVENTS DENIED LAST SEEN` | `ROLES RESOURCES PEOPLE SESSIONS ACCOUNTS` |
 | Resources | `RID RESOURCE ACCOUNT EVENTS LAST SEEN` | `TYPE DENIED CLICKOPS ROLES SESSIONS` |
 
@@ -222,7 +224,7 @@ summary.
 
 Role detail includes:
 
-- role name, ARN, account, first seen, and last seen;
+- role ID, role name, ARN, account, first seen, and last seen;
 - events, denied events, people, and sessions;
 - services with counts;
 - resources with counts and event names;
@@ -230,7 +232,8 @@ Role detail includes:
   text;
 - recent sessions and people.
 
-Role names remain convenience aliases. ARN is the displayed identity.
+The role ID is the primary CLI selector. Role names and full ARNs remain
+convenience aliases, and detail output shows the canonical ARN.
 
 ### Services
 
@@ -429,10 +432,11 @@ rows and count.
 ### Commands and views
 
 - Every displayed list selector resolves to one detail record.
-- Prefix tests cover missing, unique, and ambiguous PID, SID, and RID values.
+- Prefix tests cover missing, unique, and ambiguous PID, SID, role ID, and RID
+  values.
 - Cobra tests cover the command matrix and prove `--index` is absent.
 - Golden tests cover every noun at widths 60, 80, 100, and 132.
-- Long role ARNs remain copyable at every width.
+- Role IDs remain copyable at every width.
 - Related sections test `--limit` and `--all`.
 - Denied-detail tests cover the default and `--include-denied-details`.
 - JSON, color, and stdout-purity tests remain green.
