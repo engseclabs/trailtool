@@ -136,8 +136,8 @@ func sampleSessionDetail() *models.SessionDetail {
 func renderSampleSessionDetail(width int, includeDeniedDetails bool) string {
 	detail := sampleSessionDetail()
 	session := &detail.Session
-	timeLine := "2026-07-24T09:00:00Z → 2026-07-24T09:45:00Z (45m) [3h ago]"
 	ctx := ctxFor(width, false, true)
+	timeLine := ctx.Interval(session.StartTime, session.EndTime) + " (45m)"
 	var b strings.Builder
 	b.WriteString(SessionTitleKV(ctx, session, "Alice Example", timeLine))
 	if includeDeniedDetails {
@@ -152,7 +152,6 @@ func renderSampleSessionDetail(width int, includeDeniedDetails bool) string {
 	}
 	b.WriteString(SessionSummary(ctx, session))
 	b.WriteString(SessionRelationships(ctx, detail))
-	b.WriteString(SessionNavigation(ctx, detail))
 	return b.String()
 }
 
@@ -170,14 +169,9 @@ func TestEnrichedDetailsKeepSelectorsAtNarrowWidths(t *testing.T) {
 			t.Fatalf("width %d lost role ARN:\n%s", width, role)
 		}
 		session := renderSampleSessionDetail(width, true)
-		for _, selector := range []string{
-			models.SidForRef(enrichedSessionRef),
-			"trailtool people detail " + models.PIDForPersonKey("email#alice@example.com"),
-			"trailtool resources detail fyf7wfyglmgloz65",
-		} {
-			if !strings.Contains(session, selector) {
-				t.Fatalf("width %d lost %q:\n%s", width, selector, session)
-			}
+		sid := models.SidForRef(enrichedSessionRef)
+		if !strings.Contains(session, sid) {
+			t.Fatalf("width %d lost session SID %q:\n%s", width, sid, session)
 		}
 	}
 }
@@ -211,6 +205,21 @@ func TestDeniedActivityDetailsAreOptIn(t *testing.T) {
 		}
 		if !strings.Contains(output, "Denied Events") {
 			t.Fatalf("%s detail lost denied summary count:\n%s", name, output)
+		}
+	}
+}
+
+func TestEnrichedDetailsOmitExploreSection(t *testing.T) {
+	ctx := ctxFor(132, false, true)
+	outputs := []string{
+		AccountDetail(ctx, sampleAccountDetail(), true),
+		RoleDetail(ctx, sampleRoleDetail(), true),
+		ServiceDetail(ctx, sampleServiceDetail(), true),
+		renderSampleSessionDetail(132, true),
+	}
+	for _, output := range outputs {
+		if strings.Contains(output, "Explore:") {
+			t.Fatalf("detail included Explore section:\n%s", output)
 		}
 	}
 }

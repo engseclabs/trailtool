@@ -53,7 +53,7 @@ func People(ctx render.Context, people []models.Person) string {
 			ident(ctx, shortID(p.PID(), pidWidth)),
 			ident(ctx, p.DisplayLabel()),
 			count(ctx, p.EventsCount),
-			ctx.Style(render.Time, p.LastSeen),
+			ctx.Style(render.Time, ctx.Relative(p.LastSeen)),
 		}
 		if showWide {
 			row = append(row,
@@ -105,7 +105,7 @@ func Accounts(ctx render.Context, accounts []models.Account) string {
 		}
 		row = append(row,
 			count(ctx, a.EventsCount),
-			ctx.Style(render.Time, a.LastSeen),
+			ctx.Style(render.Time, ctx.Relative(a.LastSeen)),
 		)
 		if showWide {
 			row = append(row,
@@ -156,7 +156,7 @@ func Roles(ctx render.Context, roles []models.Role) string {
 			ctx.Truncate(r.Name, roleNameWidth),
 			count(ctx, r.TotalEvents),
 			denied(ctx, r.TotalDeniedEvents),
-			ctx.Style(render.Time, r.LastSeen),
+			ctx.Style(render.Time, ctx.Relative(r.LastSeen)),
 		}
 		if showWide {
 			row = append(row,
@@ -198,7 +198,7 @@ func Services(ctx render.Context, services []models.Service) string {
 			ident(ctx, svc.EventSource),
 			count(ctx, svc.TotalEvents),
 			denied(ctx, svc.TotalDeniedEvents),
-			ctx.Style(render.Time, svc.LastSeen),
+			ctx.Style(render.Time, ctx.Relative(svc.LastSeen)),
 		}
 		if showWide {
 			row = append(row,
@@ -249,7 +249,7 @@ func Resources(ctx render.Context, resources []models.Resource) string {
 			ident(ctx, resourceLabel),
 			r.AccountID,
 			count(ctx, r.TotalEvents),
-			ctx.Style(render.Time, r.LastSeen),
+			ctx.Style(render.Time, ctx.Relative(r.LastSeen)),
 		}
 		if showWide {
 			row = append(row,

@@ -182,11 +182,12 @@ reads every relationship correctly.
 
 ### 4.5 Timestamps (one rule everywhere)
 
-Absolute RFC3339 UTC, with a relative suffix in brackets for recency:
-`2026-07-22T16:43:18Z [5m ago]`. Relative form: `just now`, `Nm ago`, `Nh ago`,
-`yesterday`, `Nd ago` (today's `relativeTime` logic, centralized in
-`render/time.go`). Intervals: `start → end` on a `Time`-styled line. No view
-invents its own timestamp format.
+Key facts use absolute RFC3339 UTC with a relative suffix:
+`2026-07-22T16:43:18Z [5m ago]`. Compact table cells use the relative form:
+`just now`, `Nm ago`, `Nh ago`, `today`, `yesterday`, or `Nd ago`. Date-only
+aggregates render as `YYYY-MM-DD [relative]`. Intervals render
+`start → end [relative end]`. The clock and formatting live in
+`render/time.go`; no view prints a raw human-facing timestamp.
 
 ## 5. Information architecture (per view)
 

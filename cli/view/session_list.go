@@ -2,7 +2,6 @@ package view
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/engseclabs/trailtool/core/models"
 	"github.com/engseclabs/trailtool/internal/render"
@@ -15,9 +14,9 @@ import (
 // unless long is set (existing --long semantics preserved).
 //
 // sidWidth is the shortest unambiguous SID prefix for this list (from
-// SidDisplayWidth); label resolves a person key to a display label. now anchors
-// the WHEN column's relative time (§4.5), injected so tests are deterministic.
-func SessionList(ctx render.Context, sessions []models.Session, sidWidth int, long bool, label func(string) string, now time.Time) string {
+// SidDisplayWidth); label resolves a person key to a display label. Context
+// anchors the WHEN column's relative time (§4.5).
+func SessionList(ctx render.Context, sessions []models.Session, sidWidth int, long bool, label func(string) string) string {
 	if len(sessions) == 0 {
 		return ctx.Empty("No sessions found.") + "\n"
 	}
@@ -57,7 +56,7 @@ func SessionList(ctx render.Context, sessions []models.Session, sidWidth int, lo
 		}
 		row := []string{
 			ident(ctx, ShortSid(sess, sidWidth)),
-			ctx.Style(render.Time, render.Relative(sess.StartTime, now)),
+			ctx.Style(render.Time, ctx.Relative(sess.StartTime)),
 			label(sess.PersonKey),
 			ident(ctx, displayRole),
 		}

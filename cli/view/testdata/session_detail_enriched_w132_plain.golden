@@ -6,7 +6,7 @@ Account:        123456789012
 Type:           WEB
 Internal SK:    sis#session-1
 Anchor:         sis#credential-1
-Time:           2026-07-24T09:00:00Z → 2026-07-24T09:45:00Z (45m) [3h ago]
+Time:           2026-07-24T09:00:00Z → 2026-07-24T09:45:00Z [2h ago] (45m)
 Events:         120 across 1 services
 Resources:      1
 Source IPs:     198.51.100.4, 203.0.113.8
@@ -42,20 +42,12 @@ Cached Summary:
   Updated the worker function through the console.
 
   Model:      anthropic.claude-sonnet
-  Generated:  2026-07-24T10:00:00Z
+  Generated:  2026-07-24T10:00:00Z [2h ago]
 
 Services (1):
   EVENT SOURCE          LAST RELATED
-  lambda.amazonaws.com  2026-07-24T09:44:00Z
+  lambda.amazonaws.com  2h ago
 
 Resources (1):
   RID     RESOURCE                ACCOUNT       LAST RELATED
-  fyf7wf  lambda:function:worker  123456789012  2026-07-24T09:43:00Z
-
-Explore:
-  → trailtool accounts detail 123456789012
-  → trailtool roles detail arn:aws:iam::123456789012:role/DeployRole
-  → trailtool people detail 5nmamaaeshnhs6xu
-  → trailtool services detail lambda.amazonaws.com
-  → trailtool resources detail fyf7wfyglmgloz65
-  → trailtool sessions detail cj6bhlwrp6hfapnw
+  fyf7wf  lambda:function:worker  123456789012  2h ago

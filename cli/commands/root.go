@@ -135,11 +135,12 @@ func resolveSession(ctx context.Context, s *store.Store, sel, user string) (*mod
 			width = len(sel) + 1
 		}
 		label := personLabels(ctx, s)
+		now := time.Now()
 		msg := fmt.Sprintf("%d sessions match id %q: use a longer id:\n", len(matches), sel)
 		for i := range matches {
 			m := &matches[i]
 			msg += fmt.Sprintf("  %s  %s  %s  %s\n",
-				view.ShortSid(m, width), m.StartTime, label(m.PersonKey), m.RoleName)
+				view.ShortSid(m, width), render.Timestamp(m.StartTime, now), label(m.PersonKey), m.RoleName)
 		}
 		return nil, fmt.Errorf("%s", msg)
 	}

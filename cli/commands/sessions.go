@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -90,7 +89,8 @@ func sessionsListCmd() *cobra.Command {
 
 			label := personLabels(ctx, s)
 			sidWidth := view.SidDisplayWidth(sessions)
-			fmt.Print(view.SessionList(renderContext(), sessions, sidWidth, long, label, time.Now()))
+			rctx := renderContext()
+			fmt.Print(view.SessionList(rctx, sessions, sidWidth, long, label))
 			return nil
 		},
 	}
@@ -165,13 +165,13 @@ Examples:
 			}
 
 			rctx := renderContext()
-			now := time.Now()
+			now := rctx.Now
 			label := personLabels(ctx, s)
 
-			// Title + key facts (§5). The time line uses the centralized interval +
-			// relative rule (§4.5); the command owns "now".
-			timeLine := fmt.Sprintf("%s (%dm) [%s]",
-				rctx.Interval(sess.StartTime, sess.EndTime), sess.DurationMinutes, render.Relative(sess.StartTime, now))
+			// Title + key facts (§5). The time line uses the render context's
+			// centralized clock and interval rule (§4.5).
+			timeLine := fmt.Sprintf("%s (%dm)",
+				rctx.Interval(sess.StartTime, sess.EndTime), sess.DurationMinutes)
 			fmt.Print(view.SessionTitleKV(rctx, sess, label(sess.PersonKey), timeLine))
 
 			// Clients (§5.1) — restyle plus the empty-ambiguity note.
@@ -255,7 +255,6 @@ Examples:
 			}
 
 			fmt.Print(view.SessionPolicy(rctx, sess.SessionPolicy))
-			fmt.Print(view.SessionNavigation(rctx, &detail))
 
 			return nil
 		},

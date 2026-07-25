@@ -21,8 +21,8 @@ func AccountDetail(ctx render.Context, detail *models.AccountDetail, includeDeni
 	if a.AccountName != "" {
 		kv.Add("Name", a.AccountName)
 	}
-	kv.Add("First Seen", ctx.Style(render.Time, a.FirstSeen)).
-		Add("Last Seen", ctx.Style(render.Time, a.LastSeen)).
+	kv.Add("First Seen", ctx.Style(render.Time, ctx.Timestamp(a.FirstSeen))).
+		Add("Last Seen", ctx.Style(render.Time, ctx.Timestamp(a.LastSeen))).
 		Add("Events", count(ctx, a.EventsCount)).
 		Add("People", count(ctx, a.PeopleCount)).
 		Add("Sessions", count(ctx, a.SessionsCount)).
@@ -45,7 +45,6 @@ func AccountDetail(ctx render.Context, detail *models.AccountDetail, includeDeni
 	b.WriteString(relatedRoles(ctx, detail.Related.Roles))
 	b.WriteString(relatedServices(ctx, detail.Related.Services))
 	b.WriteString(relatedResources(ctx, detail.Related.Resources))
-	b.WriteString(nounNavigation(ctx, accountDetailCommands(detail)))
 	return b.String()
 }
 
@@ -58,8 +57,8 @@ func RoleDetail(ctx render.Context, detail *models.RoleDetail, includeDeniedDeta
 		Add("Role ID", ctx.Style(render.Ident, r.RoleID())).
 		Add("ARN", ctx.Style(render.Ident, r.ARN)).
 		Add("Account", r.AccountID).
-		Add("First Seen", ctx.Style(render.Time, r.FirstSeen)).
-		Add("Last Seen", ctx.Style(render.Time, r.LastSeen)).
+		Add("First Seen", ctx.Style(render.Time, ctx.Timestamp(r.FirstSeen))).
+		Add("Last Seen", ctx.Style(render.Time, ctx.Timestamp(r.LastSeen))).
 		Add("Total Events", count(ctx, r.TotalEvents)).
 		Add("People", count(ctx, r.PeopleCount)).
 		Add("Sessions", count(ctx, r.SessionsCount))
@@ -78,7 +77,6 @@ func RoleDetail(ctx render.Context, detail *models.RoleDetail, includeDeniedDeta
 	}
 	b.WriteString(relatedSessions(ctx, detail.Related.Sessions))
 	b.WriteString(relatedPeople(ctx, detail.Related.People))
-	b.WriteString(nounNavigation(ctx, roleDetailCommands(detail)))
 	return b.String()
 }
 
@@ -94,8 +92,8 @@ func ServiceDetail(ctx render.Context, detail *models.ServiceDetail, includeDeni
 	if svc.Category != "" {
 		kv.Add("Category", svc.Category)
 	}
-	kv.Add("First Seen", ctx.Style(render.Time, svc.FirstSeen))
-	kv.Add("Last Seen", ctx.Style(render.Time, svc.LastSeen))
+	kv.Add("First Seen", ctx.Style(render.Time, ctx.Timestamp(svc.FirstSeen)))
+	kv.Add("Last Seen", ctx.Style(render.Time, ctx.Timestamp(svc.LastSeen)))
 	kv.Add("Total Events", count(ctx, svc.TotalEvents))
 	kv.Add("Roles", count(ctx, svc.RolesCount))
 	kv.Add("Resources", count(ctx, svc.ResourcesCount))
@@ -116,6 +114,5 @@ func ServiceDetail(ctx render.Context, detail *models.ServiceDetail, includeDeni
 	b.WriteString(relatedAccounts(ctx, detail.Related.Accounts))
 	b.WriteString(relatedPeople(ctx, detail.Related.People))
 	b.WriteString(relatedSessions(ctx, detail.Related.Sessions))
-	b.WriteString(nounNavigation(ctx, serviceDetailCommands(detail)))
 	return b.String()
 }

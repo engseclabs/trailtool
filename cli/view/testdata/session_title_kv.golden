@@ -5,6 +5,6 @@ Role:         AdministratorAccess  (arn:aws:iam::123456789012:role/Administrator
 Account:      123456789012
 Type:         API
 Internal SK:  sis#session-1
-Time:         2026-07-24T09:00:00Z → 2026-07-24T09:45:00Z (45m) [3h ago]
+Time:         2026-07-24T09:00:00Z → 2026-07-24T09:45:00Z [2h ago] (45m)
 Events:       30 across 3 services
 Resources:    0

@@ -109,37 +109,23 @@ func TestGoldenResourceDetail(t *testing.T) {
 	}
 }
 
-func TestNounDetailsIncludeCopyPasteNavigation(t *testing.T) {
-	person := PersonDetail(ctxFor(100, false, true), samplePersonDetail(), false)
-	for _, command := range []string{
-		"trailtool sessions detail " + models.SidForRef("email#alice@example.com|sis#session-1"),
-		"trailtool accounts detail 123456789012",
-		"trailtool roles detail arn:aws:iam::123456789012:role/DeployRole",
-		"trailtool services detail lambda.amazonaws.com",
-		"trailtool resources detail fyf7wfyglmgloz65",
-	} {
-		if !strings.Contains(person, command) {
-			t.Fatalf("person detail missing %q:\n%s", command, person)
-		}
-	}
-
-	resource := ResourceDetail(ctxFor(100, false, true), sampleResourceDetail(), false)
-	for _, command := range []string{
-		"trailtool accounts detail 123456789012",
-		"trailtool people detail 5nmamaaeshnhs6xu",
-		"trailtool sessions detail " + models.SidForRef("email#alice@example.com|sis#session-1"),
-	} {
-		if !strings.Contains(resource, command) {
-			t.Fatalf("resource detail missing %q:\n%s", command, resource)
-		}
-	}
-}
-
 func TestNounDetailsNoColorParity(t *testing.T) {
 	colored := PersonDetail(ctxFor(100, true, true), samplePersonDetail(), true)
 	plain := PersonDetail(ctxFor(100, false, true), samplePersonDetail(), true)
 	if render.StripANSI(colored) != plain {
 		t.Fatal("stripped colored person detail differs from plain output")
+	}
+}
+
+func TestNounDetailsOmitExploreSection(t *testing.T) {
+	ctx := ctxFor(100, false, true)
+	for _, output := range []string{
+		PersonDetail(ctx, samplePersonDetail(), true),
+		ResourceDetail(ctx, sampleResourceDetail(), true),
+	} {
+		if strings.Contains(output, "Explore:") {
+			t.Fatalf("detail included Explore section:\n%s", output)
+		}
 	}
 }
 
