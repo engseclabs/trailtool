@@ -145,7 +145,6 @@ func renderSampleSessionDetail(width int, includeDeniedDetails bool) string {
 	}
 	b.WriteString(SessionClickOps(ctx, session.ClickOpsEventCount, session.ClickOpsEventCounts))
 	b.WriteString(TopEvents(ctx, session.EventCounts))
-	b.WriteString(ResourcesAccessed(ctx, session.ResourcesAccessed))
 	b.WriteString(SessionResourceActivity(ctx, session.ResourceAccesses))
 	if includeDeniedDetails {
 		b.WriteString(SessionDeniedActivity(ctx, session.DeniedResourceAccesses, session.DeniedEventAccesses))
@@ -160,6 +159,18 @@ func TestGoldenEnrichedDetails(t *testing.T) {
 	assertGolden(t, "role_detail_w132_plain", RoleDetail(ctxFor(132, false, true), sampleRoleDetail(), true))
 	assertGolden(t, "service_detail_w132_plain", ServiceDetail(ctxFor(132, false, true), sampleServiceDetail(), true))
 	assertGolden(t, "session_detail_enriched_w132_plain", renderSampleSessionDetail(132, true))
+}
+
+func TestSessionDetailDoesNotDuplicateResourceSummary(t *testing.T) {
+	output := renderSampleSessionDetail(132, false)
+	if strings.Contains(output, "Resources Accessed") {
+		t.Fatal("session detail includes the redundant Resources Accessed section")
+	}
+	for _, section := range []string{"Event to Resource Activity", "Resources (1)"} {
+		if !strings.Contains(output, section) {
+			t.Fatalf("session detail missing %q", section)
+		}
+	}
 }
 
 func TestEnrichedDetailsKeepSelectorsAtNarrowWidths(t *testing.T) {

@@ -118,11 +118,6 @@ func TopEvents(ctx render.Context, counts map[string]int) string {
 	return countTable(ctx, "Top Events", "EVENT", counts)
 }
 
-// ResourcesAccessed renders the Resources Accessed section, count-descending.
-func ResourcesAccessed(ctx render.Context, counts map[string]int) string {
-	return countTable(ctx, "Resources Accessed", "RESOURCE", counts)
-}
-
 // countRow is one name→count pair for a count-descending table.
 type countRow struct {
 	name  string

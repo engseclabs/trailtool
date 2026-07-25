@@ -182,9 +182,8 @@ Examples:
 				fmt.Print(view.DeniedEvents(rctx, sess.DeniedEventCount, sess.DeniedEventCounts))
 			}
 			fmt.Print(view.SessionClickOps(rctx, sess.ClickOpsEventCount, sess.ClickOpsEventCounts))
-			// Top Events / Resources Accessed now sort count-descending (§5).
+			// Top Events sort count-descending (§5).
 			fmt.Print(view.TopEvents(rctx, sess.EventCounts))
-			fmt.Print(view.ResourcesAccessed(rctx, sess.ResourcesAccessed))
 			fmt.Print(view.SessionResourceActivity(rctx, sess.ResourceAccesses))
 			if includeDeniedDetails {
 				fmt.Print(view.SessionDeniedActivity(rctx, sess.DeniedResourceAccesses, sess.DeniedEventAccesses))

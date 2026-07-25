@@ -208,9 +208,10 @@ policy**. Views differ in which sections appear, never in order or style.
   list **count-descending**.
 - **`sessions detail`:** `Title` (user), `KV` (role, ARN, account, type, SID,
   time, events), `Clients (N)` section (§5.1), Session Tags, Denied Events, Top
-  Events (**count desc**, fixes today's alphabetical sort), Resources Accessed,
-  agent/login/parent/child lineage (word-led, §4.3), Session Policy (indented
-  JSON). Order preserved from current code; only styling and sorting change.
+  Events (**count desc**, fixes today's alphabetical sort), Event to Resource
+  Activity, related Services and Resources, agent/login/parent/child lineage
+  (word-led, §4.3), Session Policy (indented JSON). Resource counts remain in the
+  header; related Resources own navigation.
 - **`status`:** three `Status` lines to **stdout** (`✓/⚠/✗` plus label); every
   diagnostic detail to **stderr**, emitted *after* its own status line so
   `Data access: FAIL` precedes its detail (fixes today's interleaving).

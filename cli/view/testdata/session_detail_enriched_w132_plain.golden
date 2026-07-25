@@ -26,10 +26,6 @@ Top Events (2):
   Invoke                 80
   UpdateFunctionCode     40
 
-Resources Accessed (1):
-  RESOURCE                COUNT
-  lambda:function:worker    120
-
 Event to Resource Activity (1):
   SERVICE               EVENT   RESOURCE                ACCOUNT       COUNT
   lambda.amazonaws.com  Invoke  lambda:function:worker  123456789012     80
