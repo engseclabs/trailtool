@@ -11,6 +11,7 @@ package aggregator
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -37,6 +38,7 @@ type Tables struct {
 	People        string
 	Sessions      string
 	Accounts      string
+	Relations     string
 	IdentityLinks string
 }
 
@@ -102,6 +104,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	people := make(map[string]*types.DynamoDBPerson)
 	sessions := make(map[string]*types.DynamoDBSession) // keyed by session ref person_key|sk
 	accounts := make(map[string]*types.DynamoDBAccount)
+	relations := make(relationCollector)
 
 	// Tracking sets for unique counts
 	rolePeople := make(map[string]map[string]bool)
@@ -337,6 +340,18 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 					addToSet(accountResources, accountID, resource)
 				}
 			}
+
+			recordEventRelations(
+				relations,
+				ns,
+				event.EventTime,
+				personKey,
+				sessRef,
+				accountID,
+				roleARN,
+				event.EventSource,
+				resourceList,
+			)
 		}
 
 		// Parent bookkeeping for chained child sessions: bump chained counters
@@ -469,7 +484,13 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		var err error
 		sess.Sid = identity.Sid(sess.PersonKey, sess.SK)
 		if strings.HasPrefix(sess.SK, "win#") {
-			err = ddblib.WriteWindowedSession(ctx, ddbClient, cfg.Tables.Sessions, sess, cfg.idleGap())
+			var persisted *types.DynamoDBSession
+			persisted, err = ddblib.WriteWindowedSessionResolved(ctx, ddbClient, cfg.Tables.Sessions, sess, cfg.idleGap())
+			if err == nil {
+				oldRef := identity.SessionRef(sess.PersonKey, sess.SK)
+				newRef := identity.SessionRef(persisted.PersonKey, persisted.SK)
+				relations.replaceID(ddblib.RelationKindSession, oldRef, newRef)
+			}
 		} else {
 			err = ddblib.WriteSession(ctx, ddbClient, cfg.Tables.Sessions, sess)
 		}
@@ -523,7 +544,13 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		}
 	}
 
-	log.Printf("Processed %d roles, %d services, %d resources, %d people, %d sessions, %d accounts",
-		len(roles), len(services), len(resourceMap), len(people), len(sessions), len(accounts))
+	if cfg.Tables.Relations != "" {
+		if err := ddblib.WriteRelations(ctx, ddbClient, cfg.Tables.Relations, relations.edges()); err != nil {
+			return sessions, fmt.Errorf("write noun relations: %w", err)
+		}
+	}
+
+	log.Printf("Processed %d roles, %d services, %d resources, %d people, %d sessions, %d accounts, %d relation edges",
+		len(roles), len(services), len(resourceMap), len(people), len(sessions), len(accounts), len(relations))
 	return sessions, nil
 }

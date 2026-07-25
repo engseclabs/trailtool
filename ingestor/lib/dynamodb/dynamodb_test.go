@@ -381,6 +381,27 @@ func TestWriteWindowedSessionCreateThenExtend(t *testing.T) {
 	}
 }
 
+func TestWriteWindowedSessionResolvedReturnsStickySurvivor(t *testing.T) {
+	store := newFakeStore()
+	gap := 30 * time.Minute
+
+	first := winSession("win#AIDADEPLOYBOT1234567#2026-07-15T10:00:00Z", "2026-07-15T10:00:00Z", "2026-07-15T10:10:00Z", 2, 1)
+	if err := WriteWindowedSession(context.Background(), store, "sessions", first, gap); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	later := winSession("win#AIDADEPLOYBOT1234567#2026-07-15T10:20:00Z", "2026-07-15T10:20:00Z", "2026-07-15T10:25:00Z", 3, 1)
+	resolved, err := WriteWindowedSessionResolved(context.Background(), store, "sessions", later, gap)
+	if err != nil {
+		t.Fatalf("resolved write: %v", err)
+	}
+	if resolved.SK != first.SK {
+		t.Fatalf("resolved SK = %q, want sticky SK %q", resolved.SK, first.SK)
+	}
+	if resolved.EventsCount != 5 {
+		t.Fatalf("resolved events = %d, want 5", resolved.EventsCount)
+	}
+}
+
 func TestWriteWindowedSessionBridgeDeletesFolded(t *testing.T) {
 	store := newFakeStore()
 	gap := 30 * time.Minute
