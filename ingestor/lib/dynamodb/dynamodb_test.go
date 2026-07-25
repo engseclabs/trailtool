@@ -318,13 +318,14 @@ func TestBatchGetIdentityLinksRetriesUnprocessedKeys(t *testing.T) {
 // ErrorMessage); those must survive a cross-batch merge, with counts summed.
 func TestMergeResourceAccessesPreservesPolicyFields(t *testing.T) {
 	denied := types.ResourceAccess{
-		Resource:     "s3:bucket:secret",
-		Service:      "s3.amazonaws.com",
-		EventName:    "GetObject",
-		Count:        1,
-		PolicyARN:    "arn:aws:iam::111111111111:policy/DenyAll",
-		PolicyType:   "SCP",
-		ErrorMessage: "explicit deny in SCP",
+		Resource:          "s3:bucket:secret",
+		ResourceAccountID: "222222222222",
+		Service:           "s3.amazonaws.com",
+		EventName:         "GetObject",
+		Count:             1,
+		PolicyARN:         "arn:aws:iam::111111111111:policy/DenyAll",
+		PolicyType:        "SCP",
+		ErrorMessage:      "explicit deny in SCP",
 	}
 	// Second batch: same denied access seen again (empty ErrorMessage this time).
 	again := denied
@@ -346,6 +347,23 @@ func TestMergeResourceAccessesPreservesPolicyFields(t *testing.T) {
 	}
 	if got.ErrorMessage != denied.ErrorMessage {
 		t.Errorf("ErrorMessage = %q, want %q (first non-empty)", got.ErrorMessage, denied.ErrorMessage)
+	}
+}
+
+func TestMergeResourceAccessesKeepsResourceAccountsDistinct(t *testing.T) {
+	first := types.ResourceAccess{
+		Resource:          "lambda:function:shared-function",
+		ResourceAccountID: "111111111111",
+		Service:           "lambda.amazonaws.com",
+		EventName:         "Invoke",
+		Count:             1,
+	}
+	second := first
+	second.ResourceAccountID = "222222222222"
+
+	got := MergeResourceAccesses([]types.ResourceAccess{first}, []types.ResourceAccess{second})
+	if len(got) != 2 {
+		t.Fatalf("merged accesses = %#v, want two account-qualified entries", got)
 	}
 }
 

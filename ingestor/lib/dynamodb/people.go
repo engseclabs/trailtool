@@ -70,6 +70,8 @@ func MergePerson(existing, incoming *types.DynamoDBPerson) *types.DynamoDBPerson
 	merged.DisplayName = firstNonEmpty(existing.DisplayName, incoming.DisplayName)
 	merged.EmailsSeen = MergeUniqueStrings(existing.EmailsSeen, incoming.EmailsSeen)
 	merged.EventsCount = existing.EventsCount + incoming.EventsCount
+	merged.DeniedEventCount = existing.DeniedEventCount + incoming.DeniedEventCount
+	merged.TopDeniedEventNames = MergeIntMaps(existing.TopDeniedEventNames, incoming.TopDeniedEventNames)
 	merged.SessionsCount = maxInt(existing.SessionsCount, incoming.SessionsCount)
 	merged.AccountsCount = maxInt(existing.AccountsCount, incoming.AccountsCount)
 	merged.RolesCount = maxInt(existing.RolesCount, incoming.RolesCount)

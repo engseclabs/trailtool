@@ -10,19 +10,21 @@ import (
 // the tier-prefixed person key (idc#…, email#…, iamuser#…, root#…) resolved by
 // the ingestor's identity tiers.
 type Person struct {
-	PersonKey      string   `json:"person_key" dynamodbav:"person_key"`
-	Tier           int      `json:"tier,omitempty" dynamodbav:"tier"`
-	Email          string   `json:"email,omitempty" dynamodbav:"email"`
-	EmailsSeen     []string `json:"emails_seen,omitempty" dynamodbav:"emails_seen"`
-	DisplayName    string   `json:"display_name,omitempty" dynamodbav:"display_name"`
-	FirstSeen      string   `json:"first_seen" dynamodbav:"first_seen"`
-	LastSeen       string   `json:"last_seen" dynamodbav:"last_seen"`
-	SessionsCount  int      `json:"sessions_count" dynamodbav:"sessions_count"`
-	AccountsCount  int      `json:"accounts_count" dynamodbav:"accounts_count"`
-	RolesCount     int      `json:"roles_count" dynamodbav:"roles_count"`
-	ServicesCount  int      `json:"services_count" dynamodbav:"services_count"`
-	ResourcesCount int      `json:"resources_count" dynamodbav:"resources_count"`
-	EventsCount    int      `json:"events_count" dynamodbav:"events_count"`
+	PersonKey           string         `json:"person_key" dynamodbav:"person_key"`
+	Tier                int            `json:"tier,omitempty" dynamodbav:"tier"`
+	Email               string         `json:"email,omitempty" dynamodbav:"email"`
+	EmailsSeen          []string       `json:"emails_seen,omitempty" dynamodbav:"emails_seen"`
+	DisplayName         string         `json:"display_name,omitempty" dynamodbav:"display_name"`
+	FirstSeen           string         `json:"first_seen" dynamodbav:"first_seen"`
+	LastSeen            string         `json:"last_seen" dynamodbav:"last_seen"`
+	SessionsCount       int            `json:"sessions_count" dynamodbav:"sessions_count"`
+	AccountsCount       int            `json:"accounts_count" dynamodbav:"accounts_count"`
+	RolesCount          int            `json:"roles_count" dynamodbav:"roles_count"`
+	ServicesCount       int            `json:"services_count" dynamodbav:"services_count"`
+	ResourcesCount      int            `json:"resources_count" dynamodbav:"resources_count"`
+	EventsCount         int            `json:"events_count" dynamodbav:"events_count"`
+	DeniedEventCount    int            `json:"denied_event_count,omitempty" dynamodbav:"denied_event_count"`
+	TopDeniedEventNames map[string]int `json:"top_denied_event_names,omitempty" dynamodbav:"top_denied_event_names"`
 }
 
 // DisplayLabel returns the friendliest identifier for the person: display
@@ -65,18 +67,18 @@ type Session struct {
 	EventsCount int `json:"events_count" dynamodbav:"events_count"`
 	// ServiceDrivenEventCount counts events an AWS service made with the
 	// human's credentials (userIdentity.invokedBy set).
-	ServiceDrivenEventCount int              `json:"service_driven_event_count,omitempty" dynamodbav:"service_driven_event_count"`
-	ServicesCount           int              `json:"services_count" dynamodbav:"services_count"`
-	ResourcesCount          int              `json:"resources_count" dynamodbav:"resources_count"`
-	SourceIPs               []string          `json:"source_ips" dynamodbav:"source_ips"`
+	ServiceDrivenEventCount int      `json:"service_driven_event_count,omitempty" dynamodbav:"service_driven_event_count"`
+	ServicesCount           int      `json:"services_count" dynamodbav:"services_count"`
+	ResourcesCount          int      `json:"resources_count" dynamodbav:"resources_count"`
+	SourceIPs               []string `json:"source_ips" dynamodbav:"source_ips"`
 	// Clients are the per-client parsed user-agent aggregates (replaces the old
 	// user_agents []string). Store reads run through Session.Normalize, so this
 	// serializes as [] (never null) even for historical rows that predate client
 	// aggregation and carry no "clients" attribute.
-	Clients                 []ClientAggregate `json:"clients" dynamodbav:"clients"`
-	EventCounts             map[string]int    `json:"event_counts" dynamodbav:"event_counts"`
-	ResourcesAccessed       map[string]int   `json:"resources_accessed" dynamodbav:"resources_accessed"`
-	ResourceAccesses        []ResourceAccess `json:"resource_accesses,omitempty" dynamodbav:"resource_accesses"`
+	Clients           []ClientAggregate `json:"clients" dynamodbav:"clients"`
+	EventCounts       map[string]int    `json:"event_counts" dynamodbav:"event_counts"`
+	ResourcesAccessed map[string]int    `json:"resources_accessed" dynamodbav:"resources_accessed"`
+	ResourceAccesses  []ResourceAccess  `json:"resource_accesses,omitempty" dynamodbav:"resource_accesses"`
 
 	// Access Denied tracking
 	DeniedEventCount        int              `json:"denied_event_count,omitempty" dynamodbav:"denied_event_count"`
@@ -248,13 +250,14 @@ type ClientAggregate struct {
 
 // ResourceAccess represents a detailed resource access record
 type ResourceAccess struct {
-	Resource     string `json:"resource" dynamodbav:"resource"`
-	Service      string `json:"service" dynamodbav:"service"`
-	EventName    string `json:"event_name" dynamodbav:"event_name"`
-	Count        int    `json:"count" dynamodbav:"count"`
-	PolicyARN    string `json:"policy_arn,omitempty" dynamodbav:"policy_arn"`
-	PolicyType   string `json:"policy_type,omitempty" dynamodbav:"policy_type"`
-	ErrorMessage string `json:"error_message,omitempty" dynamodbav:"error_message"`
+	Resource          string `json:"resource" dynamodbav:"resource"`
+	ResourceAccountID string `json:"resource_account_id,omitempty" dynamodbav:"resource_account_id"`
+	Service           string `json:"service" dynamodbav:"service"`
+	EventName         string `json:"event_name" dynamodbav:"event_name"`
+	Count             int    `json:"count" dynamodbav:"count"`
+	PolicyARN         string `json:"policy_arn,omitempty" dynamodbav:"policy_arn"`
+	PolicyType        string `json:"policy_type,omitempty" dynamodbav:"policy_type"`
+	ErrorMessage      string `json:"error_message,omitempty" dynamodbav:"error_message"`
 }
 
 // EventAccess represents a detailed event access record (for events without specific resources)
@@ -269,13 +272,14 @@ type EventAccess struct {
 
 // ResourceAccessItem tracks resource access details for role aggregation
 type ResourceAccessItem struct {
-	Resource     string `json:"resource" dynamodbav:"resource"`
-	Service      string `json:"service" dynamodbav:"service"`
-	EventName    string `json:"event_name" dynamodbav:"event_name"`
-	Count        int    `json:"count" dynamodbav:"count"`
-	PolicyARN    string `json:"policy_arn,omitempty" dynamodbav:"policy_arn"`
-	PolicyType   string `json:"policy_type,omitempty" dynamodbav:"policy_type"`
-	ErrorMessage string `json:"error_message,omitempty" dynamodbav:"error_message"`
+	Resource          string `json:"resource" dynamodbav:"resource"`
+	ResourceAccountID string `json:"resource_account_id,omitempty" dynamodbav:"resource_account_id"`
+	Service           string `json:"service" dynamodbav:"service"`
+	EventName         string `json:"event_name" dynamodbav:"event_name"`
+	Count             int    `json:"count" dynamodbav:"count"`
+	PolicyARN         string `json:"policy_arn,omitempty" dynamodbav:"policy_arn"`
+	PolicyType        string `json:"policy_type,omitempty" dynamodbav:"policy_type"`
+	ErrorMessage      string `json:"error_message,omitempty" dynamodbav:"error_message"`
 }
 
 // ClickOpsAccess represents a ClickOps (web console) modification to a resource
@@ -290,11 +294,12 @@ type ClickOpsAccess struct {
 
 // Resource represents an aggregated resource record from the resources-aggregated table
 type Resource struct {
-	Identifier string `json:"identifier" dynamodbav:"identifier"`
-	Type       string `json:"type" dynamodbav:"type"`
-	ARN        string `json:"arn,omitempty" dynamodbav:"arn"`
-	Name       string `json:"name" dynamodbav:"name"`
-	AccountID  string `json:"account_id" dynamodbav:"account_id"`
+	ResourceKey string `json:"-" dynamodbav:"resource_key"`
+	Identifier  string `json:"identifier" dynamodbav:"identifier"`
+	Type        string `json:"type" dynamodbav:"type"`
+	ARN         string `json:"arn,omitempty" dynamodbav:"arn"`
+	Name        string `json:"name" dynamodbav:"name"`
+	AccountID   string `json:"account_id" dynamodbav:"account_id"`
 
 	// Aggregated counts
 	TotalEvents   int            `json:"total_events" dynamodbav:"total_events"`
@@ -338,12 +343,16 @@ type Account struct {
 	LastSeen    string `json:"last_seen" dynamodbav:"last_seen"`
 
 	// Aggregated counts
-	PeopleCount    int `json:"people_count" dynamodbav:"people_count"`
-	SessionsCount  int `json:"sessions_count" dynamodbav:"sessions_count"`
-	RolesCount     int `json:"roles_count" dynamodbav:"roles_count"`
-	ServicesCount  int `json:"services_count" dynamodbav:"services_count"`
-	ResourcesCount int `json:"resources_count" dynamodbav:"resources_count"`
-	EventsCount    int `json:"events_count" dynamodbav:"events_count"`
+	PeopleCount         int            `json:"people_count" dynamodbav:"people_count"`
+	SessionsCount       int            `json:"sessions_count" dynamodbav:"sessions_count"`
+	RolesCount          int            `json:"roles_count" dynamodbav:"roles_count"`
+	ServicesCount       int            `json:"services_count" dynamodbav:"services_count"`
+	ResourcesCount      int            `json:"resources_count" dynamodbav:"resources_count"`
+	EventsCount         int            `json:"events_count" dynamodbav:"events_count"`
+	TopEventNames       map[string]int `json:"top_event_names,omitempty" dynamodbav:"top_event_names"`
+	TotalDeniedEvents   int            `json:"total_denied_events,omitempty" dynamodbav:"total_denied_events"`
+	TopDeniedEventNames map[string]int `json:"top_denied_event_names,omitempty" dynamodbav:"top_denied_event_names"`
+	ClickOpsCount       int            `json:"clickops_count,omitempty" dynamodbav:"clickops_count"`
 }
 
 // Service represents an aggregated AWS service record from the services-aggregated table
