@@ -18,6 +18,13 @@ type SessionStore interface {
 	TransactWriteItems(ctx context.Context, params *dynamodb.TransactWriteItemsInput, optFns ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
 }
 
+// EntityStore is the subset of DynamoDB used by aggregate noun writes.
+// *dynamodb.Client satisfies it.
+type EntityStore interface {
+	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+}
+
 // LinkGetter is the subset of the DynamoDB client used by BatchGetIdentityLinks,
 // abstracted so the UnprocessedKeys retry loop is unit-testable.
 // *dynamodb.Client satisfies it.
