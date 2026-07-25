@@ -29,9 +29,11 @@ func TestIndexFlagsAreRemoved(t *testing.T) {
 
 func TestCanonicalDetailCommandsRequireOneSelector(t *testing.T) {
 	for name, cmd := range map[string]*cobra.Command{
-		"accounts": accountsDetailCmd(),
-		"roles":    rolesDetailCmd(),
-		"services": servicesDetailCmd(),
+		"accounts":  accountsDetailCmd(),
+		"people":    peopleDetailCmd(),
+		"resources": resourcesDetailCmd(),
+		"roles":     rolesDetailCmd(),
+		"services":  servicesDetailCmd(),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := cmd.Args(cmd, nil); err == nil {
@@ -44,6 +46,61 @@ func TestCanonicalDetailCommandsRequireOneSelector(t *testing.T) {
 				t.Fatal("multiple selectors were accepted")
 			}
 		})
+	}
+}
+
+func TestPIDAndRIDMatchResolution(t *testing.T) {
+	people := []models.Person{
+		{Pid: "abcdef1", PersonKey: "email#one@example.com"},
+		{Pid: "abcdef2", PersonKey: "email#two@example.com"},
+	}
+	if _, err := resolvePersonMatches("missing", nil); err == nil || !strings.Contains(err.Error(), "people list") {
+		t.Fatalf("person no-match error = %v", err)
+	}
+	if got, err := resolvePersonMatches("abcdef1", people[:1]); err != nil || got.PersonKey != people[0].PersonKey {
+		t.Fatalf("person unique match = %#v, %v", got, err)
+	}
+	if _, err := resolvePersonMatches("abcdef", people); err == nil ||
+		!strings.Contains(err.Error(), "abcdef1") ||
+		!strings.Contains(err.Error(), "abcdef2") {
+		t.Fatalf("person ambiguous error = %v", err)
+	}
+
+	resources := []models.Resource{
+		{Rid: "uvwxyz1", AccountID: "111", Identifier: "lambda:function:worker"},
+		{Rid: "uvwxyz2", AccountID: "222", Identifier: "lambda:function:worker"},
+	}
+	if _, err := resolveResourceMatches("missing", nil); err == nil || !strings.Contains(err.Error(), "resources list") {
+		t.Fatalf("resource no-match error = %v", err)
+	}
+	if got, err := resolveResourceMatches("uvwxyz1", resources[:1]); err != nil || got.AccountID != "111" {
+		t.Fatalf("resource unique match = %#v, %v", got, err)
+	}
+	if _, err := resolveResourceMatches("uvwxyz", resources); err == nil ||
+		!strings.Contains(err.Error(), "uvwxyz1") ||
+		!strings.Contains(err.Error(), "uvwxyz2") {
+		t.Fatalf("resource ambiguous error = %v", err)
+	}
+}
+
+func TestDetailRelationLimitFlags(t *testing.T) {
+	cmd := peopleDetailCmd()
+	if got, err := detailRelationLimit(cmd, defaultDetailLimit, false); err != nil || got != defaultDetailLimit {
+		t.Fatalf("default limit = %d, %v", got, err)
+	}
+	if got, err := detailRelationLimit(cmd, defaultDetailLimit, true); err != nil || got != 0 {
+		t.Fatalf("--all limit = %d, %v", got, err)
+	}
+	if _, err := detailRelationLimit(cmd, 0, false); err == nil || !strings.Contains(err.Error(), "at least 1") {
+		t.Fatalf("zero limit error = %v", err)
+	}
+
+	cmd = resourcesDetailCmd()
+	if err := cmd.Flags().Set("limit", "3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := detailRelationLimit(cmd, 3, true); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("combined flags error = %v", err)
 	}
 }
 

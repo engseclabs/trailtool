@@ -24,7 +24,10 @@ All commands support `--format json` for structured output. Use JSON when you ne
 ### People
 ```bash
 trailtool people list                          # List all tracked identities
+trailtool people detail <pid>                  # Identity, activity, and related nouns
 ```
+
+Use the PID shown by `people list`. An unambiguous prefix is accepted.
 
 ### Sessions
 ```bash
@@ -82,7 +85,12 @@ trailtool resources list --days 30             # Resources seen in last 30 days
 trailtool resources list --clickops            # Resources created/modified via AWS console
 trailtool resources list --clickops --service iam  # ClickOps filtered by service
 trailtool resources list --service s3 --days 7     # Filter by service and recency
+trailtool resources detail <rid>                   # Activity, relationships, and ClickOps history
 ```
+
+Use the RID shown by `resources list`. An unambiguous prefix is accepted.
+People and resource detail commands show up to 10 rows per related section by
+default. Pass `--limit <n>` to change the bound or `--all` to show every row.
 
 ## Workflows
 
