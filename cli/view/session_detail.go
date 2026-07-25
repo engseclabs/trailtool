@@ -10,7 +10,7 @@ import (
 
 // Session-detail sections (§5), each a pure render of already-fetched models.
 // The command layer orchestrates the fixed section order and interleaves the
-// store-backed lineage navigation (printRefNav), which cannot live here because
+// store-backed lineage output (printRefNav), which cannot live here because
 // it touches the store. Order and semantics match the shipped detail view; only
 // styling and the Top-Events sort change.
 

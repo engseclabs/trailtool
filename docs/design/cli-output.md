@@ -211,7 +211,7 @@ policy**. Views differ in which sections appear, never in order or style.
   Events (**count desc**, fixes today's alphabetical sort), Event to Resource
   Activity, related Services and Resources, agent/login/parent/child lineage
   (word-led, §4.3), Session Policy (indented JSON). Resource counts remain in the
-  header; related Resources own navigation.
+  header; the Resources section contains the resource records.
 - **`status`:** three `Status` lines to **stdout** (`✓/⚠/✗` plus label); every
   diagnostic detail to **stderr**, emitted *after* its own status line so
   `Data access: FAIL` precedes its detail (fixes today's interleaving).
