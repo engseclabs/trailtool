@@ -71,7 +71,7 @@ func resourcesListCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().IntVar(&days, "days", 0, "Filter to last N days")
+	cmd.Flags().IntVar(&days, "days", 0, "Filter resources last seen in the last N days; activity totals remain lifetime totals")
 	cmd.Flags().StringVar(&serviceType, "service", "", "Filter by AWS service type (e.g. s3, lambda, ec2)")
 	cmd.Flags().BoolVar(&clickops, "clickops", false, "Only show resources created/modified via web console")
 	cmd.Flags().IntVar(&minClickOps, "min-clickops", 1, "Minimum ClickOps events (used with --clickops)")

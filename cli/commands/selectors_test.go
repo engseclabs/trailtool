@@ -202,6 +202,24 @@ func TestSessionCommandsAcceptOnePositionalSelector(t *testing.T) {
 			if cmd.Flag("session") != nil {
 				t.Fatal("removed --session flag is still registered")
 			}
+			if name == "summarize" && cmd.Flag("refresh") == nil {
+				t.Fatal("summarize --refresh flag is missing")
+			}
 		})
+	}
+}
+
+func TestLatestSessionUsesStartTimeThenSID(t *testing.T) {
+	sessions := []models.Session{
+		{Sid: "z", StartTime: "2025-01-01T00:00:00Z"},
+		{Sid: "a", StartTime: "2026-07-24T12:00:00Z"},
+		{Sid: "b", StartTime: "2026-07-24T12:00:00Z"},
+	}
+	got, err := latestSession(sessions)
+	if err != nil {
+		t.Fatalf("latestSession() error = %v", err)
+	}
+	if got.Sid != "b" {
+		t.Fatalf("latest SID = %q, want b", got.Sid)
 	}
 }

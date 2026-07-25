@@ -365,6 +365,14 @@ type DynamoDBSession struct {
 	DeniedResourceAccesses  []ResourceAccess `dynamodbav:"denied_resource_accesses,omitempty"`
 	DeniedEventAccesses     []EventAccess    `dynamodbav:"denied_event_accesses,omitempty"`
 
+	// AI summary cache. New activity invalidates the digest without requiring
+	// the ingestor to invoke a model.
+	Summary            string `dynamodbav:"summary,omitempty"`
+	SummaryGeneratedAt string `dynamodbav:"summary_generated_at,omitempty"`
+	SummaryModel       string `dynamodbav:"summary_model,omitempty"`
+	SummaryTokensUsed  int    `dynamodbav:"summary_tokens_used,omitempty"`
+	SummaryInputDigest string `dynamodbav:"summary_input_digest,omitempty"`
+
 	// ClickOps tracking — console create/modify operations in this session
 	ClickOpsEventCount  int            `dynamodbav:"clickops_event_count,omitempty"`
 	ClickOpsEventCounts map[string]int `dynamodbav:"clickops_event_counts,omitempty"`

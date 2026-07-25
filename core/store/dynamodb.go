@@ -40,7 +40,12 @@ func NewStore(ctx context.Context) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
-	return &Store{client: dynamodb.NewFromConfig(cfg)}, nil
+	return NewStoreFromConfig(cfg), nil
+}
+
+// NewStoreFromConfig creates a Store from an already-loaded AWS config.
+func NewStoreFromConfig(cfg aws.Config) *Store {
+	return &Store{client: dynamodb.NewFromConfig(cfg)}
 }
 
 // explainError wraps a DynamoDB error: when a 1.0 table is missing because the
@@ -392,6 +397,57 @@ func (s *Store) ListSessions(ctx context.Context, customerID, user string, filte
 	return sessions, personKeys, nil
 }
 
+// SaveSessionSummary persists the generated summary metadata without replacing
+// activity fields that the ingestor may be updating concurrently.
+func (s *Store) SaveSessionSummary(ctx context.Context, customerID string, session *models.Session) error {
+	input, err := sessionSummaryUpdateInput(customerID, session)
+	if err != nil {
+		return err
+	}
+	if _, err := s.client.UpdateItem(ctx, input); err != nil {
+		return s.explainError(ctx, err, "save session summary")
+	}
+	return nil
+}
+
+func sessionSummaryUpdateInput(customerID string, session *models.Session) (*dynamodb.UpdateItemInput, error) {
+	if session.PersonKey == "" || session.SK == "" {
+		return nil, fmt.Errorf("session is missing its storage key")
+	}
+	pk := session.PK
+	if pk == "" {
+		pk = customerID + "#" + session.PersonKey
+	}
+	values, err := attributevalue.MarshalMap(map[string]interface{}{
+		":summary":      session.Summary,
+		":generated_at": session.SummaryGeneratedAt,
+		":model":        session.SummaryModel,
+		":tokens_used":  session.SummaryTokensUsed,
+		":input_digest": session.SummaryInputDigest,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal session summary: %w", err)
+	}
+	return &dynamodb.UpdateItemInput{
+		TableName: aws.String(SessionsTableName),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: pk},
+			"sk": &types.AttributeValueMemberS{Value: session.SK},
+		},
+		UpdateExpression: aws.String(
+			"SET #summary = :summary, #generated_at = :generated_at, #model = :model, #tokens_used = :tokens_used, #input_digest = :input_digest",
+		),
+		ExpressionAttributeNames: map[string]string{
+			"#summary":      "summary",
+			"#generated_at": "summary_generated_at",
+			"#model":        "summary_model",
+			"#tokens_used":  "summary_tokens_used",
+			"#input_digest": "summary_input_digest",
+		},
+		ExpressionAttributeValues: values,
+	}, nil
+}
+
 // ResourceFilter controls which resources are returned by ListResources
 type ResourceFilter struct {
 	ClickOpsOnly     bool   // Only return resources with ClickOps activity
@@ -442,6 +498,7 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 
 			// ClickOps filters
 			if filter.ClickOpsOnly {
+				filterClickOpsActivity(&resource, filter.StartTime, filter.EndTime)
 				if len(resource.ClickOpsAccesses) == 0 {
 					continue
 				}
@@ -451,23 +508,6 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 				}
 				if resource.ClickOpsCount < minCount {
 					continue
-				}
-				// Time range filter on ClickOps accesses
-				if filter.StartTime != "" || filter.EndTime != "" {
-					hasMatch := false
-					for _, access := range resource.ClickOpsAccesses {
-						if filter.StartTime != "" && access.AccessTime < filter.StartTime {
-							continue
-						}
-						if filter.EndTime != "" && access.AccessTime > filter.EndTime {
-							continue
-						}
-						hasMatch = true
-						break
-					}
-					if !hasMatch {
-						continue
-					}
 				}
 			}
 
@@ -482,6 +522,34 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 
 	sortResources(resources)
 	return resources, nil
+}
+
+// filterClickOpsActivity makes the time-windowed ClickOps view internally
+// consistent: rows and their displayed count describe the same period.
+func filterClickOpsActivity(resource *models.Resource, startTime, endTime string) {
+	filtered := make([]models.ClickOpsAccess, 0, len(resource.ClickOpsAccesses))
+	count := 0
+	for _, access := range resource.ClickOpsAccesses {
+		if startTime != "" && access.AccessTime < startTime {
+			continue
+		}
+		if endTime != "" && access.AccessTime > endTime {
+			continue
+		}
+		filtered = append(filtered, access)
+		count += access.EventCount
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].AccessTime != filtered[j].AccessTime {
+			return filtered[i].AccessTime > filtered[j].AccessTime
+		}
+		if filtered[i].SessionRef != filtered[j].SessionRef {
+			return filtered[i].SessionRef < filtered[j].SessionRef
+		}
+		return filtered[i].EventName < filtered[j].EventName
+	})
+	resource.ClickOpsAccesses = filtered
+	resource.ClickOpsCount = count
 }
 
 // ListAccounts returns all accounts for a customer

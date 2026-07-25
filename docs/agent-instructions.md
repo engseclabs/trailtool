@@ -13,7 +13,7 @@ TrailTool precomputes and caches CloudTrail data into queryable entities (People
 Before using trailtool, verify the environment is ready:
 
 1. **CLI installed**: Run `which trailtool`. If not found: `brew install engseclabs/tap/trailtool`.
-2. **Status check**: Run `trailtool status`. This verifies AWS credentials, that the ingestor CloudFormation stack is deployed, and that TrailTool data is accessible. If any check fails, follow the printed guidance before erroring out:
+2. **Status check**: Run `trailtool status --format json`. This returns a stable array for AWS credentials, the ingestor stack, and data access, with `status`, `message`, and `diagnostics` fields. If any check fails, follow the diagnostics before erroring out:
    - **AWS credentials not configured**: Ensure the correct profile is set (e.g. `export AWS_PROFILE=<profile>`).
    - **Ingestor stack not found**: The wrong region is configured. Set `AWS_REGION` to the region where the ingestor was deployed (e.g. `export AWS_REGION=us-east-1`) and re-run `trailtool status`.
 
@@ -42,13 +42,16 @@ trailtool sessions detail latest                # Most recent session
 trailtool sessions detail latest --user alice@example.com  # Most recent for one user
 trailtool sessions summarize k7m2qp             # AI-generated session summary (requires Bedrock)
 trailtool sessions summarize latest --user alice@example.com
+trailtool sessions summarize k7m2qp --refresh   # Bypass a current cached summary
 trailtool sessions policy k7m2qp                # Least-privilege policy for this session only
 trailtool sessions policy latest --user alice@example.com --include-denied --explain
 ```
 
 **Filtering tips:** Combine flags to narrow results. `--role` does substring matching (e.g. `--role BreakGlass` matches `AWSReservedSSO_BreakGlassEmergency_...`). `--after`/`--before` take ISO8601 timestamps and override `--days` if both are set.
 
-**Session detail tips:** Pass the id shown in the SID column of `sessions list` as the positional selector. It is a stable, deterministic handle for one specific session. A short prefix (the 6 characters shown) is enough, and the CLI asks you to lengthen it if a prefix is ambiguous. Use `latest` to jump to the most recent session, with `--user` to scope it to one person. Detail includes resource activity, source IPs, ClickOps, denial context, cached summary metadata, related nouns, and lineage.
+**Session detail tips:** Pass the id shown in the SID column of `sessions list` as the positional selector. It is a stable, deterministic handle for one specific session. A short prefix (the 6 characters shown) is enough, and the CLI asks you to lengthen it if a prefix is ambiguous. Use `latest` to search all stored sessions for the most recent one, with `--user` to scope it to one person. Detail includes resource activity, source IPs, ClickOps, denial context, cached summary metadata, related nouns, and lineage.
+
+**Session summaries:** TrailTool stores each summary with its model, generation time, token usage, and a digest of the session activity used as input. It reuses the cache only while that digest matches. New activity makes the cache stale; `--refresh` bypasses a current cache.
 
 **SSO role names:** The ROLE column in `sessions list` displays the short permission-set name (e.g. `AdministratorAccess`) rather than the full SSO path. Use `--long` to show the full role name. The full path and ARN are always shown in `sessions detail`.
 
@@ -89,6 +92,9 @@ trailtool resources detail <rid>                   # Activity, relationships, an
 ```
 
 Use the RID shown by `resources list`. An unambiguous prefix is accepted.
+`--days` filters resources by `last_seen`; successful and denied activity
+totals remain lifetime totals. In `--clickops` mode, ClickOps rows and
+`clickops_count` describe only the requested period.
 Noun detail commands show up to 10 rows per related section by default. Pass
 `--limit <n>` to change the bound or `--all` to show every row.
 

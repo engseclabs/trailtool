@@ -69,9 +69,11 @@ func GeneratePolicyFromSession(sess *models.Session, includeDenied bool) (*Gener
 		ARN:              sess.RoleARN,
 		Name:             sess.RoleName,
 		AccountID:        sess.AccountID,
+		TopEventNames:    sess.EventCounts,
 		ResourceAccesses: toItems(sess.ResourceAccesses),
 	}
 	if includeDenied {
+		syntheticRole.TopDeniedEventNames = sess.DeniedEventCounts
 		syntheticRole.DeniedResourceAccesses = toItems(sess.DeniedResourceAccesses)
 	}
 
@@ -79,7 +81,10 @@ func GeneratePolicyFromSession(sess *models.Session, includeDenied bool) (*Gener
 	if err != nil {
 		return nil, err
 	}
-	result.SessionID = sess.Ref()
+	result.SessionID = sess.Sid
+	if result.SessionID == "" {
+		result.SessionID = sess.SidForRef()
+	}
 	return result, nil
 }
 
@@ -88,21 +93,8 @@ func GeneratePolicy(role *models.Role, includeDenied bool) (*GenerateResult, err
 	actionCounts := make(map[string]int)
 	unmappedSet := make(map[string]bool)
 
-	// Process ResourceAccesses
-	if len(role.ResourceAccesses) > 0 {
-		for _, access := range role.ResourceAccesses {
-			iamActions := iamMapper.MapEventToIAMActions(access.Service, access.EventName)
-			if len(iamActions) == 0 {
-				unmappedSet[access.Service+":"+access.EventName] = true
-				continue
-			}
-			for _, action := range iamActions {
-				actionCounts[action] += access.Count
-			}
-		}
-	}
-
-	// Process TopEventNames
+	// TopEventNames is the canonical usage map. ResourceAccesses below only
+	// attach resource scope to actions and must not add counts a second time.
 	if len(role.TopEventNames) > 0 {
 		for eventKey, count := range role.TopEventNames {
 			parts := strings.SplitN(eventKey, ":", 2)
@@ -123,18 +115,6 @@ func GeneratePolicy(role *models.Role, includeDenied bool) (*GenerateResult, err
 
 	// Process denied events if requested
 	if includeDenied {
-		if len(role.DeniedResourceAccesses) > 0 {
-			for _, access := range role.DeniedResourceAccesses {
-				iamActions := iamMapper.MapEventToIAMActions(access.Service, access.EventName)
-				if len(iamActions) == 0 {
-					unmappedSet[access.Service+":"+access.EventName] = true
-					continue
-				}
-				for _, action := range iamActions {
-					actionCounts[action] += access.Count
-				}
-			}
-		}
 		if len(role.TopDeniedEventNames) > 0 {
 			for eventKey, count := range role.TopDeniedEventNames {
 				parts := strings.SplitN(eventKey, ":", 2)
@@ -184,6 +164,9 @@ func GeneratePolicy(role *models.Role, includeDenied bool) (*GenerateResult, err
 
 	// Sort by count descending
 	sort.Slice(actions, func(i, j int) bool {
+		if actions[i].Count == actions[j].Count {
+			return actions[i].Action < actions[j].Action
+		}
 		return actions[i].Count > actions[j].Count
 	})
 

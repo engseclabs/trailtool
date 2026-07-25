@@ -1,8 +1,11 @@
 package store
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/engseclabs/trailtool/core/models"
 )
 
@@ -109,5 +112,58 @@ func TestRolesByExactName(t *testing.T) {
 	scoped := rolesByExactName(roles, "Admin", "222")
 	if len(scoped) != 1 || scoped[0].AccountID != "222" {
 		t.Fatalf("scoped matches = %#v", scoped)
+	}
+}
+
+func TestFilterClickOpsActivityFiltersRowsAndRecomputesCount(t *testing.T) {
+	resource := &models.Resource{
+		ClickOpsCount: 99,
+		ClickOpsAccesses: []models.ClickOpsAccess{
+			{SessionRef: "old", EventName: "CreateBucket", AccessTime: "2026-06-01T00:00:00Z", EventCount: 4},
+			{SessionRef: "new-b", EventName: "PutBucketPolicy", AccessTime: "2026-07-24T11:00:00Z", EventCount: 2},
+			{SessionRef: "new-a", EventName: "CreateBucket", AccessTime: "2026-07-24T12:00:00Z", EventCount: 1},
+		},
+	}
+
+	filterClickOpsActivity(resource, "2026-07-01T00:00:00Z", "")
+	if resource.ClickOpsCount != 3 {
+		t.Fatalf("clickops_count = %d, want 3", resource.ClickOpsCount)
+	}
+	if len(resource.ClickOpsAccesses) != 2 {
+		t.Fatalf("clickops_accesses = %#v", resource.ClickOpsAccesses)
+	}
+	if resource.ClickOpsAccesses[0].SessionRef != "new-a" {
+		t.Fatalf("clickops order = %#v", resource.ClickOpsAccesses)
+	}
+}
+
+func TestSessionSummaryUpdatePersistsAllMetadata(t *testing.T) {
+	sess := &models.Session{
+		PersonKey:          "email#alice@example.com",
+		SK:                 "key#role",
+		Summary:            "Updated a bucket policy.",
+		SummaryGeneratedAt: "2026-07-24T12:00:00Z",
+		SummaryModel:       "model",
+		SummaryTokensUsed:  42,
+		SummaryInputDigest: "abc123",
+	}
+	input, err := sessionSummaryUpdateInput("default", sess)
+	if err != nil {
+		t.Fatalf("sessionSummaryUpdateInput() error = %v", err)
+	}
+	if got := input.Key["pk"].(*ddbtypes.AttributeValueMemberS).Value; got != "default#email#alice@example.com" {
+		t.Fatalf("pk = %q", got)
+	}
+	if input.UpdateExpression == nil || !strings.Contains(*input.UpdateExpression, "#input_digest") {
+		t.Fatalf("update expression = %v", input.UpdateExpression)
+	}
+	var values map[string]interface{}
+	if err := attributevalue.UnmarshalMap(input.ExpressionAttributeValues, &values); err != nil {
+		t.Fatalf("unmarshal values: %v", err)
+	}
+	for _, key := range []string{":summary", ":generated_at", ":model", ":tokens_used", ":input_digest"} {
+		if _, ok := values[key]; !ok {
+			t.Fatalf("missing expression value %s: %#v", key, values)
+		}
 	}
 }

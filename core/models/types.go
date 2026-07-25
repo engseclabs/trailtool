@@ -101,6 +101,7 @@ type Session struct {
 	SummaryGeneratedAt string `json:"summary_generated_at,omitempty" dynamodbav:"summary_generated_at,omitempty"`
 	SummaryModel       string `json:"summary_model,omitempty" dynamodbav:"summary_model,omitempty"`
 	SummaryTokensUsed  int    `json:"summary_tokens_used,omitempty" dynamodbav:"summary_tokens_used,omitempty"`
+	SummaryInputDigest string `json:"summary_input_digest,omitempty" dynamodbav:"summary_input_digest,omitempty"`
 
 	// Display enrichment (not stored)
 	PersonLabel string `json:"person_label,omitempty" dynamodbav:"-"`

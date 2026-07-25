@@ -72,6 +72,7 @@ trailtool sessions detail k7m2qp          # by id (SID column, prefix ok)
 trailtool sessions detail latest
 trailtool sessions detail latest --user alice@example.com
 trailtool sessions summarize k7m2qp        # requires Bedrock
+trailtool sessions summarize k7m2qp --refresh
 
 # Accounts
 trailtool accounts list
@@ -97,9 +98,19 @@ trailtool resources list --clickops                    # ClickOps: console-creat
 trailtool resources list --clickops --service iam      # ClickOps filtered by service
 trailtool resources list --service s3 --days 7
 trailtool resources detail fyf7wf                      # by RID (prefix ok)
+
+# Setup diagnostics
+trailtool status --format json
 ```
 
 All commands support `--format json` for machine-readable output.
+`resources list --days` filters on `last_seen`; successful and denied activity
+totals remain lifetime totals. With `--clickops`, the ClickOps rows and count
+are limited to the requested period.
+
+Session summaries are cached with their model, generation time, token usage,
+and input digest. New session activity makes the cache stale automatically.
+Use `--refresh` to replace a current cached summary.
 
 ### Session aggregation
 

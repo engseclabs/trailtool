@@ -264,6 +264,7 @@ Examples:
 
 func sessionsSummarizeCmd() *cobra.Command {
 	var user string
+	var refresh bool
 
 	cmd := &cobra.Command{
 		Use:   "summarize [sid-or-latest]",
@@ -294,39 +295,59 @@ Examples:
 				return fatal("%v", err)
 			}
 
-			// Check for cached summary
-			if sess.Summary != "" {
+			if !refresh && session.SummaryIsCurrent(sess) {
 				if Format == "json" {
-					return printJSON(map[string]string{
-						"summary":      sess.Summary,
-						"generated_at": sess.SummaryGeneratedAt,
-						"model":        sess.SummaryModel,
-						"cached":       "true",
-					})
+					return printJSON(summaryOutput(sess, true))
 				}
 				fmt.Println(sess.Summary)
 				return nil
 			}
 
-			summary, err := session.SummarizeSession(ctx, sess)
+			result, err := session.SummarizeSession(ctx, sess)
 			if err != nil {
-				return fatal("bedrock invocation failed: %v", err)
+				return fatal("%v", err)
 			}
+			sess.Summary = result.Summary
+			sess.SummaryGeneratedAt = result.GeneratedAt
+			sess.SummaryModel = result.Model
+			sess.SummaryTokensUsed = result.TokensUsed
+			sess.SummaryInputDigest = result.InputDigest
 
-			if Format == "json" {
-				return printJSON(map[string]string{
-					"summary": summary,
-					"cached":  "false",
-				})
+			if err := s.SaveSessionSummary(ctx, CustomerID, sess); err != nil {
+				return fatal("could not save session summary: %v", err)
 			}
-			fmt.Println(summary)
+			if Format == "json" {
+				return printJSON(summaryOutput(sess, false))
+			}
+			fmt.Println(sess.Summary)
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "Generate a new summary even when the cached summary is current")
 
 	return cmd
+}
+
+type sessionSummaryOutput struct {
+	Summary            string `json:"summary"`
+	GeneratedAt        string `json:"generated_at"`
+	Model              string `json:"model"`
+	TokensUsed         int    `json:"tokens_used"`
+	SummaryInputDigest string `json:"summary_input_digest"`
+	Cached             bool   `json:"cached"`
+}
+
+func summaryOutput(sess *models.Session, cached bool) sessionSummaryOutput {
+	return sessionSummaryOutput{
+		Summary:            sess.Summary,
+		GeneratedAt:        sess.SummaryGeneratedAt,
+		Model:              sess.SummaryModel,
+		TokensUsed:         sess.SummaryTokensUsed,
+		SummaryInputDigest: sess.SummaryInputDigest,
+		Cached:             cached,
+	}
 }
 
 func sessionsPolicyCmd() *cobra.Command {
@@ -369,10 +390,12 @@ Examples:
 			}
 
 			if Format == "json" {
-				return printJSON(result)
+				if err := printJSON(result); err != nil {
+					return err
+				}
+			} else {
+				fmt.Println(result.PolicyJSON)
 			}
-
-			fmt.Println(result.PolicyJSON)
 
 			if explain {
 				fmt.Fprintf(os.Stderr, "\n--- Policy Summary ---\n")
