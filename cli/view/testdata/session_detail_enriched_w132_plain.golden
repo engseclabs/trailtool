@@ -1,0 +1,61 @@
+Alice Example
+SID:            cj6bhlwrp6hfapnw
+Person:         Alice Example  (email#alice@example.com)
+Role:           DeployRole  (arn:aws:iam::123456789012:role/DeployRole)
+Account:        123456789012
+Type:           WEB
+Internal SK:    sis#session-1
+Anchor:         sis#credential-1
+Time:           2026-07-24T09:00:00Z → 2026-07-24T09:45:00Z (45m) [3h ago]
+Events:         120 across 1 services
+Resources:      1
+Source IPs:     198.51.100.4, 203.0.113.8
+Denied Events:  3
+ClickOps:       3
+
+⊘ Denied Events (calls AWS rejected):
+  EVENT           DENIED
+  DeleteFunction       3
+
+ClickOps Events (3):
+  EVENT               CLICKOPS
+  UpdateFunctionCode         3
+
+Top Events (2):
+  EVENT               COUNT
+  Invoke                 80
+  UpdateFunctionCode     40
+
+Resources Accessed (1):
+  RESOURCE                COUNT
+  lambda:function:worker    120
+
+Event to Resource Activity (1):
+  SERVICE               EVENT   RESOURCE                ACCOUNT       COUNT
+  lambda.amazonaws.com  Invoke  lambda:function:worker  123456789012     80
+
+⊘ Denied Activity Details (1):
+  SERVICE               EVENT           RESOURCE                ACCOUNT       DENIED  POLICY ARN  POLICY TYPE  ERROR
+  lambda.amazonaws.com  DeleteFunction  lambda:function:worker  123456789012       3              SCP          blocked by organization policy blocked by organization policy blocked by organization policy bl…
+
+Cached Summary:
+  Updated the worker function through the console.
+
+  Model:      anthropic.claude-sonnet
+  Generated:  2026-07-24T10:00:00Z
+
+Services (1):
+  EVENT SOURCE          LAST RELATED
+  lambda.amazonaws.com  2026-07-24T09:44:00Z
+
+Resources (1):
+  RID     RESOURCE                ACCOUNT       LAST RELATED
+  fyf7wf  lambda:function:worker  123456789012  2026-07-24T09:43:00Z
+
+Explore:
+  → trailtool accounts detail 123456789012
+  → trailtool roles detail arn:aws:iam::123456789012:role/DeployRole
+  → trailtool people detail 5nmamaaeshnhs6xu
+  → trailtool services detail lambda.amazonaws.com
+  → trailtool resources detail fyf7wfyglmgloz65
+  → trailtool sessions detail cj6bhlwrp6hfapnw

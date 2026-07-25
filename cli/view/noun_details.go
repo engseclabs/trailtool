@@ -350,6 +350,104 @@ func resourceDetailCommands(detail *models.ResourceDetail) []string {
 	return commands
 }
 
+func accountDetailCommands(detail *models.AccountDetail) []string {
+	var commands []string
+	for i := range detail.Related.Sessions {
+		commands = append(commands, "trailtool sessions detail "+sessionSelector(&detail.Related.Sessions[i].Session))
+	}
+	for i := range detail.Related.People {
+		commands = append(commands, "trailtool people detail "+detail.Related.People[i].PID())
+	}
+	for i := range detail.Related.Roles {
+		commands = append(commands, "trailtool roles detail "+detail.Related.Roles[i].ARN)
+	}
+	for i := range detail.Related.Services {
+		commands = append(commands, "trailtool services detail "+detail.Related.Services[i].EventSource)
+	}
+	for i := range detail.Related.Resources {
+		commands = append(commands, "trailtool resources detail "+detail.Related.Resources[i].RID())
+	}
+	return commands
+}
+
+func roleDetailCommands(detail *models.RoleDetail) []string {
+	commands := []string{
+		"trailtool accounts detail " + detail.AccountID,
+		"trailtool roles policy " + detail.ARN,
+	}
+	for i := range detail.Related.Services {
+		commands = append(commands, "trailtool services detail "+detail.Related.Services[i].EventSource)
+	}
+	for i := range detail.Related.Resources {
+		commands = append(commands, "trailtool resources detail "+detail.Related.Resources[i].RID())
+	}
+	for i := range detail.Related.Sessions {
+		commands = append(commands, "trailtool sessions detail "+sessionSelector(&detail.Related.Sessions[i].Session))
+	}
+	for i := range detail.Related.People {
+		commands = append(commands, "trailtool people detail "+detail.Related.People[i].PID())
+	}
+	return commands
+}
+
+func serviceDetailCommands(detail *models.ServiceDetail) []string {
+	var commands []string
+	for i := range detail.Related.Roles {
+		commands = append(commands, "trailtool roles detail "+detail.Related.Roles[i].ARN)
+	}
+	for i := range detail.Related.Resources {
+		commands = append(commands, "trailtool resources detail "+detail.Related.Resources[i].RID())
+	}
+	for i := range detail.Related.Accounts {
+		commands = append(commands, "trailtool accounts detail "+detail.Related.Accounts[i].AccountID)
+	}
+	for i := range detail.Related.People {
+		commands = append(commands, "trailtool people detail "+detail.Related.People[i].PID())
+	}
+	for i := range detail.Related.Sessions {
+		commands = append(commands, "trailtool sessions detail "+sessionSelector(&detail.Related.Sessions[i].Session))
+	}
+	return commands
+}
+
+func sessionDetailCommands(detail *models.SessionDetail) []string {
+	var commands []string
+	if detail.AccountID != "" {
+		commands = append(commands, "trailtool accounts detail "+detail.AccountID)
+	}
+	if detail.RoleARN != "" {
+		commands = append(commands, "trailtool roles detail "+detail.RoleARN)
+	}
+	if detail.PersonKey != "" {
+		commands = append(commands, "trailtool people detail "+models.PIDForPersonKey(detail.PersonKey))
+	}
+	for i := range detail.Related.Services {
+		commands = append(commands, "trailtool services detail "+detail.Related.Services[i].EventSource)
+	}
+	for i := range detail.Related.Resources {
+		commands = append(commands, "trailtool resources detail "+detail.Related.Resources[i].RID())
+	}
+	for i := range detail.Related.Sessions {
+		commands = append(commands, "trailtool sessions detail "+sessionSelector(&detail.Related.Sessions[i].Session))
+	}
+	return commands
+}
+
+// SessionRelationships renders the non-canonical related nouns. Account, role,
+// and person already appear in the key facts.
+func SessionRelationships(ctx render.Context, detail *models.SessionDetail) string {
+	var b strings.Builder
+	b.WriteString(relatedServices(ctx, detail.Related.Services))
+	b.WriteString(relatedResources(ctx, detail.Related.Resources))
+	return b.String()
+}
+
+// SessionNavigation renders copy-paste commands for canonical and related
+// nouns.
+func SessionNavigation(ctx render.Context, detail *models.SessionDetail) string {
+	return nounNavigation(ctx, sessionDetailCommands(detail))
+}
+
 func sessionSelector(session *models.Session) string {
 	if session.Sid != "" {
 		return session.Sid

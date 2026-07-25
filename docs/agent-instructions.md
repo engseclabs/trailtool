@@ -48,7 +48,7 @@ trailtool sessions policy latest --user alice@example.com --include-denied --exp
 
 **Filtering tips:** Combine flags to narrow results. `--role` does substring matching (e.g. `--role BreakGlass` matches `AWSReservedSSO_BreakGlassEmergency_...`). `--after`/`--before` take ISO8601 timestamps and override `--days` if both are set.
 
-**Session detail tips:** Pass the id shown in the SID column of `sessions list` as the positional selector. It is a stable, deterministic handle for one specific session. A short prefix (the 6 characters shown) is enough, and the CLI asks you to lengthen it if a prefix is ambiguous. Use `latest` to jump to the most recent session, with `--user` to scope it to one person.
+**Session detail tips:** Pass the id shown in the SID column of `sessions list` as the positional selector. It is a stable, deterministic handle for one specific session. A short prefix (the 6 characters shown) is enough, and the CLI asks you to lengthen it if a prefix is ambiguous. Use `latest` to jump to the most recent session, with `--user` to scope it to one person. Detail includes resource activity, source IPs, ClickOps, denial context, cached summary metadata, related nouns, and lineage.
 
 **SSO role names:** The ROLE column in `sessions list` displays the short permission-set name (e.g. `AdministratorAccess`) rather than the full SSO path. Use `--long` to show the full role name. The full path and ARN are always shown in `sessions detail`.
 
@@ -62,13 +62,13 @@ trailtool sessions policy latest --user alice@example.com --include-denied --exp
 ### Accounts
 ```bash
 trailtool accounts list                        # List all tracked AWS accounts
-trailtool accounts detail <account-id>         # Account detail: people, roles, services, resources
+trailtool accounts detail <account-id>         # Activity, sessions, people, roles, services, resources
 ```
 
 ### Roles
 ```bash
 trailtool roles list                           # List all tracked IAM roles
-trailtool roles detail <role-id>               # Role detail; ID comes from roles list
+trailtool roles detail <role-id>               # Activity, resources, sessions, people, denial context
 trailtool roles policy <role-id>               # Generate least-privilege IAM policy from actual usage
 trailtool roles policy <role-id> --include-denied --explain  # Include denied events, show explanation
 ```
@@ -76,7 +76,7 @@ trailtool roles policy <role-id> --include-denied --explain  # Include denied ev
 ### Services
 ```bash
 trailtool services list                        # List all tracked AWS services
-trailtool services detail <event-source>       # e.g. s3.amazonaws.com
+trailtool services detail <event-source>       # Activity and related roles, resources, accounts, people, sessions
 ```
 
 ### Resources
@@ -89,8 +89,8 @@ trailtool resources detail <rid>                   # Activity, relationships, an
 ```
 
 Use the RID shown by `resources list`. An unambiguous prefix is accepted.
-People and resource detail commands show up to 10 rows per related section by
-default. Pass `--limit <n>` to change the bound or `--all` to show every row.
+Noun detail commands show up to 10 rows per related section by default. Pass
+`--limit <n>` to change the bound or `--all` to show every row.
 
 ## Workflows
 

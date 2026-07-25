@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/engseclabs/trailtool/cli/view"
+	"github.com/engseclabs/trailtool/core/models"
 	"github.com/engseclabs/trailtool/core/store"
 )
 
@@ -47,11 +48,19 @@ func accountsListCmd() *cobra.Command {
 }
 
 func accountsDetailCmd() *cobra.Command {
-	return &cobra.Command{
+	var limit int
+	var all bool
+
+	cmd := &cobra.Command{
 		Use:   "detail <account-id>",
 		Short: "Show account details",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			relationLimit, err := detailRelationLimit(cmd, limit, all)
+			if err != nil {
+				return fatal("%v", err)
+			}
+
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
@@ -67,12 +76,28 @@ func accountsDetailCmd() *cobra.Command {
 				return fatal("account not found: %s", accountID)
 			}
 
+			related, err := s.LoadRelatedNouns(
+				ctx,
+				CustomerID,
+				store.RelationKindAccount,
+				account.AccountID,
+				relationLimit,
+			)
+			if err != nil {
+				return fatal("%v", err)
+			}
+			detail := models.AccountDetail{Account: *account, Related: related}
+
 			if Format == "json" {
-				return printJSON(account)
+				return printJSON(detail)
 			}
 
-			fmt.Print(view.AccountDetail(renderContext(), account))
+			fmt.Print(view.AccountDetail(renderContext(), &detail))
 			return nil
 		},
 	}
+
+	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
+	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
+	return cmd
 }
