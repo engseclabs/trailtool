@@ -127,7 +127,8 @@ type DynamoDBRole struct {
 	TopDeniedEventNames    map[string]int       `dynamodbav:"top_denied_event_names,omitempty"`
 	DeniedResourceAccesses []ResourceAccessItem `dynamodbav:"denied_resource_accesses,omitempty"`
 	DeniedEventAccesses    []EventAccessItem    `dynamodbav:"denied_event_accesses,omitempty"` // detailed denied event access tracking (for events without specific resources)
-	// New aggregated counts for noun-based architecture
+	// Cross-noun fallback counts. CLI reads replace these with exact relation
+	// _summary counts when available.
 	PeopleCount   int `dynamodbav:"people_count"`
 	SessionsCount int `dynamodbav:"sessions_count"`
 	AccountsCount int `dynamodbav:"accounts_count"`
@@ -172,7 +173,9 @@ type DynamoDBService struct {
 	// Access Denied tracking
 	TotalDeniedEvents   int            `dynamodbav:"total_denied_events,omitempty"`
 	TopDeniedEventNames map[string]int `dynamodbav:"top_denied_event_names,omitempty"`
-	// New aggregated counts for noun-based architecture
+	// Cross-noun fallback counts. CLI reads replace these with exact relation
+	// _summary counts when available. RolesCount and ResourcesCount above are
+	// exact unions retained for aggregate activity.
 	PeopleCount   int `dynamodbav:"people_count"`
 	SessionsCount int `dynamodbav:"sessions_count"`
 	AccountsCount int `dynamodbav:"accounts_count"`
@@ -207,7 +210,8 @@ type DynamoDBResource struct {
 	// Access Denied tracking
 	TotalDeniedEvents   int            `dynamodbav:"total_denied_events,omitempty"`
 	TopDeniedEventNames map[string]int `dynamodbav:"top_denied_event_names,omitempty"`
-	// New aggregated counts for noun-based architecture
+	// Cross-noun fallback counts. CLI reads replace these with exact relation
+	// _summary counts when available.
 	PeopleCount   int `dynamodbav:"people_count"`
 	SessionsCount int `dynamodbav:"sessions_count"`
 	// ClickOps tracking - tracks all web console create/modify operations on this resource
@@ -227,16 +231,20 @@ type DynamoDBPerson struct {
 	// Email is the primary observed email (email_index GSI range key). Identity
 	// Center usernames are not required to be emails: non-email session names land
 	// in EmailsSeen (they're the username) but never become an Email.
-	Email               string         `dynamodbav:"email,omitempty"`
-	EmailsSeen          []string       `dynamodbav:"emails_seen,omitempty"`
-	DisplayName         string         `dynamodbav:"display_name,omitempty"`
-	FirstSeen           string         `dynamodbav:"first_seen"`
-	LastSeen            string         `dynamodbav:"last_seen"`
-	SessionsCount       int            `dynamodbav:"sessions_count"`
-	AccountsCount       int            `dynamodbav:"accounts_count"`
-	RolesCount          int            `dynamodbav:"roles_count"`
-	ServicesCount       int            `dynamodbav:"services_count"`
-	ResourcesCount      int            `dynamodbav:"resources_count"`
+	Email       string   `dynamodbav:"email,omitempty"`
+	EmailsSeen  []string `dynamodbav:"emails_seen,omitempty"`
+	DisplayName string   `dynamodbav:"display_name,omitempty"`
+	FirstSeen   string   `dynamodbav:"first_seen"`
+	LastSeen    string   `dynamodbav:"last_seen"`
+	// Cross-noun fallback counts. CLI reads replace these with exact relation
+	// _summary counts when available.
+	SessionsCount  int `dynamodbav:"sessions_count"`
+	AccountsCount  int `dynamodbav:"accounts_count"`
+	RolesCount     int `dynamodbav:"roles_count"`
+	ServicesCount  int `dynamodbav:"services_count"`
+	ResourcesCount int `dynamodbav:"resources_count"`
+
+	// Activity aggregates.
 	EventsCount         int            `dynamodbav:"events_count"`
 	DeniedEventCount    int            `dynamodbav:"denied_event_count,omitempty"`
 	TopDeniedEventNames map[string]int `dynamodbav:"top_denied_event_names,omitempty"`
@@ -459,16 +467,20 @@ type DynamoDBIngestedFile struct {
 
 // DynamoDBAccount represents an aggregated account record
 type DynamoDBAccount struct {
-	CustomerID          string         `dynamodbav:"customerId"`
-	AccountID           string         `dynamodbav:"account_id"`
-	AccountName         string         `dynamodbav:"account_name,omitempty"`
-	FirstSeen           string         `dynamodbav:"first_seen"`
-	LastSeen            string         `dynamodbav:"last_seen"`
-	PeopleCount         int            `dynamodbav:"people_count"`
-	SessionsCount       int            `dynamodbav:"sessions_count"`
-	RolesCount          int            `dynamodbav:"roles_count"`
-	ServicesCount       int            `dynamodbav:"services_count"`
-	ResourcesCount      int            `dynamodbav:"resources_count"`
+	CustomerID  string `dynamodbav:"customerId"`
+	AccountID   string `dynamodbav:"account_id"`
+	AccountName string `dynamodbav:"account_name,omitempty"`
+	FirstSeen   string `dynamodbav:"first_seen"`
+	LastSeen    string `dynamodbav:"last_seen"`
+	// Cross-noun fallback counts. CLI reads replace these with exact relation
+	// _summary counts when available.
+	PeopleCount    int `dynamodbav:"people_count"`
+	SessionsCount  int `dynamodbav:"sessions_count"`
+	RolesCount     int `dynamodbav:"roles_count"`
+	ServicesCount  int `dynamodbav:"services_count"`
+	ResourcesCount int `dynamodbav:"resources_count"`
+
+	// Activity aggregates.
 	EventsCount         int            `dynamodbav:"events_count"`
 	TopEventNames       map[string]int `dynamodbav:"top_event_names,omitempty"`
 	TotalDeniedEvents   int            `dynamodbav:"total_denied_events,omitempty"`

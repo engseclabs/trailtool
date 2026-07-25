@@ -156,6 +156,7 @@ Examples:
 			if err != nil {
 				return fatal("%v", err)
 			}
+			sess.ApplyRelationshipCounts(related.Counts)
 			detail := models.SessionDetail{Session: *sess, Related: related}
 
 			if Format == "json" {

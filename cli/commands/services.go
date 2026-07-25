@@ -55,7 +55,10 @@ func servicesDetailCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "detail <event-source>",
 		Short: "Show service details",
-		Args:  cobra.ExactArgs(1),
+		Long: `Show service details by canonical CloudTrail event source.
+A bare name such as "s3" is also tried as "s3.amazonaws.com"; semantic aliases
+such as "ses" for "email.amazonaws.com" are not inferred.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			relationLimit, err := detailRelationLimit(cmd, limit, all)
 			if err != nil {
@@ -94,6 +97,7 @@ func servicesDetailCmd() *cobra.Command {
 			if err != nil {
 				return fatal("%v", err)
 			}
+			svc.ApplyRelationshipCounts(related.Counts)
 			detail := models.ServiceDetail{Service: *svc, Related: related}
 
 			if Format == "json" {

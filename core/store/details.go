@@ -27,10 +27,12 @@ const (
 )
 
 type nounRelation struct {
-	RelatedKind string `dynamodbav:"related_kind"`
-	RelatedID   string `dynamodbav:"related_id"`
-	FirstSeen   string `dynamodbav:"first_seen"`
-	LastSeen    string `dynamodbav:"last_seen"`
+	SK          string                    `dynamodbav:"sk"`
+	RelatedKind string                    `dynamodbav:"related_kind"`
+	RelatedID   string                    `dynamodbav:"related_id"`
+	FirstSeen   string                    `dynamodbav:"first_seen"`
+	LastSeen    string                    `dynamodbav:"last_seen"`
+	Counts      models.RelationshipCounts `dynamodbav:"counts"`
 }
 
 // GetPerson fetches a person by canonical person key.
@@ -220,12 +222,13 @@ func (s *Store) LoadRelatedNouns(
 	customerID, subjectKind, subjectID string,
 	limit int,
 ) (models.RelatedNouns, error) {
-	relations, err := s.listNounRelations(ctx, customerID, subjectKind, subjectID)
+	relations, counts, err := s.listNounRelations(ctx, customerID, subjectKind, subjectID)
 	if err != nil {
 		return models.RelatedNouns{}, err
 	}
 
 	related := models.NewRelatedNouns()
+	related.Counts = counts
 	for _, relation := range relations {
 		bounds := models.RelationshipBounds{
 			RelationshipFirstSeen: relation.FirstSeen,
@@ -306,8 +309,9 @@ func (s *Store) LoadRelatedNouns(
 func (s *Store) listNounRelations(
 	ctx context.Context,
 	customerID, subjectKind, subjectID string,
-) ([]nounRelation, error) {
+) ([]nounRelation, models.RelationshipCounts, error) {
 	var relations []nounRelation
+	var counts models.RelationshipCounts
 	var lastKey map[string]types.AttributeValue
 	for {
 		result, err := s.client.Query(ctx, &dynamodb.QueryInput{
@@ -319,18 +323,14 @@ func (s *Store) listNounRelations(
 			ExclusiveStartKey: lastKey,
 		})
 		if err != nil {
-			return nil, s.explainError(ctx, err, "query noun relationships")
+			return nil, counts, s.explainError(ctx, err, "query noun relationships")
 		}
 
 		var page []nounRelation
 		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal noun relationships: %w", err)
+			return nil, counts, fmt.Errorf("failed to unmarshal noun relationships: %w", err)
 		}
-		for _, relation := range page {
-			if relation.RelatedKind != "" && relation.RelatedID != "" {
-				relations = append(relations, relation)
-			}
-		}
+		relations, counts = mergeNounRelationPage(relations, counts, page)
 		if result.LastEvaluatedKey == nil {
 			break
 		}
@@ -338,7 +338,25 @@ func (s *Store) listNounRelations(
 	}
 
 	sortNounRelations(relations)
-	return relations, nil
+	return relations, counts, nil
+}
+
+func mergeNounRelationPage(
+	relations []nounRelation,
+	counts models.RelationshipCounts,
+	page []nounRelation,
+) ([]nounRelation, models.RelationshipCounts) {
+	for _, relation := range page {
+		if relation.SK == relationSummarySK {
+			relation.Counts.Exact = true
+			counts = relation.Counts
+			continue
+		}
+		if relation.RelatedKind != "" && relation.RelatedID != "" {
+			relations = append(relations, relation)
+		}
+	}
+	return relations, counts
 }
 
 func sortNounRelations(relations []nounRelation) {

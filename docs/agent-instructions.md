@@ -82,6 +82,10 @@ trailtool services list                        # List all tracked AWS services
 trailtool services detail <event-source>       # Activity and related roles, resources, accounts, people, sessions
 ```
 
+Use the canonical CloudTrail event source. A bare name such as `s3` is tried as
+`s3.amazonaws.com`; semantic aliases such as `ses` for `email.amazonaws.com`
+are not inferred.
+
 ### Resources
 ```bash
 trailtool resources list --days 30             # Resources seen in last 30 days

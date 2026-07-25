@@ -98,6 +98,9 @@ func (s *Store) ListPeople(ctx context.Context, customerID string) ([]models.Per
 		lastKey = result.LastEvaluatedKey
 	}
 
+	if err := s.enrichPeopleRelationshipCounts(ctx, customerID, people); err != nil {
+		return nil, err
+	}
 	sortPeople(people)
 	return people, nil
 }
@@ -134,6 +137,9 @@ func (s *Store) ListRoles(ctx context.Context, customerID string) ([]models.Role
 		lastKey = result.LastEvaluatedKey
 	}
 
+	if err := s.enrichRoleRelationshipCounts(ctx, customerID, roles); err != nil {
+		return nil, err
+	}
 	sortRoles(roles)
 	return roles, nil
 }
@@ -393,7 +399,6 @@ func (s *Store) ListSessions(ctx context.Context, customerID, user string, filte
 	}
 
 	models.SortSessionsForList(sessions, false)
-
 	return sessions, personKeys, nil
 }
 
@@ -452,8 +457,10 @@ func sessionSummaryUpdateInput(customerID string, session *models.Session) (*dyn
 type ResourceFilter struct {
 	ClickOpsOnly     bool   // Only return resources with ClickOps activity
 	ServiceType      string // Filter by service type prefix (e.g. "s3", "iam")
-	StartTime        string // Only include ClickOps accesses after this time (ISO8601)
-	EndTime          string // Only include ClickOps accesses before this time (ISO8601)
+	StartDate        string // Only include resources last seen on or after this date (YYYY-MM-DD)
+	EndDate          string // Only include resources last seen on or before this date (YYYY-MM-DD)
+	StartTime        string // Only include ClickOps accesses at or after this time (RFC3339)
+	EndTime          string // Only include ClickOps accesses at or before this time (RFC3339)
 	MinClickOpsCount int    // Minimum ClickOps event count (only applies when ClickOpsOnly=true)
 }
 
@@ -489,10 +496,10 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 			}
 
 			// Time range filter on last_seen (applies to all resources)
-			if filter.StartTime != "" && resource.LastSeen < filter.StartTime {
+			if filter.StartDate != "" && resource.LastSeen < filter.StartDate {
 				continue
 			}
-			if filter.EndTime != "" && resource.LastSeen > filter.EndTime {
+			if filter.EndDate != "" && resource.LastSeen > filter.EndDate {
 				continue
 			}
 
@@ -520,6 +527,9 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 		lastKey = result.LastEvaluatedKey
 	}
 
+	if err := s.enrichResourceRelationshipCounts(ctx, customerID, resources); err != nil {
+		return nil, err
+	}
 	sortResources(resources)
 	return resources, nil
 }
@@ -584,6 +594,9 @@ func (s *Store) ListAccounts(ctx context.Context, customerID string) ([]models.A
 		lastKey = result.LastEvaluatedKey
 	}
 
+	if err := s.enrichAccountRelationshipCounts(ctx, customerID, accounts); err != nil {
+		return nil, err
+	}
 	sortAccounts(accounts)
 	return accounts, nil
 }
@@ -643,6 +656,9 @@ func (s *Store) ListServices(ctx context.Context, customerID string) ([]models.S
 		lastKey = result.LastEvaluatedKey
 	}
 
+	if err := s.enrichServiceRelationshipCounts(ctx, customerID, services); err != nil {
+		return nil, err
+	}
 	sortServices(services)
 	return services, nil
 }

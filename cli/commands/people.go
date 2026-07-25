@@ -91,6 +91,7 @@ Example:
 			if err != nil {
 				return fatal("%v", err)
 			}
+			person.ApplyRelationshipCounts(related.Counts)
 			detail := models.PersonDetail{Person: *person, Related: related}
 
 			if Format == "json" {

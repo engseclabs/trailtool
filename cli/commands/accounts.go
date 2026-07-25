@@ -86,6 +86,7 @@ func accountsDetailCmd() *cobra.Command {
 			if err != nil {
 				return fatal("%v", err)
 			}
+			account.ApplyRelationshipCounts(related.Counts)
 			detail := models.AccountDetail{Account: *account, Related: related}
 
 			if Format == "json" {

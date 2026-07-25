@@ -92,6 +92,7 @@ also works.`,
 			if err != nil {
 				return fatal("%v", err)
 			}
+			role.ApplyRelationshipCounts(related.Counts)
 			detail := models.RoleDetail{Role: *role, Related: related}
 
 			if Format == "json" {

@@ -3,12 +3,13 @@ package models
 // RelatedNouns is the common detail payload for noun relationships. Every
 // field is initialized to an empty slice so detail JSON uses [] instead of null.
 type RelatedNouns struct {
-	People    []RelatedPerson   `json:"people"`
-	Sessions  []RelatedSession  `json:"sessions"`
-	Accounts  []RelatedAccount  `json:"accounts"`
-	Roles     []RelatedRole     `json:"roles"`
-	Services  []RelatedService  `json:"services"`
-	Resources []RelatedResource `json:"resources"`
+	Counts    RelationshipCounts `json:"counts"`
+	People    []RelatedPerson    `json:"people"`
+	Sessions  []RelatedSession   `json:"sessions"`
+	Accounts  []RelatedAccount   `json:"accounts"`
+	Roles     []RelatedRole      `json:"roles"`
+	Services  []RelatedService   `json:"services"`
+	Resources []RelatedResource  `json:"resources"`
 }
 
 // NewRelatedNouns returns an empty, JSON-stable relationship payload.

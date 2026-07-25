@@ -44,7 +44,7 @@ func resourcesListCmd() *cobra.Command {
 				MinClickOpsCount: minClickOps,
 			}
 			if days > 0 {
-				filter.StartTime = time.Now().AddDate(0, 0, -days).Format("2006-01-02")
+				filter.StartDate, filter.StartTime = resourceWindowStart(time.Now(), days)
 			}
 
 			resources, err := s.ListResources(ctx, CustomerID, filter)
@@ -77,6 +77,12 @@ func resourcesListCmd() *cobra.Command {
 	cmd.Flags().IntVar(&minClickOps, "min-clickops", 1, "Minimum ClickOps events (used with --clickops)")
 
 	return cmd
+}
+
+func resourceWindowStart(now time.Time, days int) (date, timestamp string) {
+	cutoff := now.UTC().AddDate(0, 0, -days)
+	midnight := time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, time.UTC)
+	return midnight.Format(time.DateOnly), midnight.Format(time.RFC3339)
 }
 
 func resourcesDetailCmd() *cobra.Command {
@@ -123,6 +129,7 @@ Example:
 			if err != nil {
 				return fatal("%v", err)
 			}
+			resource.ApplyRelationshipCounts(related.Counts)
 			detail := models.ResourceDetail{Resource: *resource, Related: related}
 
 			if Format == "json" {

@@ -120,16 +120,18 @@ func TestFilterClickOpsActivityFiltersRowsAndRecomputesCount(t *testing.T) {
 		ClickOpsCount: 99,
 		ClickOpsAccesses: []models.ClickOpsAccess{
 			{SessionRef: "old", EventName: "CreateBucket", AccessTime: "2026-06-01T00:00:00Z", EventCount: 4},
+			{SessionRef: "before-edge", EventName: "PutBucketPolicy", AccessTime: "2026-06-30T23:59:59Z", EventCount: 6},
+			{SessionRef: "at-edge", EventName: "PutBucketPolicy", AccessTime: "2026-07-01T00:00:00Z", EventCount: 5},
 			{SessionRef: "new-b", EventName: "PutBucketPolicy", AccessTime: "2026-07-24T11:00:00Z", EventCount: 2},
 			{SessionRef: "new-a", EventName: "CreateBucket", AccessTime: "2026-07-24T12:00:00Z", EventCount: 1},
 		},
 	}
 
 	filterClickOpsActivity(resource, "2026-07-01T00:00:00Z", "")
-	if resource.ClickOpsCount != 3 {
-		t.Fatalf("clickops_count = %d, want 3", resource.ClickOpsCount)
+	if resource.ClickOpsCount != 8 {
+		t.Fatalf("clickops_count = %d, want 8", resource.ClickOpsCount)
 	}
-	if len(resource.ClickOpsAccesses) != 2 {
+	if len(resource.ClickOpsAccesses) != 3 {
 		t.Fatalf("clickops_accesses = %#v", resource.ClickOpsAccesses)
 	}
 	if resource.ClickOpsAccesses[0].SessionRef != "new-a" {

@@ -51,6 +51,9 @@ func (c relationCollector) edges() []types.DynamoDBRelation {
 }
 
 func (c relationCollector) replaceID(kind, oldID, newID string) {
+	// TODO: Reconcile already-persisted oldID edges and decrement their
+	// increment-only summaries when a cross-batch window fold rewrites a
+	// session ref. A full re-ingest rebuilds both edges and summaries exactly.
 	if oldID == "" || newID == "" || oldID == newID {
 		return
 	}
