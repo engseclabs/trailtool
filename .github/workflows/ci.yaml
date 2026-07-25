@@ -10,11 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  # Root and ingestor are separate Go modules. Running them as separate jobs
-  # lets them compile concurrently on their own runners, and gives each its own
-  # setup-go cache keyed on its own go.sum so both modules' build caches
-  # (GOCACHE) and module caches (GOMODCACHE) survive across runs. A single job
-  # keyed on the root go.sum would leave the ingestor cache un-restored.
+  # Separate jobs so each module gets its own setup-go cache keyed on its own
+  # go.sum; a shared job keyed on the root go.sum leaves ingestor un-restored.
   root:
     runs-on: ubuntu-latest
     steps:
@@ -30,8 +27,6 @@ jobs:
       - name: Test
         run: go test ./...
 
-      # Cheap after Test warmed the cache; keeps an explicit "the binary links"
-      # signal for the shipped entrypoint.
       - name: Build
         run: go build ./cmd/trailtool/
 
