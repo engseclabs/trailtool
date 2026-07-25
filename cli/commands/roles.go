@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/engseclabs/trailtool/cli/view"
+	"github.com/engseclabs/trailtool/core/models"
 	"github.com/engseclabs/trailtool/core/policy"
 	"github.com/engseclabs/trailtool/core/store"
 )
@@ -51,6 +52,8 @@ func rolesListCmd() *cobra.Command {
 
 func rolesDetailCmd() *cobra.Command {
 	var accountID string
+	var limit int
+	var all bool
 
 	cmd := &cobra.Command{
 		Use:   "detail <role-id>",
@@ -60,6 +63,11 @@ An unambiguous ID prefix is accepted. A full role ARN or an exact role name
 also works.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			relationLimit, err := detailRelationLimit(cmd, limit, all)
+			if err != nil {
+				return fatal("%v", err)
+			}
+
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
@@ -74,16 +82,30 @@ also works.`,
 				return fatal("role not found: %s (check 'trailtool roles list')", args[0])
 			}
 
+			related, err := s.LoadRelatedNouns(
+				ctx,
+				CustomerID,
+				store.RelationKindRole,
+				role.ARN,
+				relationLimit,
+			)
+			if err != nil {
+				return fatal("%v", err)
+			}
+			detail := models.RoleDetail{Role: *role, Related: related}
+
 			if Format == "json" {
-				return printJSON(role)
+				return printJSON(detail)
 			}
 
-			fmt.Print(view.RoleDetail(renderContext(), role))
+			fmt.Print(view.RoleDetail(renderContext(), &detail))
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&accountID, "account", "", "Filter by AWS account ID (disambiguates roles with the same name)")
+	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
+	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
 
 	return cmd
 }

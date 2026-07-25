@@ -1,0 +1,48 @@
+123456789012
+Name:           production
+First Seen:     2026-07-01T08:00:00Z
+Last Seen:      2026-07-24T09:45:00Z
+Events:         120
+People:         1
+Sessions:       4
+Roles:          2
+Services:       3
+Resources:      5
+Denied Events:  3
+ClickOps:       2
+
+Top Events (2):
+  EVENT               COUNT
+  Invoke                 80
+  UpdateFunctionCode     40
+
+⊘ Denied Events (calls AWS rejected):
+  EVENT           DENIED
+  DeleteFunction       3
+
+Recent Sessions (1):
+  SID     ROLE        ACCOUNT       TYPE  EVENTS  TIME
+  cj6bhl  DeployRole  123456789012  WEB       12  2026-07-24T09:00:00Z
+
+People (1):
+  PID     PERSON         LAST RELATED
+  5nmama  Alice Example  2026-07-24T09:45:00Z
+
+Roles (1):
+  ROLE ARN                                   LAST RELATED
+  arn:aws:iam::123456789012:role/DeployRole  2026-07-24T09:45:00Z
+
+Services (1):
+  EVENT SOURCE          LAST RELATED
+  lambda.amazonaws.com  2026-07-24T09:44:00Z
+
+Resources (1):
+  RID     RESOURCE                ACCOUNT       LAST RELATED
+  fyf7wf  lambda:function:worker  123456789012  2026-07-24T09:43:00Z
+
+Explore:
+  → trailtool sessions detail cj6bhlwrp6hfapnw
+  → trailtool people detail 5nmamaaeshnhs6xu
+  → trailtool roles detail arn:aws:iam::123456789012:role/DeployRole
+  → trailtool services detail lambda.amazonaws.com
+  → trailtool resources detail fyf7wfyglmgloz65

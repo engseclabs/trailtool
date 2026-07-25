@@ -1,0 +1,48 @@
+lambda.amazonaws.com
+Display Name:   AWS Lambda
+Category:       Compute
+First Seen:     2026-07-01T08:00:00Z
+Last Seen:      2026-07-24T09:45:00Z
+Total Events:   120
+Roles:          2
+Resources:      5
+People:         1
+Sessions:       4
+Accounts:       1
+Denied Events:  3
+
+Top Events (2):
+  EVENT               COUNT
+  Invoke                 80
+  UpdateFunctionCode     40
+
+⊘ Denied Events (calls AWS rejected):
+  EVENT           DENIED
+  DeleteFunction       3
+
+Roles (1):
+  ROLE ARN                                   LAST RELATED
+  arn:aws:iam::123456789012:role/DeployRole  2026-07-24T09:45:00Z
+
+Resources (1):
+  RID     RESOURCE                ACCOUNT       LAST RELATED
+  fyf7wf  lambda:function:worker  123456789012  2026-07-24T09:43:00Z
+
+Accounts (1):
+  ACCOUNT ID    NAME        LAST RELATED
+  123456789012  production  2026-07-24T09:45:00Z
+
+People (1):
+  PID     PERSON         LAST RELATED
+  5nmama  Alice Example  2026-07-24T09:45:00Z
+
+Recent Sessions (1):
+  SID     ROLE        ACCOUNT       TYPE  EVENTS  TIME
+  cj6bhl  DeployRole  123456789012  WEB       12  2026-07-24T09:00:00Z
+
+Explore:
+  → trailtool roles detail arn:aws:iam::123456789012:role/DeployRole
+  → trailtool resources detail fyf7wfyglmgloz65
+  → trailtool accounts detail 123456789012
+  → trailtool people detail 5nmamaaeshnhs6xu
+  → trailtool sessions detail cj6bhlwrp6hfapnw

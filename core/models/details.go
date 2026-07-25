@@ -72,3 +72,27 @@ type ResourceDetail struct {
 	Resource
 	Related RelatedNouns `json:"related"`
 }
+
+// AccountDetail enriches the stored account with exact noun relationships.
+type AccountDetail struct {
+	Account
+	Related RelatedNouns `json:"related"`
+}
+
+// RoleDetail enriches the stored role with exact noun relationships.
+type RoleDetail struct {
+	Role
+	Related RelatedNouns `json:"related"`
+}
+
+// ServiceDetail enriches the stored service with exact noun relationships.
+type ServiceDetail struct {
+	Service
+	Related RelatedNouns `json:"related"`
+}
+
+// SessionDetail enriches the stored session with exact noun relationships.
+type SessionDetail struct {
+	Session
+	Related RelatedNouns `json:"related"`
+}

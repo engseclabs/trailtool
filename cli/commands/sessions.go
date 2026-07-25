@@ -110,6 +110,8 @@ func sessionsListCmd() *cobra.Command {
 
 func sessionsDetailCmd() *cobra.Command {
 	var user string
+	var limit int
+	var all bool
 
 	cmd := &cobra.Command{
 		Use:   "detail [sid-or-latest]",
@@ -128,6 +130,10 @@ Examples:
 			if selectErr != nil {
 				return fatal("%v", selectErr)
 			}
+			relationLimit, limitErr := detailRelationLimit(cmd, limit, all)
+			if limitErr != nil {
+				return fatal("%v", limitErr)
+			}
 
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
@@ -140,8 +146,20 @@ Examples:
 				return fatal("%v", err)
 			}
 
+			related, err := s.LoadRelatedNouns(
+				ctx,
+				CustomerID,
+				store.RelationKindSession,
+				sess.Ref(),
+				relationLimit,
+			)
+			if err != nil {
+				return fatal("%v", err)
+			}
+			detail := models.SessionDetail{Session: *sess, Related: related}
+
 			if Format == "json" {
-				return printJSON(sess)
+				return printJSON(detail)
 			}
 
 			rctx := renderContext()
@@ -159,9 +177,14 @@ Examples:
 
 			fmt.Print(view.SessionTags(rctx, sess.SessionTags))
 			fmt.Print(view.DeniedEvents(rctx, sess.DeniedEventCount, sess.DeniedEventCounts))
+			fmt.Print(view.SessionClickOps(rctx, sess.ClickOpsEventCount, sess.ClickOpsEventCounts))
 			// Top Events / Resources Accessed now sort count-descending (§5).
 			fmt.Print(view.TopEvents(rctx, sess.EventCounts))
 			fmt.Print(view.ResourcesAccessed(rctx, sess.ResourcesAccessed))
+			fmt.Print(view.SessionResourceActivity(rctx, sess.ResourceAccesses))
+			fmt.Print(view.SessionDeniedActivity(rctx, sess.DeniedResourceAccesses, sess.DeniedEventAccesses))
+			fmt.Print(view.SessionSummary(rctx, sess))
+			fmt.Print(view.SessionRelationships(rctx, &detail))
 
 			// AWS MCP Server agent traffic: show the MCP resource and the human session that
 			// authorized the OAuth grant these agent credentials were minted under.
@@ -226,12 +249,15 @@ Examples:
 			}
 
 			fmt.Print(view.SessionPolicy(rctx, sess.SessionPolicy))
+			fmt.Print(view.SessionNavigation(rctx, &detail))
 
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
+	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
+	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
 
 	return cmd
 }

@@ -21,15 +21,36 @@ import (
 // fixed order between the header and the policy.
 func SessionTitleKV(ctx render.Context, sess *models.Session, personLabel, timeLine string) string {
 	var b strings.Builder
-	b.WriteString(ctx.Title(personLabel + "  " + ctx.Style(render.Muted, "("+sess.PersonKey+")")))
+	b.WriteString(ctx.Title(personLabel))
 
+	sid := sess.Sid
+	if sid == "" {
+		sid = models.SidForRef(sess.Ref())
+	}
 	kv := render.NewKV().
+		Add("SID", ctx.Style(render.Ident, sid)).
+		Add("Person", personLabel+"  "+ctx.Style(render.Muted, "("+sess.PersonKey+")")).
 		Add("Role", ctx.Style(render.Ident, sess.RoleName)+"  "+ctx.Style(render.Muted, "("+sess.RoleARN+")")).
 		Add("Account", sess.AccountID).
 		Add("Type", sess.DetectSessionType()).
-		Add("Session", ctx.Style(render.Ident, sess.SK)).
-		Add("Time", ctx.Style(render.Time, timeLine)).
-		Add("Events", eventsFact(ctx, sess))
+		Add("Internal SK", ctx.Style(render.Muted, sess.SK))
+	if sess.Anchor != "" {
+		kv.Add("Anchor", ctx.Style(render.Muted, sess.Anchor))
+	}
+	kv.Add("Time", ctx.Style(render.Time, timeLine)).
+		Add("Events", eventsFact(ctx, sess)).
+		Add("Resources", count(ctx, sess.ResourcesCount))
+	if len(sess.SourceIPs) > 0 {
+		sourceIPs := append([]string(nil), sess.SourceIPs...)
+		sort.Strings(sourceIPs)
+		kv.Add("Source IPs", strings.Join(sourceIPs, ", "))
+	}
+	if sess.DeniedEventCount > 0 {
+		kv.Add("Denied Events", denied(ctx, sess.DeniedEventCount))
+	}
+	if sess.ClickOpsEventCount > 0 {
+		kv.Add("ClickOps", clickops(ctx, sess.ClickOpsEventCount))
+	}
 	if sess.ServiceDrivenEventCount > 0 {
 		kv.Add("Service-driven", n(sess.ServiceDrivenEventCount)+" (AWS services calling with these credentials)")
 	}

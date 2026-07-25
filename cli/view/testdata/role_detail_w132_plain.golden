@@ -1,0 +1,47 @@
+DeployRole
+ARN:            arn:aws:iam::123456789012:role/DeployRole
+Account:        123456789012
+First Seen:     2026-07-01T08:00:00Z
+Last Seen:      2026-07-24T09:45:00Z
+Total Events:   120
+People:         1
+Sessions:       4
+Denied Events:  3
+
+Top Events (2):
+  EVENT               COUNT
+  Invoke                 80
+  UpdateFunctionCode     40
+
+⊘ Denied Events (calls AWS rejected):
+  EVENT           DENIED
+  DeleteFunction       3
+
+Services (1):
+  EVENT SOURCE          COUNT
+  lambda.amazonaws.com    120
+
+Event to Resource Activity (1):
+  SERVICE               EVENT   RESOURCE                ACCOUNT       COUNT
+  lambda.amazonaws.com  Invoke  lambda:function:worker  123456789012     80
+
+⊘ Denied Activity Details (2):
+  SERVICE               EVENT           RESOURCE                ACCOUNT       DENIED  POLICY ARN                                                                          POLICY TYPE     ERROR
+  lambda.amazonaws.com  DeleteFunction  lambda:function:worker  123456789012       2  arn:aws:organizations::123456789012:policy/o-example/service_control_policy/p-deny  SCP             blocked by organization policy
+  lambda.amazonaws.com  ListFunctions   -                       -                  1                                                                                      identity-based  no identity policy allows this action
+
+Recent Sessions (1):
+  SID     ROLE        ACCOUNT       TYPE  EVENTS  TIME
+  cj6bhl  DeployRole  123456789012  WEB       12  2026-07-24T09:00:00Z
+
+People (1):
+  PID     PERSON         LAST RELATED
+  5nmama  Alice Example  2026-07-24T09:45:00Z
+
+Explore:
+  → trailtool accounts detail 123456789012
+  → trailtool roles policy arn:aws:iam::123456789012:role/DeployRole
+  → trailtool services detail lambda.amazonaws.com
+  → trailtool resources detail fyf7wfyglmgloz65
+  → trailtool sessions detail cj6bhlwrp6hfapnw
+  → trailtool people detail 5nmamaaeshnhs6xu

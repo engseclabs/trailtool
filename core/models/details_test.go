@@ -62,3 +62,64 @@ func TestResourceDetailJSONIncludesRelationshipBounds(t *testing.T) {
 		t.Fatalf("related role = %#v", role)
 	}
 }
+
+func TestExistingNounDetailJSONKeepsTopLevelFields(t *testing.T) {
+	tests := []struct {
+		name      string
+		detail    any
+		field     string
+		wantValue string
+	}{
+		{
+			name: "account",
+			detail: AccountDetail{
+				Account: Account{AccountID: "123456789012"},
+				Related: NewRelatedNouns(),
+			},
+			field: "account_id", wantValue: "123456789012",
+		},
+		{
+			name: "role",
+			detail: RoleDetail{
+				Role:    Role{ARN: "arn:aws:iam::123456789012:role/Deploy"},
+				Related: NewRelatedNouns(),
+			},
+			field: "arn", wantValue: "arn:aws:iam::123456789012:role/Deploy",
+		},
+		{
+			name: "service",
+			detail: ServiceDetail{
+				Service: Service{EventSource: "lambda.amazonaws.com"},
+				Related: NewRelatedNouns(),
+			},
+			field: "event_source", wantValue: "lambda.amazonaws.com",
+		},
+		{
+			name: "session",
+			detail: SessionDetail{
+				Session: Session{Sid: "abcdef"},
+				Related: NewRelatedNouns(),
+			},
+			field: "sid", wantValue: "abcdef",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.detail)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got[tt.field] != tt.wantValue {
+				t.Fatalf("%s = %#v, want %q: %s", tt.field, got[tt.field], tt.wantValue, data)
+			}
+			if _, ok := got["related"].(map[string]any); !ok {
+				t.Fatalf("related payload missing: %s", data)
+			}
+		})
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/engseclabs/trailtool/cli/view"
+	"github.com/engseclabs/trailtool/core/models"
 	"github.com/engseclabs/trailtool/core/store"
 )
 
@@ -48,11 +49,19 @@ func servicesListCmd() *cobra.Command {
 }
 
 func servicesDetailCmd() *cobra.Command {
-	return &cobra.Command{
+	var limit int
+	var all bool
+
+	cmd := &cobra.Command{
 		Use:   "detail <event-source>",
 		Short: "Show service details",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			relationLimit, err := detailRelationLimit(cmd, limit, all)
+			if err != nil {
+				return fatal("%v", err)
+			}
+
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
@@ -75,12 +84,28 @@ func servicesDetailCmd() *cobra.Command {
 				return fatal("service not found: %s", args[0])
 			}
 
+			related, err := s.LoadRelatedNouns(
+				ctx,
+				CustomerID,
+				store.RelationKindService,
+				svc.EventSource,
+				relationLimit,
+			)
+			if err != nil {
+				return fatal("%v", err)
+			}
+			detail := models.ServiceDetail{Service: *svc, Related: related}
+
 			if Format == "json" {
-				return printJSON(svc)
+				return printJSON(detail)
 			}
 
-			fmt.Print(view.ServiceDetail(renderContext(), svc))
+			fmt.Print(view.ServiceDetail(renderContext(), &detail))
 			return nil
 		},
 	}
+
+	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
+	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
+	return cmd
 }

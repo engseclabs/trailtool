@@ -102,6 +102,21 @@ func TestDetailRelationLimitFlags(t *testing.T) {
 	if _, err := detailRelationLimit(cmd, 3, true); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("combined flags error = %v", err)
 	}
+
+	for name, detailCmd := range map[string]*cobra.Command{
+		"account":  accountsDetailCmd(),
+		"person":   peopleDetailCmd(),
+		"resource": resourcesDetailCmd(),
+		"role":     rolesDetailCmd(),
+		"service":  servicesDetailCmd(),
+		"session":  sessionsDetailCmd(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if detailCmd.Flag("limit") == nil || detailCmd.Flag("all") == nil {
+				t.Fatalf("detail command flags = %#v", detailCmd.Flags())
+			}
+		})
+	}
 }
 
 func TestSessionSelector(t *testing.T) {
