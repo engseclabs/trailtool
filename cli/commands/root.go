@@ -73,7 +73,7 @@ func printRefNav(ctx context.Context, rctx render.Context, s *store.Store, headi
 	}
 	fmt.Fprintf(rctx.Out, "%s %s: %s at %s\n",
 		src, rctx.Style(render.Header, heading), who, rctx.Style(render.Time, render.Timestamp(target.StartTime, now)))
-	fmt.Fprintf(rctx.Out, "  %s\n", rctx.Style(render.Nav, rctx.Symbol(render.SymNav)+" trailtool sessions detail --session "+view.SidForRefShort(ref)))
+	fmt.Fprintf(rctx.Out, "  %s\n", rctx.Style(render.Nav, rctx.Symbol(render.SymNav)+" trailtool sessions detail "+view.SidForRefShort(ref)))
 }
 
 // printChildRow renders one child/grant session row in the lineage sections:
@@ -91,10 +91,10 @@ func printChildRow(rctx render.Context, child *models.Session, displayRole, ref 
 		child.DurationMinutes,
 		rctx.Style(render.Time, render.Timestamp(child.StartTime, now)))
 	fmt.Fprintf(rctx.Out, "    %s\n",
-		rctx.Style(render.Nav, rctx.Symbol(render.SymNav)+" trailtool sessions detail --session "+view.SidForRefShort(ref)))
+		rctx.Style(render.Nav, rctx.Symbol(render.SymNav)+" trailtool sessions detail "+view.SidForRefShort(ref)))
 }
 
-// resolveSession finds a single session by --session: a sid prefix, or "latest".
+// resolveSession finds a single session by selector: a SID prefix, or "latest".
 // An empty prefix, no match, or an ambiguous prefix each return an actionable
 // error.
 func resolveSession(ctx context.Context, s *store.Store, sel, user string) (*models.Session, error) {
@@ -128,7 +128,7 @@ func resolveSession(ctx context.Context, s *store.Store, sel, user string) (*mod
 			width = len(sel) + 1
 		}
 		label := personLabels(ctx, s)
-		msg := fmt.Sprintf("%d sessions match id %q — use a longer id:\n", len(matches), sel)
+		msg := fmt.Sprintf("%d sessions match id %q: use a longer id:\n", len(matches), sel)
 		for i := range matches {
 			m := &matches[i]
 			msg += fmt.Sprintf("  %s  %s  %s  %s\n",

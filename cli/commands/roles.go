@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/engseclabs/trailtool/cli/view"
-	"github.com/engseclabs/trailtool/core/models"
 	"github.com/engseclabs/trailtool/core/policy"
 	"github.com/engseclabs/trailtool/core/store"
 )
@@ -52,39 +51,19 @@ func rolesListCmd() *cobra.Command {
 
 func rolesDetailCmd() *cobra.Command {
 	var accountID string
-	var index int
 
 	cmd := &cobra.Command{
-		Use:   "detail [role-name-or-arn]",
+		Use:   "detail <role-arn-or-name>",
 		Short: "Show role details",
-		Args:  cobra.MaximumNArgs(1),
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 && index == 0 {
-				return fatal("role-name-or-arn argument or --index is required")
-			}
-			if len(args) > 0 && index != 0 {
-				return fatal("role-name-or-arn argument and --index are mutually exclusive")
-			}
-
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
 				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
-			var role *models.Role
-			if index != 0 {
-				roles, listErr := s.ListRoles(ctx, CustomerID)
-				if listErr != nil {
-					return fatal("%v", listErr)
-				}
-				if index < 1 || index > len(roles) {
-					return fatal("--index %d out of range (1-%d)", index, len(roles))
-				}
-				role, err = lookupRole(ctx, s, roles[index-1].ARN, accountID)
-			} else {
-				role, err = lookupRole(ctx, s, args[0], accountID)
-			}
+			role, err := lookupRole(ctx, s, args[0], accountID)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -102,7 +81,6 @@ func rolesDetailCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&accountID, "account", "", "Filter by AWS account ID (disambiguates roles with the same name)")
-	cmd.Flags().IntVar(&index, "index", 0, "Select role by list index (from 'roles list')")
 
 	return cmd
 }
@@ -113,7 +91,7 @@ func rolesPolicyCmd() *cobra.Command {
 	var accountID string
 
 	cmd := &cobra.Command{
-		Use:   "policy [role-name-or-arn]",
+		Use:   "policy <role-arn-or-name>",
 		Short: "Generate least-privilege IAM policy for a role",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

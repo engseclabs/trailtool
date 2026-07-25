@@ -1,3 +1,3 @@
-[1m[2m#  NAME                 ACCOUNT       EVENTS  PEOPLE  SESSIONS  DENIED  LAST SEEN[0m
-1  [36mAdministratorAccess[0m  123456789012     420       5        30       [31m7[0m  2026-07-24T11:00:00Z
-2  [36mReadOnly[0m             123456789012      88       2         9       [2m0[0m  2026-07-22T08:00:00Z
+[1m[2mROLE ARN                                            EVENTS  DENIED  LAST SEEN[0m
+[36marn:aws:iam::123456789012:role/AdministratorAccess[0m     420       [31m7[0m  2026-07-24T11:00:00Z
+[36marn:aws:iam::123456789012:role/ReadOnly[0m                 88       [2m0[0m  2026-07-22T08:00:00Z

@@ -10,6 +10,7 @@ import (
 // the tier-prefixed person key (idc#…, email#…, iamuser#…, root#…) resolved by
 // the ingestor's identity tiers.
 type Person struct {
+	Pid                 string         `json:"pid,omitempty" dynamodbav:"-"`
 	PersonKey           string         `json:"person_key" dynamodbav:"person_key"`
 	Tier                int            `json:"tier,omitempty" dynamodbav:"tier"`
 	Email               string         `json:"email,omitempty" dynamodbav:"email"`
@@ -25,6 +26,14 @@ type Person struct {
 	EventsCount         int            `json:"events_count" dynamodbav:"events_count"`
 	DeniedEventCount    int            `json:"denied_event_count,omitempty" dynamodbav:"denied_event_count"`
 	TopDeniedEventNames map[string]int `json:"top_denied_event_names,omitempty" dynamodbav:"top_denied_event_names"`
+}
+
+// PID returns the stable person selector derived from the canonical person key.
+func (p *Person) PID() string {
+	if p.Pid != "" {
+		return p.Pid
+	}
+	return PIDForPersonKey(p.PersonKey)
 }
 
 // DisplayLabel returns the friendliest identifier for the person: display
@@ -47,7 +56,7 @@ type Session struct {
 	SK string `json:"sk" dynamodbav:"sk"` // anchor#roleID | win#roleID#start
 
 	// Sid is the short deterministic session id (sort key of the sid_index GSI).
-	// The CLI shows a prefix of it and resolves "--session <prefix>" against the
+	// The CLI shows a prefix of it and resolves positional selectors against the
 	// index. Written by the ingestor; empty on records ingested before sids.
 	Sid string `json:"sid,omitempty" dynamodbav:"sid"`
 
@@ -153,18 +162,32 @@ func (s *Session) Normalize() *Session {
 	return s
 }
 
-// sidLength mirrors identity.SidLength on the ingestor side. The two trees don't
-// import each other (see core vs ingestor separation), so the algorithm is
-// duplicated deliberately — like Ref() / SessionRef(). Keep them in sync.
-const sidLength = 16
+// derivedIDLength is shared by PID, RID, and SID. The SID algorithm mirrors the
+// ingestor write side; the module trees do not import each other.
+const derivedIDLength = 16
+
+func digestID(input string) string {
+	sum := sha256.Sum256([]byte(input))
+	enc := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])
+	return strings.ToLower(enc[:derivedIDLength])
+}
+
+// PIDForPersonKey derives a stable person selector from the canonical key.
+func PIDForPersonKey(personKey string) string {
+	return digestID("person:v1\x00" + personKey)
+}
+
+// RIDForResource derives a stable resource selector from its owner account and
+// normalized identifier.
+func RIDForResource(accountID, identifier string) string {
+	return digestID("resource:v1\x00" + accountID + "\x00" + identifier)
+}
 
 // SidForRef derives the deterministic session id from a ref ("person_key|sk").
-// Used to print "--session <sid>" drilldown hints without re-fetching the target
+// Used to print positional SID drilldown hints without re-fetching the target
 // session, and it must produce the same value the ingestor stored.
 func SidForRef(ref string) string {
-	sum := sha256.Sum256([]byte(ref))
-	enc := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])
-	return strings.ToLower(enc[:sidLength])
+	return digestID(ref)
 }
 
 // SidForRef on the concrete session, from its own ref.
@@ -294,6 +317,7 @@ type ClickOpsAccess struct {
 
 // Resource represents an aggregated resource record from the resources-aggregated table
 type Resource struct {
+	Rid         string `json:"rid,omitempty" dynamodbav:"-"`
 	ResourceKey string `json:"-" dynamodbav:"resource_key"`
 	Identifier  string `json:"identifier" dynamodbav:"identifier"`
 	Type        string `json:"type" dynamodbav:"type"`
@@ -323,6 +347,15 @@ type Resource struct {
 	// Activity tracking
 	FirstSeen string `json:"first_seen" dynamodbav:"first_seen"`
 	LastSeen  string `json:"last_seen" dynamodbav:"last_seen"`
+}
+
+// RID returns the stable resource selector derived from the owner account and
+// normalized identifier.
+func (r *Resource) RID() string {
+	if r.Rid != "" {
+		return r.Rid
+	}
+	return RIDForResource(r.AccountID, r.Identifier)
 }
 
 // EventAccessItem tracks event access details for role aggregation

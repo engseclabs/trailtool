@@ -2,6 +2,9 @@
 
 For status and rollout see https://github.com/engseclabs/trailtool/issues/25
 
+> The selector behavior documented here is superseded by
+> [Noun UX and Data Contracts](noun-ux-and-data-contracts.md).
+
 ## 1. Summary
 
 TrailTool's human-readable output grew organically inside a single 1550-line

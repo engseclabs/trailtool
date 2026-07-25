@@ -7,12 +7,11 @@ import (
 	"github.com/engseclabs/trailtool/internal/render"
 )
 
-// Standard-list rendering (§5). Each list is one render.Table with a leading `#`
-// index column (rows stay addressable by index for detail commands — a hard
-// constraint, §8). Headers are UPPERCASE and Header-styled by the table; numeric
-// columns are right-aligned and a zero renders as "0" (§4.4). No result count is
-// printed for plain lists, keeping them pipe-clean; empty results render a single
-// Empty line instead of a header-only table (§5).
+// Standard-list rendering (§4). Lists expose stable selectors instead of row
+// numbers. Headers are UPPERCASE and Header-styled by the table; numeric columns
+// are right-aligned and a zero renders as "0". No result count is printed for
+// plain lists, keeping them pipe-clean; empty results render a single Empty line
+// instead of a header-only table.
 //
 // Views return the rendered string so they are golden-testable without AWS; the
 // command layer prints the result.
@@ -31,26 +30,40 @@ func People(ctx render.Context, people []models.Person) string {
 	if len(people) == 0 {
 		return ctx.Empty("No people found.") + "\n"
 	}
-	t := render.NewTable(
-		render.Column{Header: "#", Align: render.AlignRight},
-		render.Column{Header: "PERSON", Align: render.AlignLeft},
-		render.Column{Header: "KEY", Align: render.AlignLeft},
-		render.Column{Header: "SESSIONS", Align: render.AlignRight},
-		render.Column{Header: "ROLES", Align: render.AlignRight},
-		render.Column{Header: "ACCOUNTS", Align: render.AlignRight},
-		render.Column{Header: "LAST SEEN", Align: render.AlignLeft},
-	)
+	showWide := ctx.Width >= 100
+	columns := []render.Column{
+		{Header: "PID", Align: render.AlignLeft},
+		{Header: "PERSON", Align: render.AlignLeft},
+		{Header: "EVENTS", Align: render.AlignRight},
+		{Header: "LAST SEEN", Align: render.AlignLeft},
+	}
+	if showWide {
+		columns = append(columns,
+			render.Column{Header: "SESSIONS", Align: render.AlignRight},
+			render.Column{Header: "ROLES", Align: render.AlignRight},
+			render.Column{Header: "ACCOUNTS", Align: render.AlignRight},
+			render.Column{Header: "DENIED", Align: render.AlignRight},
+		)
+	}
+	t := render.NewTable(columns...)
+	pidWidth := PersonIDDisplayWidth(people)
 	for i := range people {
 		p := &people[i]
-		t.Row(
-			n(i+1),
+		row := []string{
+			ident(ctx, shortID(p.PID(), pidWidth)),
 			ident(ctx, p.DisplayLabel()),
-			ShortPersonKey(p.PersonKey),
-			count(ctx, p.SessionsCount),
-			count(ctx, p.RolesCount),
-			count(ctx, p.AccountsCount),
+			count(ctx, p.EventsCount),
 			ctx.Style(render.Time, p.LastSeen),
-		)
+		}
+		if showWide {
+			row = append(row,
+				count(ctx, p.SessionsCount),
+				count(ctx, p.RolesCount),
+				count(ctx, p.AccountsCount),
+				denied(ctx, p.DeniedEventCount),
+			)
+		}
+		t.Row(row...)
 	}
 	return ctx.RenderTable(t, 0)
 }
@@ -60,30 +73,51 @@ func Accounts(ctx render.Context, accounts []models.Account) string {
 	if len(accounts) == 0 {
 		return ctx.Empty("No accounts found.") + "\n"
 	}
-	t := render.NewTable(
-		render.Column{Header: "#", Align: render.AlignRight},
-		render.Column{Header: "ACCOUNT ID", Align: render.AlignLeft},
-		render.Column{Header: "NAME", Align: render.AlignLeft},
-		render.Column{Header: "PEOPLE", Align: render.AlignRight},
-		render.Column{Header: "SESSIONS", Align: render.AlignRight},
-		render.Column{Header: "ROLES", Align: render.AlignRight},
-		render.Column{Header: "SERVICES", Align: render.AlignRight},
-		render.Column{Header: "RESOURCES", Align: render.AlignRight},
+	showWide := ctx.Width >= 132
+	showName := false
+	for i := range accounts {
+		showName = showName || accounts[i].AccountName != ""
+	}
+	columns := []render.Column{{Header: "ACCOUNT ID", Align: render.AlignLeft}}
+	if showName {
+		columns = append(columns, render.Column{Header: "NAME", Align: render.AlignLeft})
+	}
+	columns = append(columns,
+		render.Column{Header: "EVENTS", Align: render.AlignRight},
 		render.Column{Header: "LAST SEEN", Align: render.AlignLeft},
 	)
+	if showWide {
+		columns = append(columns,
+			render.Column{Header: "SESSIONS", Align: render.AlignRight},
+			render.Column{Header: "PEOPLE", Align: render.AlignRight},
+			render.Column{Header: "ROLES", Align: render.AlignRight},
+			render.Column{Header: "SERVICES", Align: render.AlignRight},
+			render.Column{Header: "RESOURCES", Align: render.AlignRight},
+			render.Column{Header: "DENIED", Align: render.AlignRight},
+		)
+	}
+	t := render.NewTable(columns...)
 	for i := range accounts {
 		a := &accounts[i]
-		t.Row(
-			n(i+1),
-			ident(ctx, a.AccountID),
-			a.AccountName,
-			count(ctx, a.PeopleCount),
-			count(ctx, a.SessionsCount),
-			count(ctx, a.RolesCount),
-			count(ctx, a.ServicesCount),
-			count(ctx, a.ResourcesCount),
+		row := []string{ident(ctx, a.AccountID)}
+		if showName {
+			row = append(row, a.AccountName)
+		}
+		row = append(row,
+			count(ctx, a.EventsCount),
 			ctx.Style(render.Time, a.LastSeen),
 		)
+		if showWide {
+			row = append(row,
+				count(ctx, a.SessionsCount),
+				count(ctx, a.PeopleCount),
+				count(ctx, a.RolesCount),
+				count(ctx, a.ServicesCount),
+				count(ctx, a.ResourcesCount),
+				denied(ctx, a.TotalDeniedEvents),
+			)
+		}
+		t.Row(row...)
 	}
 	return ctx.RenderTable(t, 0)
 }
@@ -94,28 +128,35 @@ func Roles(ctx render.Context, roles []models.Role) string {
 	if len(roles) == 0 {
 		return ctx.Empty("No roles found.") + "\n"
 	}
-	t := render.NewTable(
-		render.Column{Header: "#", Align: render.AlignRight},
-		render.Column{Header: "NAME", Align: render.AlignLeft},
-		render.Column{Header: "ACCOUNT", Align: render.AlignLeft},
-		render.Column{Header: "EVENTS", Align: render.AlignRight},
-		render.Column{Header: "PEOPLE", Align: render.AlignRight},
-		render.Column{Header: "SESSIONS", Align: render.AlignRight},
-		render.Column{Header: "DENIED", Align: render.AlignRight},
-		render.Column{Header: "LAST SEEN", Align: render.AlignLeft},
-	)
+	showWide := ctx.Width >= 132
+	columns := []render.Column{
+		{Header: "ROLE ARN", Align: render.AlignLeft},
+		{Header: "EVENTS", Align: render.AlignRight},
+		{Header: "DENIED", Align: render.AlignRight},
+		{Header: "LAST SEEN", Align: render.AlignLeft},
+	}
+	if showWide {
+		columns = append(columns,
+			render.Column{Header: "SESSIONS", Align: render.AlignRight},
+			render.Column{Header: "PEOPLE", Align: render.AlignRight},
+		)
+	}
+	t := render.NewTable(columns...)
 	for i := range roles {
 		r := &roles[i]
-		t.Row(
-			n(i+1),
-			ident(ctx, r.Name),
-			r.AccountID,
+		row := []string{
+			ident(ctx, r.ARN),
 			count(ctx, r.TotalEvents),
-			count(ctx, r.PeopleCount),
-			count(ctx, r.SessionsCount),
 			denied(ctx, r.TotalDeniedEvents),
 			ctx.Style(render.Time, r.LastSeen),
-		)
+		}
+		if showWide {
+			row = append(row,
+				count(ctx, r.SessionsCount),
+				count(ctx, r.PeopleCount),
+			)
+		}
+		t.Row(row...)
 	}
 	return ctx.RenderTable(t, 0)
 }
@@ -125,28 +166,41 @@ func Services(ctx render.Context, services []models.Service) string {
 	if len(services) == 0 {
 		return ctx.Empty("No services found.") + "\n"
 	}
-	t := render.NewTable(
-		render.Column{Header: "#", Align: render.AlignRight},
-		render.Column{Header: "SERVICE", Align: render.AlignLeft},
-		render.Column{Header: "DISPLAY NAME", Align: render.AlignLeft},
-		render.Column{Header: "EVENTS", Align: render.AlignRight},
-		render.Column{Header: "ROLES", Align: render.AlignRight},
-		render.Column{Header: "RESOURCES", Align: render.AlignRight},
-		render.Column{Header: "PEOPLE", Align: render.AlignRight},
-		render.Column{Header: "LAST SEEN", Align: render.AlignLeft},
-	)
+	showWide := ctx.Width >= 132
+	columns := []render.Column{
+		{Header: "EVENT SOURCE", Align: render.AlignLeft},
+		{Header: "EVENTS", Align: render.AlignRight},
+		{Header: "DENIED", Align: render.AlignRight},
+		{Header: "LAST SEEN", Align: render.AlignLeft},
+	}
+	if showWide {
+		columns = append(columns,
+			render.Column{Header: "ROLES", Align: render.AlignRight},
+			render.Column{Header: "RESOURCES", Align: render.AlignRight},
+			render.Column{Header: "PEOPLE", Align: render.AlignRight},
+			render.Column{Header: "SESSIONS", Align: render.AlignRight},
+			render.Column{Header: "ACCOUNTS", Align: render.AlignRight},
+		)
+	}
+	t := render.NewTable(columns...)
 	for i := range services {
 		svc := &services[i]
-		t.Row(
-			n(i+1),
+		row := []string{
 			ident(ctx, svc.EventSource),
-			svc.DisplayName,
 			count(ctx, svc.TotalEvents),
-			count(ctx, svc.RolesCount),
-			count(ctx, svc.ResourcesCount),
-			count(ctx, svc.PeopleCount),
+			denied(ctx, svc.TotalDeniedEvents),
 			ctx.Style(render.Time, svc.LastSeen),
-		)
+		}
+		if showWide {
+			row = append(row,
+				count(ctx, svc.RolesCount),
+				count(ctx, svc.ResourcesCount),
+				count(ctx, svc.PeopleCount),
+				count(ctx, svc.SessionsCount),
+				count(ctx, svc.AccountsCount),
+			)
+		}
+		t.Row(row...)
 	}
 	return ctx.RenderTable(t, 0)
 }
@@ -156,26 +210,48 @@ func Resources(ctx render.Context, resources []models.Resource) string {
 	if len(resources) == 0 {
 		return ctx.Empty("No resources found.") + "\n"
 	}
-	t := render.NewTable(
-		render.Column{Header: "#", Align: render.AlignRight},
-		render.Column{Header: "RESOURCE", Align: render.AlignLeft},
-		render.Column{Header: "TYPE", Align: render.AlignLeft},
-		render.Column{Header: "ACCOUNT", Align: render.AlignLeft},
-		render.Column{Header: "EVENTS", Align: render.AlignRight},
-		render.Column{Header: "CLICKOPS", Align: render.AlignRight},
-		render.Column{Header: "LAST SEEN", Align: render.AlignLeft},
-	)
+	showWide := ctx.Width >= 132
+	columns := []render.Column{
+		{Header: "RID", Align: render.AlignLeft},
+		{Header: "RESOURCE", Align: render.AlignLeft},
+		{Header: "ACCOUNT", Align: render.AlignLeft},
+		{Header: "EVENTS", Align: render.AlignRight},
+		{Header: "LAST SEEN", Align: render.AlignLeft},
+	}
+	if showWide {
+		columns = append(columns,
+			render.Column{Header: "TYPE", Align: render.AlignLeft},
+			render.Column{Header: "DENIED", Align: render.AlignRight},
+			render.Column{Header: "CLICKOPS", Align: render.AlignRight},
+			render.Column{Header: "ROLES", Align: render.AlignRight},
+			render.Column{Header: "SESSIONS", Align: render.AlignRight},
+		)
+	}
+	t := render.NewTable(columns...)
+	ridWidth := ResourceIDDisplayWidth(resources)
 	for i := range resources {
 		r := &resources[i]
-		t.Row(
-			n(i+1),
-			ident(ctx, r.Name),
-			r.Type,
+		resourceLabel := r.Identifier
+		if resourceLabel == "" {
+			resourceLabel = r.Name
+		}
+		row := []string{
+			ident(ctx, shortID(r.RID(), ridWidth)),
+			ident(ctx, resourceLabel),
 			r.AccountID,
 			count(ctx, r.TotalEvents),
-			clickops(ctx, r.ClickOpsCount),
 			ctx.Style(render.Time, r.LastSeen),
-		)
+		}
+		if showWide {
+			row = append(row,
+				r.Type,
+				denied(ctx, r.TotalDeniedEvents),
+				clickops(ctx, r.ClickOpsCount),
+				count(ctx, r.RolesCount),
+				count(ctx, r.SessionsCount),
+			)
+		}
+		t.Row(row...)
 	}
 	return ctx.RenderTable(t, 0)
 }
