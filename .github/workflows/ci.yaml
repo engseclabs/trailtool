@@ -10,7 +10,12 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  # Root and ingestor are separate Go modules. Running them as separate jobs
+  # lets them compile concurrently on their own runners, and gives each its own
+  # setup-go cache keyed on its own go.sum so both modules' build caches
+  # (GOCACHE) and module caches (GOMODCACHE) survive across runs. A single job
+  # keyed on the root go.sum would leave the ingestor cache un-restored.
+  root:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,26 +24,32 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Vet (root module)
+      - name: Vet
         run: go vet ./...
 
-      - name: Test (root module)
+      - name: Test
         run: go test ./...
 
+      # Cheap after Test warmed the cache; keeps an explicit "the binary links"
+      # signal for the shipped entrypoint.
       - name: Build
         run: go build ./cmd/trailtool/
 
-      # ingestor/ is a separate Go module, so the root `./...` above never
-      # descends into it. Run its vet/test explicitly or its packages (parser,
-      # aggregator, session, dynamodb) go unchecked in CI.
-      - name: Vet (ingestor module)
+  ingestor:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
         working-directory: ingestor
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ingestor/go.mod
+          cache-dependency-path: ingestor/go.sum
+
+      - name: Vet
         run: go vet ./...
 
-      - name: Test (ingestor module)
-        working-directory: ingestor
+      - name: Test
         run: go test ./...
-
-      - name: Build (ingestor)
-        working-directory: ingestor
-        run: go build ./...
