@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
@@ -239,10 +240,28 @@ func MergeEventAccessItems(a, b []types.EventAccessItem) []types.EventAccessItem
 	return result
 }
 
-// WriteServiceToDynamoDB writes or updates a service in DynamoDB
-func WriteServiceToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, service *types.DynamoDBService) error {
+// WriteServiceToDynamoDB merges a per-batch service record into DynamoDB.
+func WriteServiceToDynamoDB(ctx context.Context, ddbClient EntityStore, tableName string, service *types.DynamoDBService) error {
 	service.RolesCount = len(service.RolesUsing)
 	service.ResourcesCount = len(service.ResourcesUsed)
+
+	getResult, err := ddbClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(tableName),
+		Key: map[string]ddbtypes.AttributeValue{
+			"customerId":   &ddbtypes.AttributeValueMemberS{Value: service.CustomerID},
+			"event_source": &ddbtypes.AttributeValueMemberS{Value: service.EventSource},
+		},
+	})
+	if err != nil {
+		log.Printf("WARNING: Failed to get existing service: %v", err)
+	} else if len(getResult.Item) > 0 {
+		var existing types.DynamoDBService
+		if err := attributevalue.UnmarshalMap(getResult.Item, &existing); err != nil {
+			log.Printf("WARNING: Failed to unmarshal existing service: %v", err)
+		} else {
+			service = MergeServiceAggregated(&existing, service)
+		}
+	}
 
 	item, err := attributevalue.MarshalMap(service)
 	if err != nil {
@@ -255,6 +274,33 @@ func WriteServiceToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tab
 	})
 
 	return err
+}
+
+// MergeServiceAggregated merges activity from two batches. Relationship counts
+// use max until the relation table supplies exact global distinct counts.
+func MergeServiceAggregated(existing, incoming *types.DynamoDBService) *types.DynamoDBService {
+	rolesUsing := mergeSortedUniqueStrings(existing.RolesUsing, incoming.RolesUsing)
+	resourcesUsed := mergeSortedUniqueStrings(existing.ResourcesUsed, incoming.ResourcesUsed)
+
+	return &types.DynamoDBService{
+		CustomerID:          stableNonEmpty(existing.CustomerID, incoming.CustomerID),
+		EventSource:         stableNonEmpty(existing.EventSource, incoming.EventSource),
+		DisplayName:         stableNonEmpty(existing.DisplayName, incoming.DisplayName),
+		Category:            stableNonEmpty(existing.Category, incoming.Category),
+		TotalEvents:         existing.TotalEvents + incoming.TotalEvents,
+		RolesUsing:          rolesUsing,
+		RolesCount:          len(rolesUsing),
+		ResourcesUsed:       resourcesUsed,
+		ResourcesCount:      len(resourcesUsed),
+		TopEventNames:       MergeIntMaps(existing.TopEventNames, incoming.TopEventNames),
+		FirstSeen:           earliestNonEmpty(existing.FirstSeen, incoming.FirstSeen),
+		LastSeen:            latestNonEmpty(existing.LastSeen, incoming.LastSeen),
+		TotalDeniedEvents:   existing.TotalDeniedEvents + incoming.TotalDeniedEvents,
+		TopDeniedEventNames: MergeIntMaps(existing.TopDeniedEventNames, incoming.TopDeniedEventNames),
+		PeopleCount:         maxInt(existing.PeopleCount, incoming.PeopleCount),
+		SessionsCount:       maxInt(existing.SessionsCount, incoming.SessionsCount),
+		AccountsCount:       maxInt(existing.AccountsCount, incoming.AccountsCount),
+	}
 }
 
 // WriteResourceToDynamoDB writes or updates a resource in DynamoDB using read-merge-write pattern
@@ -391,8 +437,26 @@ func MergeClickOpsAccesses(a, b []types.ClickOpsAccess) []types.ClickOpsAccess {
 	return result
 }
 
-// WriteAccountToDynamoDB writes or updates an account in DynamoDB
-func WriteAccountToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, account *types.DynamoDBAccount) error {
+// WriteAccountToDynamoDB merges a per-batch account record into DynamoDB.
+func WriteAccountToDynamoDB(ctx context.Context, ddbClient EntityStore, tableName string, account *types.DynamoDBAccount) error {
+	getResult, err := ddbClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(tableName),
+		Key: map[string]ddbtypes.AttributeValue{
+			"customerId": &ddbtypes.AttributeValueMemberS{Value: account.CustomerID},
+			"account_id": &ddbtypes.AttributeValueMemberS{Value: account.AccountID},
+		},
+	})
+	if err != nil {
+		log.Printf("WARNING: Failed to get existing account: %v", err)
+	} else if len(getResult.Item) > 0 {
+		var existing types.DynamoDBAccount
+		if err := attributevalue.UnmarshalMap(getResult.Item, &existing); err != nil {
+			log.Printf("WARNING: Failed to unmarshal existing account: %v", err)
+		} else {
+			account = MergeAccountAggregated(&existing, account)
+		}
+	}
+
 	item, err := attributevalue.MarshalMap(account)
 	if err != nil {
 		return fmt.Errorf("failed to marshal account: %w", err)
@@ -404,4 +468,49 @@ func WriteAccountToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tab
 	})
 
 	return err
+}
+
+// MergeAccountAggregated merges activity from two batches. Relationship counts
+// use max until the relation table supplies exact global distinct counts.
+func MergeAccountAggregated(existing, incoming *types.DynamoDBAccount) *types.DynamoDBAccount {
+	return &types.DynamoDBAccount{
+		CustomerID:     stableNonEmpty(existing.CustomerID, incoming.CustomerID),
+		AccountID:      stableNonEmpty(existing.AccountID, incoming.AccountID),
+		AccountName:    stableNonEmpty(existing.AccountName, incoming.AccountName),
+		FirstSeen:      earliestNonEmpty(existing.FirstSeen, incoming.FirstSeen),
+		LastSeen:       latestNonEmpty(existing.LastSeen, incoming.LastSeen),
+		PeopleCount:    maxInt(existing.PeopleCount, incoming.PeopleCount),
+		SessionsCount:  maxInt(existing.SessionsCount, incoming.SessionsCount),
+		RolesCount:     maxInt(existing.RolesCount, incoming.RolesCount),
+		ServicesCount:  maxInt(existing.ServicesCount, incoming.ServicesCount),
+		ResourcesCount: maxInt(existing.ResourcesCount, incoming.ResourcesCount),
+		EventsCount:    existing.EventsCount + incoming.EventsCount,
+	}
+}
+
+func mergeSortedUniqueStrings(a, b []string) []string {
+	merged := MergeUniqueStrings(a, b)
+	sort.Strings(merged)
+	return merged
+}
+
+func stableNonEmpty(a, b string) string {
+	return earliestNonEmpty(a, b)
+}
+
+func earliestNonEmpty(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" || a < b {
+		return a
+	}
+	return b
+}
+
+func latestNonEmpty(a, b string) string {
+	if a > b {
+		return a
+	}
+	return b
 }
