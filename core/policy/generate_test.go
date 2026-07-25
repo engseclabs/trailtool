@@ -52,12 +52,19 @@ func TestGeneratePolicyFallsBackToRoleAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GeneratePolicy() error = %v", err)
 	}
-	if len(got.Actions) != 1 || len(got.Actions[0].Resources) != 1 {
-		t.Fatalf("actions = %#v", got.Actions)
+	var getItem *IAMActionUsage
+	for i := range got.Actions {
+		if got.Actions[i].Action == "dynamodb:GetItem" {
+			getItem = &got.Actions[i]
+			break
+		}
+	}
+	if getItem == nil || len(getItem.Resources) != 1 {
+		t.Fatalf("dynamodb:GetItem action = %#v; actions = %#v", getItem, got.Actions)
 	}
 	want := "arn:aws:dynamodb:*:111111111111:table/orders"
-	if got.Actions[0].Resources[0] != want {
-		t.Fatalf("resource ARN = %q, want %q", got.Actions[0].Resources[0], want)
+	if getItem.Resources[0] != want {
+		t.Fatalf("resource ARN = %q, want %q", getItem.Resources[0], want)
 	}
 }
 

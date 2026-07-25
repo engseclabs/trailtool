@@ -142,7 +142,7 @@ Tighten IAM roles by generating policies based on actual usage observed in Cloud
 
 **When to use each:** Role-scoped gives a policy that covers everything the role has ever done and is best for long-lived roles. Session-scoped is tighter and is best when you want to scope a policy to a specific workflow (a deploy pipeline, a one-off migration, an agent task).
 
-**Context:** The generated policy uses IAM action mappings from CloudTrail event names; some events may not map cleanly. The `--explain` flag surfaces unmapped events so you can handle them manually.
+**Context:** The generated policy maps CloudTrail operations to IAM actions with the [AWS Service Authorization Reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html). Some services do not publish operation mappings; `--explain` surfaces those fallback mappings so you can review them manually.
 
 ### 3. Respond to AccessDenied errors
 
