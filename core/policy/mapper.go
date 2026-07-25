@@ -12,11 +12,8 @@ type IAMActionMapper struct {
 
 // NewIAMActionMapper creates a new mapper with comprehensive AWS service mappings
 func NewIAMActionMapper() *IAMActionMapper {
-	m := &IAMActionMapper{
-		mappings: make(map[string][]string),
-	}
-	m.loadDatasetMappings()
-	m.initializeSpecialCases()
+	m := &IAMActionMapper{}
+	m.loadServiceAuthorizationMappings()
 	return m
 }
 
@@ -47,8 +44,6 @@ func (m *IAMActionMapper) normalizeEventSource(eventSource string) string {
 	switch service {
 	case "monitoring":
 		return "cloudwatch"
-	case "logs":
-		return "cloudwatchlogs"
 	default:
 		return service
 	}
@@ -69,16 +64,4 @@ func (m *IAMActionMapper) normalizeEventName(eventName string) string {
 		}
 	}
 	return eventName
-}
-
-func (m *IAMActionMapper) addMapping(key string, actions ...string) {
-	m.mappings[key] = actions
-}
-
-func (m *IAMActionMapper) initializeSpecialCases() {
-	m.addMapping("cloudformation:CreateStack", "cloudformation:CreateStack", "iam:PassRole")
-	m.addMapping("cloudformation:UpdateStack", "cloudformation:UpdateStack", "iam:PassRole")
-	m.addMapping("cloudformation:ExecuteChangeSet", "cloudformation:ExecuteChangeSet", "iam:PassRole")
-	m.addMapping("s3:HeadBucket", "s3:ListBucket")
-	m.addMapping("s3:HeadObject", "s3:GetObject")
 }
