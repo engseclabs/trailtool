@@ -63,6 +63,7 @@ go install github.com/engseclabs/trailtool/cmd/trailtool@latest
 ```bash
 # People
 trailtool people list
+trailtool people detail 5nmama                    # by PID (prefix ok)
 
 # Sessions
 trailtool sessions list --user alice@example.com --days 7
@@ -95,6 +96,7 @@ trailtool resources list --days 30
 trailtool resources list --clickops                    # ClickOps: console-created resources
 trailtool resources list --clickops --service iam      # ClickOps filtered by service
 trailtool resources list --service s3 --days 7
+trailtool resources detail fyf7wf                      # by RID (prefix ok)
 ```
 
 All commands support `--format json` for machine-readable output.

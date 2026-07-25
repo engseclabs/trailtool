@@ -42,6 +42,16 @@ func ShortRoleID(role *models.Role, width int) string {
 	return shortID(role.RoleID(), width)
 }
 
+// ShortPersonID renders a person's PID at the requested display width.
+func ShortPersonID(person *models.Person, width int) string {
+	return shortID(person.PID(), width)
+}
+
+// ShortResourceID renders a resource's RID at the requested display width.
+func ShortResourceID(resource *models.Resource, width int) string {
+	return shortID(resource.RID(), width)
+}
+
 func uniqueIDWidth(ids []string) int {
 	for width := nounIDDisplayMin; width <= nounIDFullLen; width++ {
 		seen := make(map[string]bool, len(ids))

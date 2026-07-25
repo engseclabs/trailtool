@@ -1,0 +1,47 @@
+Alice Example
+PID:              5nmamaaeshnhs6xu
+Person Key:       email#alice@example.com
+Resolution Tier:  Identity Center
+Primary Email:    alice@example.com
+Email Aliases:    a.smith@example.com, alice@example.com
+First Seen:       2026-07-01T08:00:00Z
+Last Seen:        2026-07-24T09:45:00Z
+Events:           120
+Sessions:         4
+Accounts:         1
+Roles:            2
+Services:         3
+Resources:        5
+Denied Events:    3
+
+⊘ Denied Events (calls AWS rejected):
+  EVENT                          DENIED
+  iam.amazonaws.com:CreateRole        2
+  s3.amazonaws.com:DeleteBucket       1
+
+Recent Sessions (1):
+  SID     ROLE        ACCOUNT       TYPE  EVENTS  TIME
+  cj6bhl  DeployRole  123456789012  CLI       30  2026-07-24T09:00:00Z
+
+Accounts (1):
+  ACCOUNT ID    NAME        LAST RELATED
+  123456789012  production  2026-07-24T09:45:00Z
+
+Roles (1):
+  ROLE ARN                                   LAST RELATED
+  arn:aws:iam::123456789012:role/DeployRole  2026-07-24T09:45:00Z
+
+Services (1):
+  EVENT SOURCE          LAST RELATED
+  lambda.amazonaws.com  2026-07-24T09:44:00Z
+
+Resources (1):
+  RID     RESOURCE                ACCOUNT       LAST RELATED
+  fyf7wf  lambda:function:worker  123456789012  2026-07-24T09:43:00Z
+
+Explore:
+  → trailtool sessions detail cj6bhlwrp6hfapnw
+  → trailtool accounts detail 123456789012
+  → trailtool roles detail arn:aws:iam::123456789012:role/DeployRole
+  → trailtool services detail lambda.amazonaws.com
+  → trailtool resources detail fyf7wfyglmgloz65
