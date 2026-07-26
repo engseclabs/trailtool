@@ -12,16 +12,18 @@ import (
 	"github.com/engseclabs/trailtool/core/store"
 )
 
-// fakeResetter records whether Reset ran and returns canned counts.
+// fakeResetter records whether Reset and CountItems ran and returns canned data.
 type fakeResetter struct {
 	counts   []store.TableReset
 	results  []store.TableReset
 	resetRan bool
+	countRan bool
 	countErr error
 	resetErr error
 }
 
 func (f *fakeResetter) CountItems(context.Context, []string) ([]store.TableReset, error) {
+	f.countRan = true
 	return f.counts, f.countErr
 }
 
@@ -106,6 +108,9 @@ func TestResetYesFlagSkipsPrompt(t *testing.T) {
 	}
 	if !f.resetRan {
 		t.Fatal("--yes did not run Reset")
+	}
+	if f.countRan {
+		t.Fatal("--yes still ran the count query; it should be skipped")
 	}
 	if strings.Contains(out.String(), "Type 'yes'") {
 		t.Fatalf("--yes still prompted: %q", out.String())

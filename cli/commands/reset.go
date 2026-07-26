@@ -43,8 +43,10 @@ func ResetCmd() *cobra.Command {
 			"accounts, services, relations, identity-links) and the ingested-files\n" +
 			"markers. The CloudTrail log is never touched, so a reset is recoverable by\n" +
 			"replaying it. This is destructive and irreversible except by replay.\n\n" +
-			"Run when live ingestion is quiet: objects the ingestor writes mid-reset\n" +
-			"may be missed. Reset, then replay the range to rebuild a clean projection.",
+			"Reset is an offline operation: run it only when live delivery is quiet.\n" +
+			"Truncation is not atomic across tables, so an object the ingestor writes\n" +
+			"mid-reset can land split across cleared and not-yet-cleared tables and be\n" +
+			"double-counted on the next replay. Reset, then replay the range.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := openResetter(cmd.Context())
 			if err != nil {
@@ -64,12 +66,12 @@ func runReset(cmd *cobra.Command, r resetter, assumeYes bool) error {
 	out := cmd.OutOrStdout()
 	tables := store.DerivedTables()
 
-	counts, err := r.CountItems(ctx, tables)
-	if err != nil {
-		return fatalAWS("Check that the ingestor stack is deployed and reachable.", err)
-	}
-
+	// The count query only feeds the confirmation prompt, so --yes skips it.
 	if !assumeYes {
+		counts, err := r.CountItems(ctx, tables)
+		if err != nil {
+			return fatalAWS("Check that the ingestor stack is deployed and reachable.", err)
+		}
 		confirmed, err := confirmReset(out, cmd.InOrStdin(), counts)
 		if err != nil {
 			return err
