@@ -54,16 +54,15 @@ func DayPrefixes(base string, from, to time.Time) ([]string, error) {
 
 const dateLayout = "2006-01-02"
 
-// ParseDate accepts a date (2006-01-02) or an RFC3339 instant and returns it in
-// UTC. Time-range selection only needs day granularity for prefix expansion, but
-// accepting RFC3339 lets an operator paste a precise instant.
+// ParseDate accepts a calendar date (YYYY-MM-DD) in UTC. v1 is day-granular on
+// purpose: the S3 layout is day-partitioned, so a sub-day instant would still
+// have to replay whole-day objects, and letting those out-of-range events into
+// the projection would be wrong, not harmless (docs/design/cloudtrail-replay.md
+// §5). Sub-day precision is a deferred follow-up.
 func ParseDate(s string) (time.Time, error) {
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t.UTC(), nil
-	}
 	t, err := time.Parse(dateLayout, s)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid date %q (want YYYY-MM-DD or RFC3339)", s)
+		return time.Time{}, fmt.Errorf("invalid date %q (want YYYY-MM-DD)", s)
 	}
 	return t.UTC(), nil
 }

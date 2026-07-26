@@ -65,8 +65,9 @@ func TestParseDate(t *testing.T) {
 	if _, err := ParseDate("2026-07-25"); err != nil {
 		t.Errorf("date form rejected: %v", err)
 	}
-	if got, err := ParseDate("2026-07-25T13:00:00Z"); err != nil || got.Hour() != 13 {
-		t.Errorf("RFC3339 form: got %v err %v", got, err)
+	// v1 is day-granular: sub-day instants are rejected, not silently rounded.
+	if _, err := ParseDate("2026-07-25T13:00:00Z"); err == nil {
+		t.Error("expected RFC3339 instant to be rejected in date-only v1")
 	}
 	if _, err := ParseDate("July 25"); err == nil {
 		t.Error("expected error for freeform date")
