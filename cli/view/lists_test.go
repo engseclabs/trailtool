@@ -64,6 +64,13 @@ func sampleSessions() []models.Session {
 			Sid: "k7m2qp3x", PersonKey: "email#alice@example.com",
 			StartTime: "2026-07-24T09:00:00Z", DurationMinutes: 45, EventsCount: 30,
 			AccountID: "123456789012", RoleName: "aws-reserved/sso.amazonaws.com/us-east-1/AWSReservedSSO_AdministratorAccess_7d88aa2a",
+			RoleSessionName: "alice@example.com",
+			Clients: []models.ClientAggregate{
+				{Key: "aws-cli", Name: "aws-cli", Version: "2.15.0", TotalEventCount: 25},
+				{Key: "Boto3", Name: "Boto3", Version: "1.34.0", TotalEventCount: 5},
+			},
+			SessionTags:      map[string]string{"Environment": "production", "Team": "platform"},
+			HasSessionPolicy: true,
 		},
 		{
 			Sid: "q9w1e7rt", PersonKey: "idc#d-1234567890#abcd",
@@ -122,10 +129,20 @@ func TestGoldenOtherNounLists(t *testing.T) {
 
 func TestGoldenSessionList(t *testing.T) {
 	// Responsive tiers: wide shows all columns, narrow drops collapsible ones.
+	assertGolden(t, "sessions_w180_plain", SessionList(ctxFor(180, false, true), sampleSessions(), 6, false, label))
 	assertGolden(t, "sessions_w132_plain", SessionList(ctxFor(132, false, true), sampleSessions(), 6, false, label))
 	assertGolden(t, "sessions_w80_plain", SessionList(ctxFor(80, false, true), sampleSessions(), 6, false, label))
 	assertGolden(t, "sessions_w60_ascii", SessionList(ctxFor(60, false, false), sampleSessions(), 6, false, label))
 	assertGolden(t, "sessions_empty", SessionList(ctxFor(80, false, true), nil, 6, false, label))
+}
+
+func TestSessionListContextSummaries(t *testing.T) {
+	got := SessionList(ctxFor(180, false, true), sampleSessions(), 6, false, label)
+	for _, want := range []string{"aws-cli +1", "alice@example.com", "Environment=production +1", "yes"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("session list missing %q:\n%s", want, got)
+		}
+	}
 }
 
 // TestListsNoColorParity proves color is additive for the list views: stripping

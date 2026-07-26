@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -23,11 +24,16 @@ func AccountsCmd() *cobra.Command {
 
 func accountsListCmd() *cobra.Command {
 	var limit int
+	var filter nounListFilter
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all tracked AWS accounts",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			normalized, err := filter.normalize(time.Now())
+			if err != nil {
+				return fatal("%v", err)
+			}
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
@@ -38,6 +44,9 @@ func accountsListCmd() *cobra.Command {
 			if err != nil {
 				return fatal("%v", err)
 			}
+			accounts = filterNouns(accounts, normalized,
+				func(account models.Account) string { return account.LastSeen },
+				func(account models.Account) int { return account.TotalDeniedEvents })
 			accounts = capList(accounts, limit)
 
 			if Format == "json" {
@@ -49,6 +58,7 @@ func accountsListCmd() *cobra.Command {
 		},
 	}
 
+	addNounListFilterFlags(cmd, &filter)
 	addListLimitFlag(cmd, &limit)
 	return cmd
 }

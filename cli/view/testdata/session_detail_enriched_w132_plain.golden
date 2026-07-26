@@ -1,17 +1,18 @@
 Alice Example
-SID:            cj6bhlwrp6hfapnw
-Person:         Alice Example  (email#alice@example.com)
-Role:           DeployRole  (arn:aws:iam::123456789012:role/DeployRole)
-Account:        123456789012
-Type:           WEB
-Internal SK:    sis#session-1
-Anchor:         sis#credential-1
-Time:           2026-07-24T09:00:00Z → 2026-07-24T09:45:00Z [2h ago] (45m)
-Events:         120 across 1 services
-Resources:      1
-Source IPs:     198.51.100.4, 203.0.113.8
-Denied Events:  3
-ClickOps:       3
+SID:             cj6bhlwrp6hfapnw
+Person:          Alice Example  (email#alice@example.com)
+Role:            DeployRole  (arn:aws:iam::123456789012:role/DeployRole)
+Account:         123456789012
+Type:            WEB
+Internal SK:     sis#session-1
+Anchor:          sis#credential-1
+Time:            2026-07-24T09:00:00Z → 2026-07-24T09:45:00Z [2h ago] (45m)
+Events:          120 across 1 services
+Resources:       1
+Session policy:  no
+Source IPs:      198.51.100.4, 203.0.113.8
+Denied Events:   3
+ClickOps:        3
 
 ⊘ Denied Events (calls AWS rejected):
   EVENT           DENIED

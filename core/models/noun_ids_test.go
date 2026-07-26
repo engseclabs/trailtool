@@ -8,6 +8,17 @@ func TestPIDForPersonKeyGolden(t *testing.T) {
 	}
 }
 
+func TestDisplayPersonKey(t *testing.T) {
+	const key = "iamuser#arn:aws:iam::278835131762:user/testing-trailtool"
+	if got, want := DisplayPersonKey(key), "iamuser:testing-trailtool"; got != want {
+		t.Fatalf("DisplayPersonKey() = %q, want %q", got, want)
+	}
+	person := Person{PersonKey: key}
+	if got, want := person.DisplayLabel(), "iamuser:testing-trailtool"; got != want {
+		t.Fatalf("Person.DisplayLabel() = %q, want %q", got, want)
+	}
+}
+
 func TestRIDForResourceGolden(t *testing.T) {
 	identifier := "lambda:function:shared-function"
 	first := RIDForResource("111111111111", identifier)

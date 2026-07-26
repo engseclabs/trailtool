@@ -44,6 +44,7 @@ type link struct {
 	assumedRoleARN   string
 	sessionTags      map[string]string
 	sessionPolicy    string
+	hasSessionPolicy bool
 	mcpResource      string
 	roleARN          string   // cred# links: the credential group's role
 	anchor           string   // cred# links: the anchor decided when first resolved
@@ -273,6 +274,7 @@ func linkFromRecord(pk string, rec *types.DynamoDBIdentityLink) *link {
 		assumedRoleARN:   rec.AssumedRoleARN,
 		sessionTags:      rec.SessionTags,
 		sessionPolicy:    rec.SessionPolicy,
+		hasSessionPolicy: rec.HasSessionPolicy || rec.SessionPolicy != "",
 		mcpResource:      rec.MCPResource,
 		roleARN:          rec.RoleARN,
 		anchor:           rec.Anchor,
@@ -447,6 +449,7 @@ func registerLinks(links map[string]*link, g identity.Group, person identity.Per
 				assumedRoleARN:   ExtractAssumedRoleARN(event),
 				sessionTags:      ExtractSessionTags(event),
 				sessionPolicy:    ExtractSessionPolicy(event),
+				hasSessionPolicy: ExtractSessionPolicyPresence(event),
 				eventTime:        event.EventTime,
 				pks:              []string{"chain#" + issuedKey},
 			}
@@ -527,6 +530,7 @@ func writeIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, table s
 			AssumedRoleARN:   l.assumedRoleARN,
 			SessionTags:      l.sessionTags,
 			SessionPolicy:    l.sessionPolicy,
+			HasSessionPolicy: l.hasSessionPolicy,
 			MCPResource:      l.mcpResource,
 			RoleARN:          l.roleARN,
 			Anchor:           l.anchor,

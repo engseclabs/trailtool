@@ -264,6 +264,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 							sess.AssumedFromRoleARN = chainL.parentRoleARN
 							sess.SessionTags = chainL.sessionTags
 							sess.SessionPolicy = chainL.sessionPolicy
+							sess.HasSessionPolicy = chainL.hasSessionPolicy
 						}
 						if mcpL != nil {
 							sess.MCPResource = mcpL.mcpResource

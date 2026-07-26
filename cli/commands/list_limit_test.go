@@ -41,6 +41,9 @@ func TestCapListEmpty(t *testing.T) {
 	if got := capList([]int{}, 5); len(got) != 0 {
 		t.Fatalf("capList on empty slice returned %v, want empty", got)
 	}
+	if got := capList[int](nil, 5); got == nil {
+		t.Fatal("capList returned nil, want an empty JSON array")
+	}
 }
 
 // TestListCommandsHaveLimitFlag asserts every list command registers --limit

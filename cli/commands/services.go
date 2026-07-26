@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -24,11 +25,17 @@ func ServicesCmd() *cobra.Command {
 
 func servicesListCmd() *cobra.Command {
 	var limit int
+	var filter nounListFilter
+	var category string
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all tracked AWS services",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			normalized, err := filter.normalize(time.Now())
+			if err != nil {
+				return fatal("%v", err)
+			}
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
@@ -38,6 +45,18 @@ func servicesListCmd() *cobra.Command {
 			services, err := s.ListServices(ctx, CustomerID)
 			if err != nil {
 				return fatal("%v", err)
+			}
+			services = filterNouns(services, normalized,
+				func(service models.Service) string { return service.LastSeen },
+				func(service models.Service) int { return service.TotalDeniedEvents })
+			if category != "" {
+				filtered := services[:0]
+				for _, service := range services {
+					if strings.EqualFold(service.Category, category) {
+						filtered = append(filtered, service)
+					}
+				}
+				services = filtered
 			}
 			services = capList(services, limit)
 
@@ -50,6 +69,8 @@ func servicesListCmd() *cobra.Command {
 		},
 	}
 
+	addNounListFilterFlags(cmd, &filter)
+	cmd.Flags().StringVar(&category, "category", "", "Only show services in this category")
 	addListLimitFlag(cmd, &limit)
 	return cmd
 }

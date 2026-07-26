@@ -397,6 +397,9 @@ func TestTaggedAssumeRoleAttribution(t *testing.T) {
 		RequestParameters: map[string]interface{}{
 			"roleArn":         agentRoleARN,
 			"roleSessionName": "claude-code-deploy-lambda",
+			"policyArns": []interface{}{
+				map[string]interface{}{"arn": "arn:aws:iam::aws:policy/ReadOnlyAccess"},
+			},
 			"tags": []interface{}{
 				map[string]interface{}{"key": "AgentName", "value": "claude-code"},
 				map[string]interface{}{"key": "Task", "value": "deploy-lambda"},
@@ -452,6 +455,12 @@ func TestTaggedAssumeRoleAttribution(t *testing.T) {
 	}
 	if childSess.SessionTags["HumanSession"] != humanEmail {
 		t.Errorf("child SessionTags[HumanSession] = %q, want %q", childSess.SessionTags["HumanSession"], humanEmail)
+	}
+	if childSess.RoleSessionName != "claude-code-deploy-lambda" {
+		t.Errorf("child RoleSessionName = %q, want claude-code-deploy-lambda", childSess.RoleSessionName)
+	}
+	if !childSess.HasSessionPolicy {
+		t.Error("child HasSessionPolicy = false, want true")
 	}
 	if childSess.EventsCount != 1 {
 		t.Errorf("child EventsCount = %d, want 1", childSess.EventsCount)

@@ -170,7 +170,7 @@ Resources:
           AttributeType: S
         - AttributeName: sk # anchor#roleID | win#roleID#start
           AttributeType: S
-        - AttributeName: role_key # customerId#role_id
+        - AttributeName: role_key # customerId#canonical role ARN
           AttributeType: S
         - AttributeName: account_key # customerId#account_id
           AttributeType: S

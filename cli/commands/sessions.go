@@ -34,6 +34,8 @@ func sessionsListCmd() *cobra.Command {
 	var account string
 	var after string
 	var before string
+	var sessionType string
+	var hasDenied bool
 	var tags []string
 	var long bool
 	var reverse bool
@@ -43,19 +45,36 @@ func sessionsListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List sessions",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			filter := store.SessionFilter{
+				Days:        days,
+				AccountID:   account,
+				After:       after,
+				Before:      before,
+				SessionType: sessionType,
+				HasDenied:   hasDenied,
+			}
+			if err := filter.Validate(); err != nil {
+				return fatal("%v", err)
+			}
+
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
 				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
-			filter := store.SessionFilter{
-				Days:      days,
-				Role:      role,
-				AccountID: account,
-				After:     after,
-				Before:    before,
+			var roleARN string
+			if role != "" {
+				resolvedRole, resolveErr := lookupRole(ctx, s, role, account)
+				if resolveErr != nil {
+					return fatal("%v", resolveErr)
+				}
+				if resolvedRole == nil {
+					return fatal("role not found: %s (check 'trailtool roles list')", role)
+				}
+				roleARN = resolvedRole.ARN
 			}
+			filter.RoleARN = roleARN
 			// Let the store's recency Query stop after `limit` newest rows on the
 			// cross-everyone path. Tag filtering happens client-side below, so when
 			// --tag is set we can't bound server-side without under-fetching; fall
@@ -105,12 +124,14 @@ func sessionsListCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email")
+	cmd.Flags().StringVar(&user, "user", "", "Filter by user email, PID, or person key")
 	cmd.Flags().IntVar(&days, "days", 0, "Filter to last N days")
-	cmd.Flags().StringVar(&role, "role", "", "Filter by role name (substring match)")
+	cmd.Flags().StringVar(&role, "role", "", "Filter by role ID, ARN, or exact name")
 	cmd.Flags().StringVar(&account, "account", "", "Filter by AWS account ID")
-	cmd.Flags().StringVar(&after, "after", "", "Only sessions starting at or after this time (ISO8601)")
-	cmd.Flags().StringVar(&before, "before", "", "Only sessions starting before this time (ISO8601)")
+	cmd.Flags().StringVar(&after, "after", "", "Only sessions starting at or after this time (RFC3339)")
+	cmd.Flags().StringVar(&before, "before", "", "Only sessions starting before this time (RFC3339)")
+	cmd.Flags().StringVar(&sessionType, "type", "", "Filter by session type: cli, web, agent, or login")
+	cmd.Flags().BoolVar(&hasDenied, "has-denied", false, "Only show sessions with denied activity")
 	cmd.Flags().StringArrayVar(&tags, "tag", nil, "Filter by session tag KEY=VALUE (repeatable, AND semantics)")
 	cmd.Flags().BoolVar(&long, "long", false, "Show full role names instead of shortened SSO permission-set names")
 	cmd.Flags().BoolVar(&reverse, "reverse", false, "Show oldest sessions first (default is newest first)")
@@ -120,7 +141,6 @@ func sessionsListCmd() *cobra.Command {
 }
 
 func sessionsDetailCmd() *cobra.Command {
-	var user string
 	var limit int
 	var all bool
 	var includeDeniedDetails bool
@@ -134,11 +154,10 @@ most recent session.
 
 Examples:
   trailtool sessions detail k7m2qp
-  trailtool sessions detail latest
-  trailtool sessions detail latest --user alice@example.com`,
+  trailtool sessions detail latest`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			selector, selectErr := sessionSelector(args, user)
+			selector, selectErr := sessionSelector(args)
 			if selectErr != nil {
 				return fatal("%v", selectErr)
 			}
@@ -153,7 +172,7 @@ Examples:
 				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
-			sess, err := resolveSession(ctx, s, selector, user)
+			sess, err := resolveSession(ctx, s, selector)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -279,7 +298,6 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
 	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
 	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
 	cmd.Flags().BoolVar(&includeDeniedDetails, "include-denied-details", false, "Show denied event breakdowns and access details")
@@ -288,7 +306,6 @@ Examples:
 }
 
 func sessionsSummarizeCmd() *cobra.Command {
-	var user string
 	var refresh bool
 
 	cmd := &cobra.Command{
@@ -300,11 +317,10 @@ the most recent session.
 
 Examples:
   trailtool sessions summarize k7m2qp
-  trailtool sessions summarize latest
-  trailtool sessions summarize latest --user alice@example.com`,
+  trailtool sessions summarize latest`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			selector, selectErr := sessionSelector(args, user)
+			selector, selectErr := sessionSelector(args)
 			if selectErr != nil {
 				return fatal("%v", selectErr)
 			}
@@ -315,7 +331,7 @@ Examples:
 				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
-			sess, err := resolveSession(ctx, s, selector, user)
+			sess, err := resolveSession(ctx, s, selector)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -349,7 +365,6 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Generate a new summary even when the cached summary is current")
 
 	return cmd
@@ -376,7 +391,6 @@ func summaryOutput(sess *models.Session, cached bool) sessionSummaryOutput {
 }
 
 func sessionsPolicyCmd() *cobra.Command {
-	var user string
 	var includeDenied bool
 	var explain bool
 
@@ -389,11 +403,11 @@ prefix is enough; "latest" jumps to the most recent session.
 
 Examples:
   trailtool sessions policy k7m2qp
-  trailtool sessions policy latest --user alice@example.com
+  trailtool sessions policy latest
   trailtool sessions policy k7m2qp --include-denied --explain`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			selector, selectErr := sessionSelector(args, user)
+			selector, selectErr := sessionSelector(args)
 			if selectErr != nil {
 				return fatal("%v", selectErr)
 			}
@@ -404,7 +418,7 @@ Examples:
 				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
-			sess, err := resolveSession(ctx, s, selector, user)
+			sess, err := resolveSession(ctx, s, selector)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -438,20 +452,15 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
 	cmd.Flags().BoolVar(&includeDenied, "include-denied", false, "Include denied events in policy")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Show policy explanation on stderr")
 
 	return cmd
 }
 
-func sessionSelector(args []string, user string) (string, error) {
+func sessionSelector(args []string) (string, error) {
 	if len(args) == 0 {
 		return "", fmt.Errorf("session id argument is required (for example, k7m2qp or latest)")
 	}
-	selector := args[0]
-	if user != "" && selector != "latest" {
-		return "", fmt.Errorf("--user is valid only with latest")
-	}
-	return selector, nil
+	return args[0], nil
 }

@@ -123,19 +123,17 @@ func TestSessionSelector(t *testing.T) {
 	tests := []struct {
 		name      string
 		args      []string
-		user      string
 		want      string
 		wantError string
 	}{
 		{name: "positional SID", args: []string{"k7m2qp"}, want: "k7m2qp"},
-		{name: "positional latest with user", args: []string{"latest"}, user: "alice@example.com", want: "latest"},
+		{name: "positional latest", args: []string{"latest"}, want: "latest"},
 		{name: "missing", wantError: "required"},
-		{name: "user with SID", args: []string{"k7m2qp"}, user: "alice@example.com", wantError: "only with latest"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := sessionSelector(tt.args, tt.user)
+			got, err := sessionSelector(tt.args)
 			if tt.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
 					t.Fatalf("error = %v, want substring %q", err, tt.wantError)
@@ -202,10 +200,29 @@ func TestSessionCommandsAcceptOnePositionalSelector(t *testing.T) {
 			if cmd.Flag("session") != nil {
 				t.Fatal("removed --session flag is still registered")
 			}
+			if cmd.Flag("user") != nil {
+				t.Fatal("--user belongs only on sessions list")
+			}
 			if name == "summarize" && cmd.Flag("refresh") == nil {
 				t.Fatal("summarize --refresh flag is missing")
 			}
 		})
+	}
+}
+
+func TestSessionListUsesTypedFilters(t *testing.T) {
+	cmd := sessionsListCmd()
+	for _, flag := range []string{
+		"user", "role", "account", "days", "after", "before",
+		"type", "has-denied", "tag",
+	} {
+		if cmd.Flag(flag) == nil {
+			t.Fatalf("sessions list is missing --%s", flag)
+		}
+	}
+	if usage := cmd.Flag("role").Usage; strings.Contains(usage, "substring") ||
+		!strings.Contains(usage, "role ID") {
+		t.Fatalf("--role usage = %q", usage)
 	}
 }
 

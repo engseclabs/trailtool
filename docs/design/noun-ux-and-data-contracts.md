@@ -47,7 +47,7 @@ Use positional selectors consistently:
 ```console
 $ trailtool people detail 4f6c2a
 $ trailtool sessions detail k7m2qp
-$ trailtool sessions summarize latest --user alice@example.com
+$ trailtool sessions summarize latest
 $ trailtool sessions policy k7m2qp --include-denied
 $ trailtool accounts detail 123456789012
 $ trailtool roles detail jlnjlx
@@ -55,7 +55,9 @@ $ trailtool services detail lambda.amazonaws.com
 $ trailtool resources detail cx4m7q
 ```
 
-`latest` is session-only. `--user` is valid only with `latest`.
+`latest` is session-only and always means the globally latest session. `--user`
+is a sessions-list filter; use `sessions list --user <email-or-pid> --limit 1`
+to find one person's latest SID.
 
 ### Canonical selectors
 

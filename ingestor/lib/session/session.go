@@ -38,6 +38,23 @@ func ExtractRoleIDFromPrincipalID(principalID string) string {
 	return principalID
 }
 
+// ExtractRoleSessionName returns the STS role-session name from an assumed-role
+// ARN, falling back to the suffix of an AROA principal ID.
+func ExtractRoleSessionName(event types.CloudTrailRecord) string {
+	const assumedPrefix = ":assumed-role/"
+	if idx := strings.Index(event.UserIdentity.ARN, assumedPrefix); idx != -1 {
+		rest := event.UserIdentity.ARN[idx+len(assumedPrefix):]
+		if slash := strings.LastIndexByte(rest, '/'); slash != -1 && slash+1 < len(rest) {
+			return rest[slash+1:]
+		}
+	}
+	roleID, name, ok := strings.Cut(event.UserIdentity.PrincipalID, ":")
+	if ok && strings.HasPrefix(roleID, "AROA") {
+		return name
+	}
+	return ""
+}
+
 // ExtractRoleNameFromARN extracts role name from an IAM role ARN or an STS
 // assumed-role ARN.
 // IAM role:      "arn:aws:iam::123456789012:role/MyRole" -> "MyRole"

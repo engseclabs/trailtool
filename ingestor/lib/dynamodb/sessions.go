@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -105,19 +106,20 @@ func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSessi
 	summary := selectSessionSummary(existing, incoming)
 
 	return &types.DynamoDBSession{
-		PK:          existing.PK,
-		SK:          existing.SK,  // sticky
-		Sid:         existing.Sid, // sticky (derived from PK/SK, which don't change)
-		CustomerID:  existing.CustomerID,
-		PersonKey:   existing.PersonKey,
-		Anchor:      firstNonEmpty(existing.Anchor, incoming.Anchor),
-		SessionType: sessionType,
-		RoleARN:     firstNonEmpty(existing.RoleARN, incoming.RoleARN),
-		RoleID:      firstNonEmpty(existing.RoleID, incoming.RoleID),
-		RoleName:    firstNonEmpty(existing.RoleName, incoming.RoleName),
-		AccountID:   firstNonEmpty(existing.AccountID, incoming.AccountID),
-		RoleKey:     firstNonEmpty(existing.RoleKey, incoming.RoleKey),
-		AccountKey:  firstNonEmpty(existing.AccountKey, incoming.AccountKey),
+		PK:              existing.PK,
+		SK:              existing.SK,  // sticky
+		Sid:             existing.Sid, // sticky (derived from PK/SK, which don't change)
+		CustomerID:      existing.CustomerID,
+		PersonKey:       existing.PersonKey,
+		Anchor:          firstNonEmpty(existing.Anchor, incoming.Anchor),
+		SessionType:     sessionType,
+		RoleARN:         firstNonEmpty(existing.RoleARN, incoming.RoleARN),
+		RoleID:          firstNonEmpty(existing.RoleID, incoming.RoleID),
+		RoleName:        firstNonEmpty(existing.RoleName, incoming.RoleName),
+		RoleSessionName: firstNonEmpty(existing.RoleSessionName, incoming.RoleSessionName),
+		AccountID:       firstNonEmpty(existing.AccountID, incoming.AccountID),
+		RoleKey:         mergeRoleKey(existing.RoleKey, incoming.RoleKey),
+		AccountKey:      firstNonEmpty(existing.AccountKey, incoming.AccountKey),
 
 		StartTime:       startTime,
 		EndTime:         endTime,
@@ -160,11 +162,34 @@ func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSessi
 
 		SessionTags:   mergeSessionTags(existing.SessionTags, incoming.SessionTags),
 		SessionPolicy: firstNonEmpty(existing.SessionPolicy, incoming.SessionPolicy),
+		HasSessionPolicy: existing.HasSessionPolicy || incoming.HasSessionPolicy ||
+			existing.SessionPolicy != "" || incoming.SessionPolicy != "",
 
 		LoginGrantedBySession:    firstNonEmpty(existing.LoginGrantedBySession, incoming.LoginGrantedBySession),
 		MCPResource:              firstNonEmpty(existing.MCPResource, incoming.MCPResource),
 		AgentAuthorizedBySession: firstNonEmpty(existing.AgentAuthorizedBySession, incoming.AgentAuthorizedBySession),
 	}
+}
+
+func mergeRoleKey(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	aCanonical := strings.Contains(a, "#arn:")
+	bCanonical := strings.Contains(b, "#arn:")
+	if aCanonical != bCanonical {
+		if aCanonical {
+			return a
+		}
+		return b
+	}
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func selectSessionSummary(a, b *types.DynamoDBSession) *types.DynamoDBSession {

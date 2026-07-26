@@ -160,6 +160,26 @@ func ExtractSessionPolicy(event types.CloudTrailRecord) string {
 	return params.Policy
 }
 
+// ExtractSessionPolicyPresence reports whether AssumeRole included an inline
+// policy or one or more managed policy ARNs.
+func ExtractSessionPolicyPresence(event types.CloudTrailRecord) bool {
+	if event.EventName != "AssumeRole" || event.RequestParameters == nil {
+		return false
+	}
+	b, err := json.Marshal(event.RequestParameters)
+	if err != nil {
+		return false
+	}
+	var params struct {
+		Policy     string            `json:"policy"`
+		PolicyARNs []json.RawMessage `json:"policyArns"`
+	}
+	if err := json.Unmarshal(b, &params); err != nil {
+		return false
+	}
+	return strings.TrimSpace(params.Policy) != "" || len(params.PolicyARNs) > 0
+}
+
 // ExtractAssumedRoleID extracts the role ID (AROAID...) of the assumed role from an
 // AssumeRole response. CloudTrail structure: responseElements.assumedRoleUser.assumedRoleId
 // which has format "AROAID...:sessionName". Returns just the role ID portion.

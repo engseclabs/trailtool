@@ -32,24 +32,27 @@ Use the PID shown by `people list`. An unambiguous prefix is accepted.
 ### Sessions
 ```bash
 trailtool sessions list                        # List all sessions
-trailtool sessions list --user <email> --days 7  # Filter by user and recency
-trailtool sessions list --role <name> --user <email>  # Filter by role name (substring match)
+trailtool sessions list --user <email-or-pid> --days 7  # Filter by user and recency
+trailtool sessions list --role <role-id> --user <email-or-pid>  # Combine exact noun selectors
 trailtool sessions list --account <id>         # Filter by AWS account ID
+trailtool sessions list --type agent --has-denied  # Denied agent sessions
 trailtool sessions list --after 2026-01-01T00:00:00Z --before 2026-01-02T00:00:00Z  # Time range
 trailtool sessions list --long                 # Show full role names (SSO roles shortened by default)
 trailtool sessions detail k7m2qp                # Session detail by id (SID column, prefix ok)
 trailtool sessions detail latest                # Most recent session
-trailtool sessions detail latest --user alice@example.com  # Most recent for one user
+trailtool sessions list --user alice@example.com --limit 1  # Find one user's latest SID
 trailtool sessions summarize k7m2qp             # AI-generated session summary (requires Bedrock)
-trailtool sessions summarize latest --user alice@example.com
+trailtool sessions summarize latest             # Summarize the globally latest session
 trailtool sessions summarize k7m2qp --refresh   # Bypass a current cached summary
 trailtool sessions policy k7m2qp                # Least-privilege policy for this session only
-trailtool sessions policy latest --user alice@example.com --include-denied --explain
+trailtool sessions policy latest --include-denied --explain
 ```
 
-**Filtering tips:** Combine flags to narrow results. `--role` does substring matching (e.g. `--role BreakGlass` matches `AWSReservedSSO_BreakGlassEmergency_...`). `--after`/`--before` take ISO8601 timestamps and override `--days` if both are set.
+**Filtering tips:** Combine flags to narrow results; all predicates use AND semantics. `--user` accepts an email, PID, or person key. `--role` accepts the role ID shown by `roles list`, a full ARN, or an exact unambiguous name. `--type` accepts `cli`, `web`, `agent`, or `login`. `--after` and `--before` use RFC3339 timestamps with an inclusive lower bound and exclusive upper bound. `--days` and `--after` are mutually exclusive.
 
-**Session detail tips:** Pass the id shown in the SID column of `sessions list` as the positional selector. It is a stable, deterministic handle for one specific session. A short prefix (the 6 characters shown) is enough, and the CLI asks you to lengthen it if a prefix is ambiguous. Use `latest` to search all stored sessions for the most recent one, with `--user` to scope it to one person. Detail includes resource activity, source IPs, ClickOps, denial context, cached summary metadata, related nouns, and lineage.
+**Session detail tips:** Pass the id shown in the SID column of `sessions list` as the positional selector. It is a stable, deterministic handle for one specific session. A short prefix (the 6 characters shown) is enough, and the CLI asks you to lengthen it if a prefix is ambiguous. `latest` always means the globally latest session. To find one person's latest session, run `sessions list --user <email-or-pid> --limit 1` and pass its SID to the detail command. Detail includes clients, role-session name, session tags and policy presence, resource activity, source IPs, ClickOps, denial context, cached summary metadata, related nouns, and lineage.
+
+**Wide session lists:** At widths of 180 columns or more, `sessions list` adds `CLIENT`, `SESSION NAME`, `TAGS`, and `POLICY`. `CLIENT` shows only the top client name and the number of additional clients, for example `aws-cli +1`.
 
 **Session summaries:** TrailTool stores each summary with its model, generation time, token usage, and a digest of the session activity used as input. It reuses the cache only while that digest matches. New activity makes the cache stale; `--refresh` bypasses a current cache.
 
@@ -64,13 +67,13 @@ trailtool sessions policy latest --user alice@example.com --include-denied --exp
 
 ### Accounts
 ```bash
-trailtool accounts list                        # List all tracked AWS accounts
+trailtool accounts list --has-denied           # Accounts with denied activity
 trailtool accounts detail <account-id>         # Activity, sessions, people, roles, services, resources
 ```
 
 ### Roles
 ```bash
-trailtool roles list                           # List all tracked IAM roles
+trailtool roles list --account <id> --days 30  # Recently observed roles in one account
 trailtool roles detail <role-id>               # Activity, resources, sessions, people, denial context
 trailtool roles policy <role-id>               # Generate least-privilege IAM policy from actual usage
 trailtool roles policy <role-id> --include-denied --explain  # Include denied events, show explanation
@@ -78,7 +81,7 @@ trailtool roles policy <role-id> --include-denied --explain  # Include denied ev
 
 ### Services
 ```bash
-trailtool services list                        # List all tracked AWS services
+trailtool services list --category <category>  # Filter by stored service category
 trailtool services detail <event-source>       # Activity and related roles, resources, accounts, people, sessions
 ```
 
@@ -96,9 +99,10 @@ trailtool resources detail <rid>                   # Activity, relationships, an
 ```
 
 Use the RID shown by `resources list`. An unambiguous prefix is accepted.
-`--days` filters resources by `last_seen`; successful and denied activity
-totals remain lifetime totals. In `--clickops` mode, ClickOps rows and
-`clickops_count` describe only the requested period.
+Aggregate noun lists accept `--days`, `--after`, `--before`, and
+`--has-denied`. These flags select rows using `last_seen`; successful and denied
+activity totals remain lifetime totals. In `resources list --clickops` mode,
+ClickOps rows and `clickops_count` describe only the requested period.
 Noun detail commands show up to 10 rows per related section by default. Pass
 `--limit <n>` to change the bound or `--all` to show every row.
 Denied totals remain visible. Pass `--include-denied-details` to show per-event
@@ -173,7 +177,7 @@ If you are an AI agent with credentials vended via `aws login`, you can look up 
 When someone uses emergency/break-glass access, compare what they said they would do (the justification) with what they actually did (the session).
 
 **Steps:**
-1. `trailtool sessions list --user <email> --role <break-glass-role> --after <time> --before <time> --format json` — find the specific break-glass session using role name, user, and time range
+1. `trailtool sessions list --user <email-or-pid> --role <role-id> --after <time> --before <time> --format json` — find the specific break-glass session using exact noun selectors and a time range
 2. `trailtool sessions detail <sid> --format json`: get the full session, including events, resources, services, and denied actions (the SID is the id column from step 1's list)
 3. Compare the session activity against the stated justification
 4. Flag discrepancies: actions that don't align with the justification, unexpected services accessed, or resources modified that weren't mentioned

@@ -9,6 +9,23 @@ import (
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
 
+func TestNewSessionRoleIndexUsesCanonicalARN(t *testing.T) {
+	const roleARN = "arn:aws:iam::111111111111:role/Admin"
+	session := newSession(
+		"customer",
+		"email#alice@example.com",
+		"key#ASIAEXAMPLE#AROAEXAMPLE",
+		"key#ASIAEXAMPLE",
+		SessionTypeCLI,
+		roleARN,
+		"AROAEXAMPLE",
+		"111111111111",
+	)
+	if session.RoleKey != "customer#"+roleARN {
+		t.Fatalf("role_key = %q", session.RoleKey)
+	}
+}
+
 // TestCLICredentialSpansHours verifies §8.1(1): one CLI credential spanning a
 // 4-hour wall-clock boundary is ONE session — the pre-1.0 window-split bug,
 // proven fixed (the anchor is the credential, not a time bucket).

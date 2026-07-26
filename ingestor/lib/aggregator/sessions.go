@@ -53,7 +53,7 @@ func newSession(ns, personKey, sk, anchor, sessionType, roleARN, roleID, account
 		RoleID:                  roleID,
 		RoleName:                session.ExtractRoleNameFromARN(roleARN),
 		AccountID:               accountID,
-		RoleKey:                 ns + "#" + roleID,
+		RoleKey:                 ns + "#" + roleARN,
 		AccountKey:              ns + "#" + accountID,
 		Version:                 1,
 		SourceIPs:               []string{},
@@ -76,6 +76,9 @@ func accumulateSessionEvent(sess *types.DynamoDBSession, event types.CloudTrailR
 	}
 	if eventTime > sess.EndTime {
 		sess.EndTime = eventTime
+	}
+	if sess.RoleSessionName == "" {
+		sess.RoleSessionName = session.ExtractRoleSessionName(event)
 	}
 
 	// Forward-access sessions: an AWS service calling with the human's

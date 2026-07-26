@@ -119,9 +119,9 @@ func printMoreRefs(rctx render.Context, n int) {
 // resolveSession finds a single session by selector: a SID prefix, or "latest".
 // An empty prefix, no match, or an ambiguous prefix each return an actionable
 // error.
-func resolveSession(ctx context.Context, s *store.Store, sel, user string) (*models.Session, error) {
+func resolveSession(ctx context.Context, s *store.Store, sel string) (*models.Session, error) {
 	if sel == "latest" {
-		sessions, _, err := session.ListSessions(ctx, s, CustomerID, user, store.SessionFilter{})
+		sessions, _, err := session.ListSessions(ctx, s, CustomerID, "", store.SessionFilter{Limit: 1})
 		if err != nil {
 			return nil, err
 		}

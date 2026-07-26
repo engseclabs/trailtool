@@ -2,16 +2,18 @@ package view
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/engseclabs/trailtool/core/models"
 	"github.com/engseclabs/trailtool/internal/render"
 )
 
 // SessionList renders the `sessions list` table with responsive columns (§6).
-// Essential columns (SID WHEN USER ROLE EVENTS) are never dropped; collapsible
-// columns (ACCOUNT TYPE DURATION CHAINED) drop below width thresholds so narrow
-// terminals stay readable. Role names shorten to their SSO permission-set name
-// unless long is set (existing --long semantics preserved).
+// Essential columns (SID WHEN USER ROLE EVENTS) are never dropped. Wide output
+// adds account, client, role-session, tag, policy, type, duration, and lineage
+// context. Role names shorten to their SSO permission-set name unless long is
+// set (existing --long semantics preserved).
 //
 // sidWidth is the shortest unambiguous SID prefix for this list (from
 // SidDisplayWidth); label resolves a person key to a display label. Context
@@ -26,6 +28,7 @@ func SessionList(ctx render.Context, sessions []models.Session, sidWidth int, lo
 	showType := ctx.Width >= 80
 	showDuration := ctx.Width >= 80
 	showChained := ctx.Width >= 100
+	showSessionContext := ctx.Width >= 180
 
 	cols := []render.Column{
 		{Header: "SID", Align: render.AlignLeft},
@@ -37,6 +40,14 @@ func SessionList(ctx render.Context, sessions []models.Session, sidWidth int, lo
 		cols = append(cols, render.Column{Header: "ACCOUNT", Align: render.AlignLeft})
 	}
 	cols = append(cols, render.Column{Header: "EVENTS", Align: render.AlignRight})
+	if showSessionContext {
+		cols = append(cols,
+			render.Column{Header: "CLIENT", Align: render.AlignLeft},
+			render.Column{Header: "SESSION NAME", Align: render.AlignLeft},
+			render.Column{Header: "TAGS", Align: render.AlignLeft},
+			render.Column{Header: "POLICY", Align: render.AlignLeft},
+		)
+	}
 	if showType {
 		cols = append(cols, render.Column{Header: "TYPE", Align: render.AlignLeft})
 	}
@@ -64,6 +75,14 @@ func SessionList(ctx render.Context, sessions []models.Session, sidWidth int, lo
 			row = append(row, sess.AccountID)
 		}
 		row = append(row, count(ctx, sess.EventsCount))
+		if showSessionContext {
+			row = append(row,
+				optional(ctx, ctx.Truncate(topClientSummary(sess.Clients), 18)),
+				optional(ctx, ctx.Truncate(sess.RoleSessionName, 20)),
+				optional(ctx, ctx.Truncate(sessionTagsSummary(sess.SessionTags), 28)),
+				sessionPolicySummary(ctx, sess),
+			)
+		}
 		if showType {
 			row = append(row, sess.DetectSessionType())
 		}
@@ -76,4 +95,59 @@ func SessionList(ctx render.Context, sessions []models.Session, sidWidth int, lo
 		t.Row(row...)
 	}
 	return ctx.RenderTable(t, 0)
+}
+
+func topClientSummary(clients []models.ClientAggregate) string {
+	if len(clients) == 0 {
+		return ""
+	}
+	sorted := append([]models.ClientAggregate(nil), clients...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].TotalEventCount != sorted[j].TotalEventCount {
+			return sorted[i].TotalEventCount > sorted[j].TotalEventCount
+		}
+		return sorted[i].Key < sorted[j].Key
+	})
+	name := sorted[0].Name
+	if name == "" {
+		name = sorted[0].Category
+	}
+	if extra := len(sorted) - 1; extra > 0 {
+		name += fmt.Sprintf(" +%d", extra)
+	}
+	return name
+}
+
+func sessionTagsSummary(tags map[string]string) string {
+	if len(tags) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(tags))
+	for key := range tags {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	summary := keys[0] + "=" + tags[keys[0]]
+	if extra := len(keys) - 1; extra > 0 {
+		summary += fmt.Sprintf(" +%d", extra)
+	}
+	return summary
+}
+
+func optional(ctx render.Context, value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ctx.Style(render.Muted, "-")
+	}
+	return value
+}
+
+func sessionHasPolicy(sess *models.Session) bool {
+	return sess.HasSessionPolicy || strings.TrimSpace(sess.SessionPolicy) != ""
+}
+
+func sessionPolicySummary(ctx render.Context, sess *models.Session) string {
+	if sessionHasPolicy(sess) {
+		return "yes"
+	}
+	return ctx.Style(render.Muted, "no")
 }
