@@ -159,37 +159,34 @@ func validateReplaySelection(f *replayFlags) error {
 }
 
 // buildReplayOptions resolves the selection flags to the S3 prefixes to list,
-// using the already-resolved bucket. Selection is pre-validated by
-// validateReplaySelection.
+// using the already-resolved bucket. validateReplaySelection has already
+// guaranteed exactly one of --prefix or --from/--to is set, so this only has to
+// expand the day range into prefixes.
 func buildReplayOptions(f *replayFlags, bucket string) (replay.Options, error) {
 	opts := replay.Options{Bucket: bucket, DryRun: f.dryRun}
 
-	switch {
-	case f.prefix != "" && (f.from != "" || f.to != ""):
-		return opts, fmt.Errorf("use either --prefix or --from/--to, not both")
-	case f.prefix != "":
+	if f.prefix != "" {
 		opts.Prefixes = []string{f.prefix}
-	case f.from != "" && f.to != "":
-		base, err := replay.CloudTrailBase(f.account, f.region)
-		if err != nil {
-			return opts, err
-		}
-		from, err := replay.ParseDate(f.from)
-		if err != nil {
-			return opts, err
-		}
-		to, err := replay.ParseDate(f.to)
-		if err != nil {
-			return opts, err
-		}
-		prefixes, err := replay.DayPrefixes(base, from, to)
-		if err != nil {
-			return opts, err
-		}
-		opts.Prefixes = prefixes
-	default:
-		return opts, fmt.Errorf("specify --prefix, or --from and --to together")
+		return opts, nil
 	}
+
+	base, err := replay.CloudTrailBase(f.account, f.region)
+	if err != nil {
+		return opts, err
+	}
+	from, err := replay.ParseDate(f.from)
+	if err != nil {
+		return opts, err
+	}
+	to, err := replay.ParseDate(f.to)
+	if err != nil {
+		return opts, err
+	}
+	prefixes, err := replay.DayPrefixes(base, from, to)
+	if err != nil {
+		return opts, err
+	}
+	opts.Prefixes = prefixes
 	return opts, nil
 }
 
