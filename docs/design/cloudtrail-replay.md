@@ -49,7 +49,7 @@ The cost of (b) is one Lambda invocation per object and its cold/warm start over
 
 ## 4. Reset: dropping the projection
 
-Reset empties TrailTool's derived tables so replay can rebuild them from the log. It never touches S3 or the CloudTrail log.
+Reset empties TrailTool's derived tables so replay can rebuild them from the log. It never touches S3 or the CloudTrail log. It ships as a `trailtool reset` CLI subcommand, alongside `trailtool replay` (§7).
 
 **What gets cleared.** The projection is every DynamoDB table the aggregator writes: `roles`, `services`, `resources`, `people`, `sessions`, `accounts`, `relations`, and `identity-links`. Two operational tables sit alongside it and need explicit handling:
 
@@ -61,7 +61,7 @@ Reset empties TrailTool's derived tables so replay can rebuild them from the log
 1. **Truncate in place (recommended default).** Scan each table and `BatchWriteItem`-delete, or delete-and-recreate the table via the SDK. On-demand billing makes this cheap. Keeps the CloudFormation stack, IAM role, EventBridge rule, and GSIs intact, so live ingestion resumes automatically the moment reset finishes. This is the "clear the database, keep the schema" operation the transaction-log model wants.
 2. **Stack teardown/redeploy.** `sam delete` + `sam deploy` recreates the tables empty. Heavier (recreates GSIs, re-runs the EventBridge custom resource) and already the implicit 1.0-cutover behavior. Reset-in-place exists precisely so an operator does not have to reach for this.
 
-**Ordering with replay.** Reset must fully complete before replay starts. Replaying into a half-cleared table double-counts against surviving rows. The combined `reset && replay` flow gates on reset finishing.
+**Ordering with replay.** Reset must fully complete before replay starts. Replaying into a half-cleared table double-counts against surviving rows. A combined rebuild (`trailtool replay --reset`, or the two commands in sequence) gates replay on reset finishing.
 
 **Safety.** Reset is destructive to the projection and irreversible except by replay. It writes nothing to the log, so it is always *recoverable* by replaying the same range, but the derived state (and any windowed sessions whose source objects have aged out of S3 retention) is gone until rebuilt. The driver requires an explicit confirmation (a typed flag such as `--yes`, or an interactive prompt) and prints the table names and approximate item counts it will clear before proceeding. It never runs implicitly as part of replay unless the operator asks for the combined flow.
 
@@ -98,7 +98,7 @@ The link TTL deserves one more note. During replay, links are written and read i
 
 ## 7. Concurrency and the driver
 
-The driver is a standalone process (proposed: a `trailtool replay` subcommand; a `scripts/` Go program is an acceptable v1). It does no parsing and no DynamoDB access. Its loop:
+The driver is a `trailtool replay` CLI subcommand. It does no parsing and no DynamoDB access. Its loop:
 
 ```
 list objects under the selected prefix(es), ascending          # oldest-first, streamed
