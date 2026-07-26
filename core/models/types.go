@@ -48,7 +48,26 @@ func (p *Person) DisplayLabel() string {
 	if p.Email != "" {
 		return p.Email
 	}
+	if strings.HasPrefix(p.PersonKey, "iamuser#") {
+		return DisplayPersonKey(p.PersonKey)
+	}
 	return p.PersonKey
+}
+
+// DisplayPersonKey keeps the identity tier while removing implementation
+// details that do not help identify a person.
+func DisplayPersonKey(key string) string {
+	if arn, ok := strings.CutPrefix(key, "iamuser#"); ok {
+		if slash := strings.LastIndex(arn, "/"); slash >= 0 && slash+1 < len(arn) {
+			return "iamuser:" + arn[slash+1:]
+		}
+	}
+	if rest, ok := strings.CutPrefix(key, "idc#"); ok {
+		if separator := strings.LastIndex(rest, "#"); separator >= 0 {
+			return "idc#…" + rest[separator:]
+		}
+	}
+	return key
 }
 
 // Session represents a session record from the trailtool-sessions table: all

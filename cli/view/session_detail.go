@@ -27,9 +27,13 @@ func SessionTitleKV(ctx render.Context, sess *models.Session, personLabel, timeL
 	if sid == "" {
 		sid = models.SidForRef(sess.Ref())
 	}
+	personFact := personLabel
+	if personKey := ShortPersonKey(sess.PersonKey); personKey != personLabel {
+		personFact += "  " + ctx.Style(render.Muted, "("+personKey+")")
+	}
 	kv := render.NewKV().
 		Add("SID", ctx.Style(render.Ident, sid)).
-		Add("Person", personLabel+"  "+ctx.Style(render.Muted, "("+sess.PersonKey+")")).
+		Add("Person", personFact).
 		Add("Role", ctx.Style(render.Ident, sess.RoleName)+"  "+ctx.Style(render.Muted, "("+sess.RoleARN+")")).
 		Add("Account", sess.AccountID).
 		Add("Type", sess.DetectSessionType()).
