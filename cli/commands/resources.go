@@ -27,6 +27,7 @@ func resourcesListCmd() *cobra.Command {
 	var serviceType string
 	var clickops bool
 	var minClickOps int
+	var limit int
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -51,6 +52,7 @@ func resourcesListCmd() *cobra.Command {
 			if err != nil {
 				return fatal("%v", err)
 			}
+			resources = capList(resources, limit)
 
 			if Format == "json" {
 				if resources == nil {
@@ -75,6 +77,7 @@ func resourcesListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serviceType, "service", "", "Filter by AWS service type (e.g. s3, lambda, ec2)")
 	cmd.Flags().BoolVar(&clickops, "clickops", false, "Only show resources created/modified via web console")
 	cmd.Flags().IntVar(&minClickOps, "min-clickops", 1, "Minimum ClickOps events (used with --clickops)")
+	addListLimitFlag(cmd, &limit)
 
 	return cmd
 }

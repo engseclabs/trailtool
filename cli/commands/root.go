@@ -106,6 +106,16 @@ func printChildRow(rctx render.Context, child *models.Session, displayRole, ref 
 		rctx.Style(render.Nav, rctx.Symbol(render.SymNav)+" trailtool sessions detail "+view.SidForRefShort(ref)))
 }
 
+// printMoreRefs prints a "+N more" line when a fan-out section was capped.
+// n <= 0 prints nothing. It signals that --all would show the rest.
+func printMoreRefs(rctx render.Context, n int) {
+	if n <= 0 {
+		return
+	}
+	fmt.Fprintf(rctx.Out, "  %s\n",
+		rctx.Style(render.Muted, fmt.Sprintf("+%d more (use --all to show every row)", n)))
+}
+
 // resolveSession finds a single session by selector: a SID prefix, or "latest".
 // An empty prefix, no match, or an ambiguous prefix each return an actionable
 // error.
