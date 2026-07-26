@@ -25,7 +25,9 @@ func RolesCmd() *cobra.Command {
 }
 
 func rolesListCmd() *cobra.Command {
-	return &cobra.Command{
+	var limit int
+
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all tracked IAM roles",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -39,6 +41,7 @@ func rolesListCmd() *cobra.Command {
 			if err != nil {
 				return fatal("%v", err)
 			}
+			roles = capList(roles, limit)
 
 			if Format == "json" {
 				return printJSON(roles)
@@ -48,6 +51,9 @@ func rolesListCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	addListLimitFlag(cmd, &limit)
+	return cmd
 }
 
 func rolesDetailCmd() *cobra.Command {

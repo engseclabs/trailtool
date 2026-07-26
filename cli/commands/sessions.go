@@ -37,6 +37,7 @@ func sessionsListCmd() *cobra.Command {
 	var tags []string
 	var long bool
 	var reverse bool
+	var limit int
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -79,9 +80,11 @@ func sessionsListCmd() *cobra.Command {
 				sessions = filtered
 			}
 
-			if reverse {
-				models.SortSessionsForList(sessions, true)
-			}
+			// Default newest-first; --reverse shows oldest-first. Sort before
+			// capping so --limit keeps the intended slice (the most recent N),
+			// not an arbitrary prefix.
+			models.SortSessionsForList(sessions, !reverse)
+			sessions = capList(sessions, limit)
 
 			if Format == "json" {
 				return printJSON(sessions)
@@ -103,7 +106,8 @@ func sessionsListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&before, "before", "", "Only sessions starting before this time (ISO8601)")
 	cmd.Flags().StringArrayVar(&tags, "tag", nil, "Filter by session tag KEY=VALUE (repeatable, AND semantics)")
 	cmd.Flags().BoolVar(&long, "long", false, "Show full role names instead of shortened SSO permission-set names")
-	cmd.Flags().BoolVar(&reverse, "reverse", false, "Show newest sessions first (default is oldest first)")
+	cmd.Flags().BoolVar(&reverse, "reverse", false, "Show oldest sessions first (default is newest first)")
+	addListLimitFlag(cmd, &limit)
 
 	return cmd
 }
@@ -217,12 +221,17 @@ Examples:
 				printRefNav(ctx, rctx, s, "Assumed by", sess.AssumedFromSession, label, now)
 			}
 
-			// Chaining: parent view — show each child session with navigable time
+			// Chaining: parent view — show each child session with navigable time.
+			// Capped to relationLimit refs (each is a sequential GetSessionByRef);
+			// a session that assumed hundreds of roles would otherwise fan out into
+			// hundreds of round-trips before rendering. --all (relationLimit 0) shows
+			// every ref.
 			if len(sess.ChainedSessionRefs) > 0 || len(sess.ChainedRoles) > 0 {
 				fmt.Fprint(rctx.Out, rctx.Section(
 					fmt.Sprintf("Assumed Roles (%d, %d events):", len(sess.ChainedRoles), sess.ChainedEventCount), ""))
 				shown := 0
-				for _, childRef := range sess.ChainedSessionRefs {
+				childRefs := capList(sess.ChainedSessionRefs, relationLimit)
+				for _, childRef := range childRefs {
 					childSess, _ := s.GetSessionByRef(ctx, CustomerID, childRef)
 					if childSess == nil {
 						fmt.Fprintf(rctx.Out, "  %s\n", childRef)
@@ -231,6 +240,7 @@ Examples:
 					shown++
 					printChildRow(rctx, childSess, childSess.RoleName, childRef, now)
 				}
+				printMoreRefs(rctx, len(sess.ChainedSessionRefs)-len(childRefs))
 				if shown == 0 && len(sess.ChainedSessionRefs) == 0 {
 					for _, childRoleARN := range sess.ChainedRoles {
 						fmt.Fprintf(rctx.Out, "  %s\n", rctx.Style(render.Ident, childRoleARN))
@@ -239,11 +249,13 @@ Examples:
 			}
 
 			// Grants: parent view — sessions whose credentials this session
-			// authorized via aws login / MCP OAuth grants.
+			// authorized via aws login / MCP OAuth grants. Same per-ref
+			// GetSessionByRef cost, capped the same way.
 			if len(sess.GrantedSessionRefs) > 0 {
 				fmt.Fprint(rctx.Out, rctx.Section(
 					fmt.Sprintf("Authorized Sessions (%d):", len(sess.GrantedSessionRefs)), ""))
-				for _, gRef := range sess.GrantedSessionRefs {
+				grantRefs := capList(sess.GrantedSessionRefs, relationLimit)
+				for _, gRef := range grantRefs {
 					gSess, _ := s.GetSessionByRef(ctx, CustomerID, gRef)
 					if gSess == nil {
 						fmt.Fprintf(rctx.Out, "  %s\n", gRef)
@@ -251,6 +263,7 @@ Examples:
 					}
 					printChildRow(rctx, gSess, view.ShortRoleName(gSess.RoleName), gRef, now)
 				}
+				printMoreRefs(rctx, len(sess.GrantedSessionRefs)-len(grantRefs))
 			}
 
 			fmt.Print(view.SessionPolicy(rctx, sess.SessionPolicy))

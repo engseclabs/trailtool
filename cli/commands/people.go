@@ -22,7 +22,9 @@ func PeopleCmd() *cobra.Command {
 }
 
 func peopleListCmd() *cobra.Command {
-	return &cobra.Command{
+	var limit int
+
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all tracked people",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -36,6 +38,7 @@ func peopleListCmd() *cobra.Command {
 			if err != nil {
 				return fatal("%v", err)
 			}
+			people = capList(people, limit)
 
 			if Format == "json" {
 				return printJSON(people)
@@ -45,6 +48,9 @@ func peopleListCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	addListLimitFlag(cmd, &limit)
+	return cmd
 }
 
 func peopleDetailCmd() *cobra.Command {

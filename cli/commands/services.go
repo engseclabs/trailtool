@@ -23,7 +23,9 @@ func ServicesCmd() *cobra.Command {
 }
 
 func servicesListCmd() *cobra.Command {
-	return &cobra.Command{
+	var limit int
+
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all tracked AWS services",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -37,6 +39,7 @@ func servicesListCmd() *cobra.Command {
 			if err != nil {
 				return fatal("%v", err)
 			}
+			services = capList(services, limit)
 
 			if Format == "json" {
 				return printJSON(services)
@@ -46,6 +49,9 @@ func servicesListCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	addListLimitFlag(cmd, &limit)
+	return cmd
 }
 
 func servicesDetailCmd() *cobra.Command {
