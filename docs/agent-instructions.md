@@ -39,17 +39,17 @@ trailtool sessions list --after 2026-01-01T00:00:00Z --before 2026-01-02T00:00:0
 trailtool sessions list --long                 # Show full role names (SSO roles shortened by default)
 trailtool sessions detail k7m2qp                # Session detail by id (SID column, prefix ok)
 trailtool sessions detail latest                # Most recent session
-trailtool sessions detail latest --user alice@example.com  # Most recent for one user
+trailtool sessions list --user alice@example.com --limit 1  # Find one user's latest SID
 trailtool sessions summarize k7m2qp             # AI-generated session summary (requires Bedrock)
-trailtool sessions summarize latest --user alice@example.com
+trailtool sessions summarize latest             # Summarize the globally latest session
 trailtool sessions summarize k7m2qp --refresh   # Bypass a current cached summary
 trailtool sessions policy k7m2qp                # Least-privilege policy for this session only
-trailtool sessions policy latest --user alice@example.com --include-denied --explain
+trailtool sessions policy latest --include-denied --explain
 ```
 
 **Filtering tips:** Combine flags to narrow results. `--role` does substring matching (e.g. `--role BreakGlass` matches `AWSReservedSSO_BreakGlassEmergency_...`). `--after`/`--before` take ISO8601 timestamps and override `--days` if both are set.
 
-**Session detail tips:** Pass the id shown in the SID column of `sessions list` as the positional selector. It is a stable, deterministic handle for one specific session. A short prefix (the 6 characters shown) is enough, and the CLI asks you to lengthen it if a prefix is ambiguous. Use `latest` to search all stored sessions for the most recent one, with `--user` to scope it to one person. Detail includes resource activity, source IPs, ClickOps, denial context, cached summary metadata, related nouns, and lineage.
+**Session detail tips:** Pass the id shown in the SID column of `sessions list` as the positional selector. It is a stable, deterministic handle for one specific session. A short prefix (the 6 characters shown) is enough, and the CLI asks you to lengthen it if a prefix is ambiguous. `latest` always means the globally latest session. To find one person's latest session, run `sessions list --user <email-or-pid> --limit 1` and pass its SID to the detail command. Detail includes resource activity, source IPs, ClickOps, denial context, cached summary metadata, related nouns, and lineage.
 
 **Session summaries:** TrailTool stores each summary with its model, generation time, token usage, and a digest of the session activity used as input. It reuses the cache only while that digest matches. New activity makes the cache stale; `--refresh` bypasses a current cache.
 
@@ -64,13 +64,13 @@ trailtool sessions policy latest --user alice@example.com --include-denied --exp
 
 ### Accounts
 ```bash
-trailtool accounts list                        # List all tracked AWS accounts
+trailtool accounts list --has-denied           # Accounts with denied activity
 trailtool accounts detail <account-id>         # Activity, sessions, people, roles, services, resources
 ```
 
 ### Roles
 ```bash
-trailtool roles list                           # List all tracked IAM roles
+trailtool roles list --account <id> --days 30  # Recently observed roles in one account
 trailtool roles detail <role-id>               # Activity, resources, sessions, people, denial context
 trailtool roles policy <role-id>               # Generate least-privilege IAM policy from actual usage
 trailtool roles policy <role-id> --include-denied --explain  # Include denied events, show explanation
@@ -78,7 +78,7 @@ trailtool roles policy <role-id> --include-denied --explain  # Include denied ev
 
 ### Services
 ```bash
-trailtool services list                        # List all tracked AWS services
+trailtool services list --category <category>  # Filter by stored service category
 trailtool services detail <event-source>       # Activity and related roles, resources, accounts, people, sessions
 ```
 
@@ -96,9 +96,10 @@ trailtool resources detail <rid>                   # Activity, relationships, an
 ```
 
 Use the RID shown by `resources list`. An unambiguous prefix is accepted.
-`--days` filters resources by `last_seen`; successful and denied activity
-totals remain lifetime totals. In `--clickops` mode, ClickOps rows and
-`clickops_count` describe only the requested period.
+Aggregate noun lists accept `--days`, `--after`, `--before`, and
+`--has-denied`. These flags select rows using `last_seen`; successful and denied
+activity totals remain lifetime totals. In `resources list --clickops` mode,
+ClickOps rows and `clickops_count` describe only the requested period.
 Noun detail commands show up to 10 rows per related section by default. Pass
 `--limit <n>` to change the bound or `--all` to show every row.
 Denied totals remain visible. Pass `--include-denied-details` to show per-event

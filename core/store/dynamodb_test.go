@@ -139,6 +139,20 @@ func TestFilterClickOpsActivityFiltersRowsAndRecomputesCount(t *testing.T) {
 	}
 }
 
+func TestFilterClickOpsActivityUsesExclusiveEnd(t *testing.T) {
+	resource := &models.Resource{
+		ClickOpsAccesses: []models.ClickOpsAccess{
+			{SessionRef: "before", AccessTime: "2026-07-24T23:59:59Z", EventCount: 2},
+			{SessionRef: "at-boundary", AccessTime: "2026-07-25T00:00:00Z", EventCount: 3},
+		},
+	}
+	filterClickOpsActivity(resource, "", "2026-07-25T00:00:00Z")
+	if resource.ClickOpsCount != 2 || len(resource.ClickOpsAccesses) != 1 ||
+		resource.ClickOpsAccesses[0].SessionRef != "before" {
+		t.Fatalf("filtered clickops = %#v, count %d", resource.ClickOpsAccesses, resource.ClickOpsCount)
+	}
+}
+
 func TestResourceSeenInDateRangeAcceptsFullTimestampsAtDayBoundaries(t *testing.T) {
 	tests := []struct {
 		name     string

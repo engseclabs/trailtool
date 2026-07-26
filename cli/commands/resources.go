@@ -23,16 +23,21 @@ func ResourcesCmd() *cobra.Command {
 }
 
 func resourcesListCmd() *cobra.Command {
-	var days int
 	var serviceType string
+	var accountID string
 	var clickops bool
 	var minClickOps int
 	var limit int
+	var nounFilter nounListFilter
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List tracked AWS resources",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			normalized, err := nounFilter.normalize(time.Now())
+			if err != nil {
+				return fatal("%v", err)
+			}
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
@@ -43,14 +48,25 @@ func resourcesListCmd() *cobra.Command {
 				ClickOpsOnly:     clickops,
 				ServiceType:      serviceType,
 				MinClickOpsCount: minClickOps,
-			}
-			if days > 0 {
-				filter.StartDate, filter.StartTime = resourceWindowStart(time.Now(), days)
+				StartTime:        normalized.after,
+				EndTime:          normalized.before,
 			}
 
 			resources, err := s.ListResources(ctx, CustomerID, filter)
 			if err != nil {
 				return fatal("%v", err)
+			}
+			resources = filterNouns(resources, normalized,
+				func(resource models.Resource) string { return resource.LastSeen },
+				func(resource models.Resource) int { return resource.TotalDeniedEvents })
+			if accountID != "" {
+				filtered := resources[:0]
+				for _, resource := range resources {
+					if resource.AccountID == accountID {
+						filtered = append(filtered, resource)
+					}
+				}
+				resources = filtered
 			}
 			resources = capList(resources, limit)
 
@@ -73,19 +89,14 @@ func resourcesListCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().IntVar(&days, "days", 0, "Filter resources last seen in the last N days; activity totals remain lifetime totals")
+	addNounListFilterFlags(cmd, &nounFilter)
 	cmd.Flags().StringVar(&serviceType, "service", "", "Filter by AWS service type (e.g. s3, lambda, ec2)")
+	cmd.Flags().StringVar(&accountID, "account", "", "Only show resources in this AWS account")
 	cmd.Flags().BoolVar(&clickops, "clickops", false, "Only show resources created/modified via web console")
 	cmd.Flags().IntVar(&minClickOps, "min-clickops", 1, "Minimum ClickOps events (used with --clickops)")
 	addListLimitFlag(cmd, &limit)
 
 	return cmd
-}
-
-func resourceWindowStart(now time.Time, days int) (date, timestamp string) {
-	cutoff := now.UTC().AddDate(0, 0, -days)
-	midnight := time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, time.UTC)
-	return midnight.Format(time.DateOnly), midnight.Format(time.RFC3339)
 }
 
 func resourcesDetailCmd() *cobra.Command {

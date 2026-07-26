@@ -120,7 +120,6 @@ func sessionsListCmd() *cobra.Command {
 }
 
 func sessionsDetailCmd() *cobra.Command {
-	var user string
 	var limit int
 	var all bool
 	var includeDeniedDetails bool
@@ -134,11 +133,10 @@ most recent session.
 
 Examples:
   trailtool sessions detail k7m2qp
-  trailtool sessions detail latest
-  trailtool sessions detail latest --user alice@example.com`,
+  trailtool sessions detail latest`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			selector, selectErr := sessionSelector(args, user)
+			selector, selectErr := sessionSelector(args)
 			if selectErr != nil {
 				return fatal("%v", selectErr)
 			}
@@ -153,7 +151,7 @@ Examples:
 				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
-			sess, err := resolveSession(ctx, s, selector, user)
+			sess, err := resolveSession(ctx, s, selector)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -279,7 +277,6 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
 	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
 	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
 	cmd.Flags().BoolVar(&includeDeniedDetails, "include-denied-details", false, "Show denied event breakdowns and access details")
@@ -288,7 +285,6 @@ Examples:
 }
 
 func sessionsSummarizeCmd() *cobra.Command {
-	var user string
 	var refresh bool
 
 	cmd := &cobra.Command{
@@ -300,11 +296,10 @@ the most recent session.
 
 Examples:
   trailtool sessions summarize k7m2qp
-  trailtool sessions summarize latest
-  trailtool sessions summarize latest --user alice@example.com`,
+  trailtool sessions summarize latest`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			selector, selectErr := sessionSelector(args, user)
+			selector, selectErr := sessionSelector(args)
 			if selectErr != nil {
 				return fatal("%v", selectErr)
 			}
@@ -315,7 +310,7 @@ Examples:
 				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
-			sess, err := resolveSession(ctx, s, selector, user)
+			sess, err := resolveSession(ctx, s, selector)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -349,7 +344,6 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Generate a new summary even when the cached summary is current")
 
 	return cmd
@@ -376,7 +370,6 @@ func summaryOutput(sess *models.Session, cached bool) sessionSummaryOutput {
 }
 
 func sessionsPolicyCmd() *cobra.Command {
-	var user string
 	var includeDenied bool
 	var explain bool
 
@@ -389,11 +382,11 @@ prefix is enough; "latest" jumps to the most recent session.
 
 Examples:
   trailtool sessions policy k7m2qp
-  trailtool sessions policy latest --user alice@example.com
+  trailtool sessions policy latest
   trailtool sessions policy k7m2qp --include-denied --explain`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			selector, selectErr := sessionSelector(args, user)
+			selector, selectErr := sessionSelector(args)
 			if selectErr != nil {
 				return fatal("%v", selectErr)
 			}
@@ -404,7 +397,7 @@ Examples:
 				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
-			sess, err := resolveSession(ctx, s, selector, user)
+			sess, err := resolveSession(ctx, s, selector)
 			if err != nil {
 				return fatal("%v", err)
 			}
@@ -438,20 +431,15 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email (only with latest)")
 	cmd.Flags().BoolVar(&includeDenied, "include-denied", false, "Include denied events in policy")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Show policy explanation on stderr")
 
 	return cmd
 }
 
-func sessionSelector(args []string, user string) (string, error) {
+func sessionSelector(args []string) (string, error) {
 	if len(args) == 0 {
 		return "", fmt.Errorf("session id argument is required (for example, k7m2qp or latest)")
 	}
-	selector := args[0]
-	if user != "" && selector != "latest" {
-		return "", fmt.Errorf("--user is valid only with latest")
-	}
-	return selector, nil
+	return args[0], nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -26,11 +27,17 @@ func RolesCmd() *cobra.Command {
 
 func rolesListCmd() *cobra.Command {
 	var limit int
+	var filter nounListFilter
+	var accountID string
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all tracked IAM roles",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			normalized, err := filter.normalize(time.Now())
+			if err != nil {
+				return fatal("%v", err)
+			}
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
@@ -40,6 +47,18 @@ func rolesListCmd() *cobra.Command {
 			roles, err := s.ListRoles(ctx, CustomerID)
 			if err != nil {
 				return fatal("%v", err)
+			}
+			roles = filterNouns(roles, normalized,
+				func(role models.Role) string { return role.LastSeen },
+				func(role models.Role) int { return role.TotalDeniedEvents })
+			if accountID != "" {
+				filtered := roles[:0]
+				for _, role := range roles {
+					if role.AccountID == accountID {
+						filtered = append(filtered, role)
+					}
+				}
+				roles = filtered
 			}
 			roles = capList(roles, limit)
 
@@ -52,6 +71,8 @@ func rolesListCmd() *cobra.Command {
 		},
 	}
 
+	addNounListFilterFlags(cmd, &filter)
+	cmd.Flags().StringVar(&accountID, "account", "", "Only show roles in this AWS account")
 	addListLimitFlag(cmd, &limit)
 	return cmd
 }

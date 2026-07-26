@@ -622,7 +622,7 @@ func filterClickOpsActivity(resource *models.Resource, startTime, endTime string
 		if startTime != "" && access.AccessTime < startTime {
 			continue
 		}
-		if endTime != "" && access.AccessTime > endTime {
+		if endTime != "" && access.AccessTime >= endTime {
 			continue
 		}
 		filtered = append(filtered, access)

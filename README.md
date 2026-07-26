@@ -70,16 +70,15 @@ trailtool sessions list --user alice@example.com --days 7
 trailtool sessions list --user alice@example.com --days 7 --long  # show full role names
 trailtool sessions detail k7m2qp          # by id (SID column, prefix ok)
 trailtool sessions detail latest
-trailtool sessions detail latest --user alice@example.com
 trailtool sessions summarize k7m2qp        # requires Bedrock
 trailtool sessions summarize k7m2qp --refresh
 
 # Accounts
-trailtool accounts list
+trailtool accounts list --has-denied
 trailtool accounts detail 123456789012
 
 # Roles
-trailtool roles list
+trailtool roles list --account 123456789012 --days 30
 trailtool roles detail jlnjlx              # by role ID (prefix ok)
 trailtool roles policy jlnjlx
 trailtool roles policy jlnjlx --include-denied --explain
@@ -89,7 +88,7 @@ trailtool sessions policy latest
 trailtool sessions policy k7m2qp --explain
 
 # Services
-trailtool services list
+trailtool services list --category management --after 2026-07-01T00:00:00Z
 trailtool services detail s3.amazonaws.com
 
 # Resources
@@ -108,9 +107,10 @@ Detail text shows denied totals by default; add `--include-denied-details` for
 per-event breakdowns and denied resource-access rows. Detail JSON stays complete.
 Noun list and detail relationship totals come from exact distinct-count
 summaries; stored aggregate counts are used only if a summary is unavailable.
-`resources list --days` filters on `last_seen`; successful and denied activity
-totals remain lifetime totals. With `--clickops`, the ClickOps rows and count
-are limited to the requested period.
+Aggregate noun lists accept `--days`, `--after`, `--before`, and `--has-denied`.
+Time filters select rows using `last_seen`; successful and denied activity totals
+remain lifetime totals. With `resources list --clickops`, the ClickOps rows and
+count are limited to the requested period.
 
 Session summaries are cached with their model, generation time, token usage,
 and input digest. New session activity makes the cache stale automatically.
