@@ -2,33 +2,10 @@ package store
 
 import (
 	"testing"
-	"time"
 
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/engseclabs/trailtool/core/models"
 )
-
-func TestStartTimeAfter(t *testing.T) {
-	t.Run("Days derives a window", func(t *testing.T) {
-		f := SessionFilter{Days: 7}
-		got := f.startTimeAfter()
-		parsed, err := time.Parse(time.RFC3339, got)
-		if err != nil {
-			t.Fatalf("startTimeAfter = %q, not RFC3339: %v", got, err)
-		}
-		// ~7 days ago, allowing a few seconds of test runtime.
-		want := time.Now().AddDate(0, 0, -7)
-		if diff := parsed.Sub(want); diff < -time.Minute || diff > time.Minute {
-			t.Fatalf("Days=7 window = %v, want within a minute of %v", parsed, want)
-		}
-	})
-
-	t.Run("neither yields empty", func(t *testing.T) {
-		if got := (SessionFilter{}).startTimeAfter(); got != "" {
-			t.Fatalf("startTimeAfter = %q, want empty", got)
-		}
-	})
-}
 
 func TestSessionFilterValidation(t *testing.T) {
 	tests := []SessionFilter{
@@ -109,7 +86,7 @@ func TestNonTimeFilter(t *testing.T) {
 }
 
 // TestFilterValuesStillCombinesEverything guards the per-user Query expression
-// builder after the time bounds were factored out into startTimeAfter.
+// builder after filter normalization.
 func TestFilterValuesStillCombinesEverything(t *testing.T) {
 	vals := map[string]ddbtypes.AttributeValue{}
 	f := SessionFilter{
@@ -124,23 +101,25 @@ func TestFilterValuesStillCombinesEverything(t *testing.T) {
 	}
 }
 
-func TestRecencyExpressions(t *testing.T) {
+func TestRecencyIndexExpressions(t *testing.T) {
+	recencyIndex := sessionIndexForFilter("cust1", SessionFilter{})
+
 	t.Run("no filter: bare partition key, no filter expr", func(t *testing.T) {
-		keyCond, filterExpr, vals := recencyExpressions("cust1", SessionFilter{})
-		if keyCond != "customerId = :cid" {
+		keyCond, filterExpr, vals := indexedSessionExpressions(recencyIndex, SessionFilter{})
+		if keyCond != "customerId = :partition" {
 			t.Fatalf("keyCond = %q", keyCond)
 		}
 		if filterExpr != "" {
 			t.Fatalf("filterExpr = %q, want empty", filterExpr)
 		}
 		if len(vals) != 1 {
-			t.Fatalf("bound %d values, want just :cid", len(vals))
+			t.Fatalf("bound %d values, want just :partition", len(vals))
 		}
 	})
 
 	t.Run("after tightens the key condition", func(t *testing.T) {
-		keyCond, filterExpr, _ := recencyExpressions("cust1", SessionFilter{After: "2026-07-01T00:00:00Z"})
-		if keyCond != "customerId = :cid AND start_time >= :after" {
+		keyCond, filterExpr, _ := indexedSessionExpressions(recencyIndex, SessionFilter{After: "2026-07-01T00:00:00Z"})
+		if keyCond != "customerId = :partition AND start_time >= :after" {
 			t.Fatalf("keyCond = %q", keyCond)
 		}
 		if filterExpr != "" {
@@ -149,11 +128,11 @@ func TestRecencyExpressions(t *testing.T) {
 	})
 
 	t.Run("both bounds use one BETWEEN key condition", func(t *testing.T) {
-		keyCond, filterExpr, _ := recencyExpressions("cust1", SessionFilter{
+		keyCond, filterExpr, _ := indexedSessionExpressions(recencyIndex, SessionFilter{
 			After:  "2026-07-01T00:00:00Z",
 			Before: "2026-07-10T00:00:00Z",
 		})
-		if keyCond != "customerId = :cid AND start_time BETWEEN :after AND :before" {
+		if keyCond != "customerId = :partition AND start_time BETWEEN :after AND :before" {
 			t.Fatalf("keyCond = %q", keyCond)
 		}
 		if filterExpr != "" {
@@ -162,8 +141,8 @@ func TestRecencyExpressions(t *testing.T) {
 	})
 
 	t.Run("before-only uses the key condition", func(t *testing.T) {
-		keyCond, filterExpr, _ := recencyExpressions("cust1", SessionFilter{Before: "2026-07-10T00:00:00Z"})
-		if keyCond != "customerId = :cid AND start_time < :before" {
+		keyCond, filterExpr, _ := indexedSessionExpressions(recencyIndex, SessionFilter{Before: "2026-07-10T00:00:00Z"})
+		if keyCond != "customerId = :partition AND start_time < :before" {
 			t.Fatalf("keyCond = %q", keyCond)
 		}
 		if filterExpr != "" {
@@ -171,15 +150,15 @@ func TestRecencyExpressions(t *testing.T) {
 		}
 	})
 
-	t.Run("before stays on the key while role is a filter", func(t *testing.T) {
-		keyCond, filterExpr, _ := recencyExpressions("cust1", SessionFilter{
-			Before:  "2026-07-10T00:00:00Z",
-			RoleARN: "arn:aws:iam::111122223333:role/Admin",
+	t.Run("before stays on the key while type is a filter", func(t *testing.T) {
+		keyCond, filterExpr, _ := indexedSessionExpressions(recencyIndex, SessionFilter{
+			Before:      "2026-07-10T00:00:00Z",
+			SessionType: "agent",
 		})
-		if keyCond != "customerId = :cid AND start_time < :before" {
+		if keyCond != "customerId = :partition AND start_time < :before" {
 			t.Fatalf("keyCond = %q", keyCond)
 		}
-		want := "role_arn = :roleArn"
+		want := "session_type = :sessionType"
 		if filterExpr != want {
 			t.Fatalf("filterExpr = %q, want %q", filterExpr, want)
 		}
@@ -238,20 +217,21 @@ func TestSessionMatchesTimeBounds(t *testing.T) {
 
 func TestSessionIndexForFilter(t *testing.T) {
 	roleARN := "arn:aws:iam::111122223333:role/Admin"
-	index, ok := sessionIndexForFilter("cust1", SessionFilter{
+	index := sessionIndexForFilter("cust1", SessionFilter{
 		RoleARN:   roleARN,
 		AccountID: "111122223333",
 	})
-	if !ok || index.indexName != "role_index" || index.partitionKey != "cust1#"+roleARN {
-		t.Fatalf("role plan = %#v, %t", index, ok)
+	if index.indexName != "role_index" || index.partitionKey != "cust1#"+roleARN {
+		t.Fatalf("role plan = %#v", index)
 	}
 
-	index, ok = sessionIndexForFilter("cust1", SessionFilter{AccountID: "111122223333"})
-	if !ok || index.indexName != "account_index" || index.partitionKey != "cust1#111122223333" {
-		t.Fatalf("account plan = %#v, %t", index, ok)
+	index = sessionIndexForFilter("cust1", SessionFilter{AccountID: "111122223333"})
+	if index.indexName != "account_index" || index.partitionKey != "cust1#111122223333" {
+		t.Fatalf("account plan = %#v", index)
 	}
 
-	if index, ok = sessionIndexForFilter("cust1", SessionFilter{}); ok {
-		t.Fatalf("empty filter unexpectedly chose %#v", index)
+	index = sessionIndexForFilter("cust1", SessionFilter{})
+	if index.indexName != "recency_index" || index.partitionName != "customerId" || index.partitionKey != "cust1" {
+		t.Fatalf("recency plan = %#v", index)
 	}
 }

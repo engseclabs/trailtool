@@ -71,9 +71,6 @@ func resourcesListCmd() *cobra.Command {
 			resources = capList(resources, limit)
 
 			if Format == "json" {
-				if resources == nil {
-					resources = []models.Resource{}
-				}
 				return printJSON(resources)
 			}
 

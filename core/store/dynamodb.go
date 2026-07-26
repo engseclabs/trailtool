@@ -218,10 +218,9 @@ type SessionFilter struct {
 	SessionType string // Exact session type: cli, web, agent, or login
 	HasDenied   bool   // Only sessions with denied activity
 
-	// Limit caps how many sessions the recency path returns. It lets the
-	// unfiltered cross-everyone Query stop early instead of reading the table.
-	// 0 means no limit. Only the recency path applies it server-side; the
-	// per-user and filtered paths ignore it (the CLI still caps client-side).
+	// Limit caps how many sessions an indexed path returns. The role, account,
+	// and recency indexes apply it server-side. The per-user path ignores it and
+	// relies on the client-side cap. 0 means no limit.
 	Limit int
 }
 
@@ -268,20 +267,8 @@ func (f SessionFilter) Validate() error {
 	return err
 }
 
-// startTimeAfter returns the effective lower start_time bound: After if set,
-// else the --days convenience window, else "". Validation prevents both.
-func (f SessionFilter) startTimeAfter() string {
-	if f.After != "" {
-		return f.After
-	}
-	if f.Days > 0 {
-		return time.Now().UTC().AddDate(0, 0, -f.Days).Format(time.RFC3339)
-	}
-	return ""
-}
-
 // nonTimeFilter renders the stored predicates (everything that is not a
-// start_time bound) as a filter expression. The recency path puts the time
+// start_time bound) as a filter expression. Indexed paths put the time
 // bounds on the index key condition instead, so it needs the rest separately.
 func (f SessionFilter) nonTimeFilter(vals map[string]types.AttributeValue) string {
 	var filters []string
@@ -310,9 +297,9 @@ func (f SessionFilter) filterValues(vals map[string]types.AttributeValue) string
 	var filters []string
 
 	// Time range. Validation prevents combining --days with --after.
-	if afterVal := f.startTimeAfter(); afterVal != "" {
+	if f.After != "" {
 		filters = append(filters, "start_time >= :after")
-		vals[":after"] = &types.AttributeValueMemberS{Value: afterVal}
+		vals[":after"] = &types.AttributeValueMemberS{Value: f.After}
 	}
 	if f.Before != "" {
 		filters = append(filters, "start_time < :before")
@@ -419,94 +406,9 @@ func (s *Store) querySessionPartition(ctx context.Context, customerID, personKey
 	return sessions, nil
 }
 
-// queryRecentSessions returns the newest sessions across every person via a
-// descending Query on recency_index (pk = customerId, sk = start_time). It
-// replaces the former full-table Scan: bounded by filter.Limit, the read cost
-// is O(limit) instead of O(table). See docs/design/session-recency-gsi.md.
-//
-// recencyExpressions builds the recency_index Query pieces: the key condition,
-// the filter expression, and the bound values. Both time bounds stay in the key
-// condition. BETWEEN is inclusive, so the read loop removes an item exactly at
-// --before to preserve the CLI's exclusive upper bound.
-func recencyExpressions(customerID string, filter SessionFilter) (keyCond, filterExpr string, vals map[string]types.AttributeValue) {
-	keyCond = "customerId = :cid"
-	vals = map[string]types.AttributeValue{
-		":cid": &types.AttributeValueMemberS{Value: customerID},
-	}
-	after := filter.startTimeAfter()
-	switch {
-	case after != "" && filter.Before != "":
-		keyCond += " AND start_time BETWEEN :after AND :before"
-		vals[":after"] = &types.AttributeValueMemberS{Value: after}
-		vals[":before"] = &types.AttributeValueMemberS{Value: filter.Before}
-	case after != "":
-		keyCond += " AND start_time >= :after"
-		vals[":after"] = &types.AttributeValueMemberS{Value: after}
-	case filter.Before != "":
-		keyCond += " AND start_time < :before"
-		vals[":before"] = &types.AttributeValueMemberS{Value: filter.Before}
-	}
-	var filterParts []string
-	if nt := filter.nonTimeFilter(vals); nt != "" {
-		filterParts = append(filterParts, nt)
-	}
-	return keyCond, strings.Join(filterParts, " AND "), vals
-}
-
 func sessionMatchesTimeBounds(session *models.Session, filter SessionFilter) bool {
-	after := filter.startTimeAfter()
-	return (after == "" || session.StartTime >= after) &&
+	return (filter.After == "" || session.StartTime >= filter.After) &&
 		(filter.Before == "" || session.StartTime < filter.Before)
-}
-
-func (s *Store) queryRecentSessions(ctx context.Context, customerID string, filter SessionFilter) ([]models.Session, error) {
-	keyCond, filterExpr, vals := recencyExpressions(customerID, filter)
-
-	var sessions []models.Session
-	var lastKey map[string]types.AttributeValue
-	for {
-		input := &dynamodb.QueryInput{
-			TableName:                 aws.String(SessionsTableName),
-			IndexName:                 aws.String("recency_index"),
-			KeyConditionExpression:    aws.String(keyCond),
-			ExpressionAttributeValues: vals,
-			ScanIndexForward:          aws.Bool(false), // newest first
-			ExclusiveStartKey:         lastKey,
-		}
-		if filterExpr != "" {
-			input.FilterExpression = aws.String(filterExpr)
-		}
-		if filter.Limit > 0 {
-			input.Limit = aws.Int32(int32(filter.Limit))
-		}
-
-		result, err := s.client.Query(ctx, input)
-		if err != nil {
-			return nil, s.explainError(ctx, err, "query recent sessions")
-		}
-		var page []models.Session
-		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal sessions: %w", err)
-		}
-		for i := range page {
-			page[i].Normalize()
-			if sessionMatchesTimeBounds(&page[i], filter) {
-				sessions = append(sessions, page[i])
-			}
-		}
-
-		// Stop once we have enough (the common, no-post-filter case ends here
-		// after one page) or the index is exhausted.
-		if filter.Limit > 0 && len(sessions) >= filter.Limit {
-			sessions = sessions[:filter.Limit]
-			break
-		}
-		if result.LastEvaluatedKey == nil {
-			break
-		}
-		lastKey = result.LastEvaluatedKey
-	}
-	return sessions, nil
 }
 
 type sessionIndexQuery struct {
@@ -522,15 +424,14 @@ func indexedSessionExpressions(index sessionIndexQuery, filter SessionFilter) (k
 	vals = map[string]types.AttributeValue{
 		":partition": &types.AttributeValueMemberS{Value: index.partitionKey},
 	}
-	after := filter.startTimeAfter()
 	switch {
-	case after != "" && filter.Before != "":
+	case filter.After != "" && filter.Before != "":
 		keyCond += " AND start_time BETWEEN :after AND :before"
-		vals[":after"] = &types.AttributeValueMemberS{Value: after}
+		vals[":after"] = &types.AttributeValueMemberS{Value: filter.After}
 		vals[":before"] = &types.AttributeValueMemberS{Value: filter.Before}
-	case after != "":
+	case filter.After != "":
 		keyCond += " AND start_time >= :after"
-		vals[":after"] = &types.AttributeValueMemberS{Value: after}
+		vals[":after"] = &types.AttributeValueMemberS{Value: filter.After}
 	case filter.Before != "":
 		keyCond += " AND start_time < :before"
 		vals[":before"] = &types.AttributeValueMemberS{Value: filter.Before}
@@ -572,7 +473,7 @@ func (s *Store) queryIndexedSessions(ctx context.Context, index sessionIndexQuer
 
 		result, err := s.client.Query(ctx, input)
 		if err != nil {
-			return nil, s.explainError(ctx, err, "query filtered sessions")
+			return nil, s.explainError(ctx, err, "query session index")
 		}
 		var page []models.Session
 		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
@@ -596,14 +497,14 @@ func (s *Store) queryIndexedSessions(ctx context.Context, index sessionIndexQuer
 	return sessions, nil
 }
 
-func sessionIndexForFilter(customerID string, filter SessionFilter) (sessionIndexQuery, bool) {
+func sessionIndexForFilter(customerID string, filter SessionFilter) sessionIndexQuery {
 	if filter.RoleARN != "" {
 		return sessionIndexQuery{
 			indexName:     "role_index",
 			partitionName: "role_key",
 			partitionKey:  customerID + "#" + filter.RoleARN,
 			roleIsKey:     true,
-		}, true
+		}
 	}
 	if filter.AccountID != "" {
 		return sessionIndexQuery{
@@ -611,9 +512,13 @@ func sessionIndexForFilter(customerID string, filter SessionFilter) (sessionInde
 			partitionName: "account_key",
 			partitionKey:  customerID + "#" + filter.AccountID,
 			accountIsKey:  true,
-		}, true
+		}
 	}
-	return sessionIndexQuery{}, false
+	return sessionIndexQuery{
+		indexName:     "recency_index",
+		partitionName: "customerId",
+		partitionKey:  customerID,
+	}
 }
 
 // ListSessions returns sessions sorted by start time. With a user (email or
@@ -643,15 +548,10 @@ func (s *Store) ListSessions(ctx context.Context, customerID, user string, filte
 			}
 			sessions = append(sessions, page...)
 		}
-	} else if index, ok := sessionIndexForFilter(customerID, filter); ok {
+	} else {
+		index := sessionIndexForFilter(customerID, filter)
 		var err error
 		sessions, err = s.queryIndexedSessions(ctx, index, filter)
-		if err != nil {
-			return nil, nil, err
-		}
-	} else {
-		var err error
-		sessions, err = s.queryRecentSessions(ctx, customerID, filter)
 		if err != nil {
 			return nil, nil, err
 		}
