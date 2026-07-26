@@ -215,6 +215,40 @@ type SessionFilter struct {
 	AccountID string // Exact match on account_id
 	After     string // Only sessions starting at or after this time (ISO8601/RFC3339)
 	Before    string // Only sessions starting before this time (ISO8601/RFC3339)
+
+	// Limit caps how many sessions the recency path returns. It lets the
+	// unfiltered cross-everyone Query stop early instead of reading the table.
+	// 0 means no limit. Only the recency path applies it server-side; the
+	// per-user and filtered paths ignore it (the CLI still caps client-side).
+	Limit int
+}
+
+// startTimeAfter returns the effective lower start_time bound: After if set,
+// else the --days convenience window, else "".
+func (f SessionFilter) startTimeAfter() string {
+	if f.After != "" {
+		return f.After
+	}
+	if f.Days > 0 {
+		return time.Now().AddDate(0, 0, -f.Days).Format(time.RFC3339)
+	}
+	return ""
+}
+
+// nonTimeFilter renders the role/account predicates (everything that is not a
+// start_time bound) as a filter expression. The recency path puts the time
+// bounds on the index key condition instead, so it needs the rest separately.
+func (f SessionFilter) nonTimeFilter(vals map[string]types.AttributeValue) string {
+	var filters []string
+	if f.AccountID != "" {
+		filters = append(filters, "account_id = :accountId")
+		vals[":accountId"] = &types.AttributeValueMemberS{Value: f.AccountID}
+	}
+	if f.Role != "" {
+		filters = append(filters, "contains(role_name, :role)")
+		vals[":role"] = &types.AttributeValueMemberS{Value: f.Role}
+	}
+	return strings.Join(filters, " AND ")
 }
 
 // filterValues renders the filter as a DynamoDB filter expression and merges
@@ -223,11 +257,7 @@ func (f SessionFilter) filterValues(vals map[string]types.AttributeValue) string
 	var filters []string
 
 	// Time range: --after / --before take precedence over --days
-	afterVal := f.After
-	if afterVal == "" && f.Days > 0 {
-		afterVal = time.Now().AddDate(0, 0, -f.Days).Format(time.RFC3339)
-	}
-	if afterVal != "" {
+	if afterVal := f.startTimeAfter(); afterVal != "" {
 		filters = append(filters, "start_time >= :after")
 		vals[":after"] = &types.AttributeValueMemberS{Value: afterVal}
 	}
@@ -235,13 +265,8 @@ func (f SessionFilter) filterValues(vals map[string]types.AttributeValue) string
 		filters = append(filters, "start_time < :before")
 		vals[":before"] = &types.AttributeValueMemberS{Value: f.Before}
 	}
-	if f.AccountID != "" {
-		filters = append(filters, "account_id = :accountId")
-		vals[":accountId"] = &types.AttributeValueMemberS{Value: f.AccountID}
-	}
-	if f.Role != "" {
-		filters = append(filters, "contains(role_name, :role)")
-		vals[":role"] = &types.AttributeValueMemberS{Value: f.Role}
+	if nt := f.nonTimeFilter(vals); nt != "" {
+		filters = append(filters, nt)
 	}
 	return strings.Join(filters, " AND ")
 }
@@ -329,28 +354,67 @@ func (s *Store) querySessionPartition(ctx context.Context, customerID, personKey
 	return sessions, nil
 }
 
-// scanSessions returns sessions across every person via a filtered Scan — the
-// accepted 1.0 approach for "recent sessions across everyone" (a customerId-
-// keyed time GSI would hot-partition under load).
-func (s *Store) scanSessions(ctx context.Context, customerID string, filter SessionFilter) ([]models.Session, error) {
+// queryRecentSessions returns the newest sessions across every person via a
+// descending Query on recency_index (pk = customerId, sk = start_time). It
+// replaces the former full-table Scan: bounded by filter.Limit, the read cost
+// is O(limit) instead of O(table). See docs/design/session-recency-gsi.md.
+//
+// The inclusive lower bound (--after/--days) tightens the index key condition.
+// The exclusive upper bound (--before) and the role/account predicates are a
+// FilterExpression, so when any of them is set the loop keeps paging until it
+// has collected limit matches (DynamoDB's Limit bounds items examined, not
+// items returned).
+// recencyExpressions builds the recency_index Query pieces: the key condition,
+// the filter expression, and the bound values. A KeyConditionExpression allows
+// only one condition on the sort key, so the inclusive lower bound (>= :after)
+// goes on the key and the exclusive upper bound (< :before) becomes a filter.
+// This preserves the Scan-path semantics exactly (after inclusive, before
+// exclusive) while still letting the key condition tighten the Query on the
+// common --after / --days case.
+func recencyExpressions(customerID string, filter SessionFilter) (keyCond, filterExpr string, vals map[string]types.AttributeValue) {
+	keyCond = "customerId = :cid"
+	vals = map[string]types.AttributeValue{
+		":cid": &types.AttributeValueMemberS{Value: customerID},
+	}
+	var filterParts []string
+	if after := filter.startTimeAfter(); after != "" {
+		keyCond += " AND start_time >= :after"
+		vals[":after"] = &types.AttributeValueMemberS{Value: after}
+	}
+	if filter.Before != "" {
+		filterParts = append(filterParts, "start_time < :before")
+		vals[":before"] = &types.AttributeValueMemberS{Value: filter.Before}
+	}
+	if nt := filter.nonTimeFilter(vals); nt != "" {
+		filterParts = append(filterParts, nt)
+	}
+	return keyCond, strings.Join(filterParts, " AND "), vals
+}
+
+func (s *Store) queryRecentSessions(ctx context.Context, customerID string, filter SessionFilter) ([]models.Session, error) {
+	keyCond, filterExpr, vals := recencyExpressions(customerID, filter)
+
 	var sessions []models.Session
 	var lastKey map[string]types.AttributeValue
 	for {
-		vals := map[string]types.AttributeValue{
-			":cid": &types.AttributeValueMemberS{Value: customerID},
-		}
-		expr := "customerId = :cid"
-		if f := filter.filterValues(vals); f != "" {
-			expr += " AND " + f
-		}
-		result, err := s.client.Scan(ctx, &dynamodb.ScanInput{
+		input := &dynamodb.QueryInput{
 			TableName:                 aws.String(SessionsTableName),
-			FilterExpression:          aws.String(expr),
+			IndexName:                 aws.String("recency_index"),
+			KeyConditionExpression:    aws.String(keyCond),
 			ExpressionAttributeValues: vals,
+			ScanIndexForward:          aws.Bool(false), // newest first
 			ExclusiveStartKey:         lastKey,
-		})
+		}
+		if filterExpr != "" {
+			input.FilterExpression = aws.String(filterExpr)
+		}
+		if filter.Limit > 0 {
+			input.Limit = aws.Int32(int32(filter.Limit))
+		}
+
+		result, err := s.client.Query(ctx, input)
 		if err != nil {
-			return nil, s.explainError(ctx, err, "scan sessions")
+			return nil, s.explainError(ctx, err, "query recent sessions")
 		}
 		var page []models.Session
 		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
@@ -361,6 +425,12 @@ func (s *Store) scanSessions(ctx context.Context, customerID string, filter Sess
 		}
 		sessions = append(sessions, page...)
 
+		// Stop once we have enough (the common, no-post-filter case ends here
+		// after one page) or the index is exhausted.
+		if filter.Limit > 0 && len(sessions) >= filter.Limit {
+			sessions = sessions[:filter.Limit]
+			break
+		}
 		if result.LastEvaluatedKey == nil {
 			break
 		}
@@ -372,7 +442,8 @@ func (s *Store) scanSessions(ctx context.Context, customerID string, filter Sess
 // ListSessions returns sessions sorted by start time. With a user (email or
 // person key), it queries each matching person's partition; the returned keys
 // tell the caller how many identities matched (so the CLI can note a split).
-// Without a user it scans the table.
+// Without a user it reads the newest sessions across everyone from
+// recency_index, bounded by filter.Limit.
 func (s *Store) ListSessions(ctx context.Context, customerID, user string, filter SessionFilter) ([]models.Session, []string, error) {
 	var sessions []models.Session
 	var personKeys []string
@@ -392,7 +463,7 @@ func (s *Store) ListSessions(ctx context.Context, customerID, user string, filte
 		}
 	} else {
 		var err error
-		sessions, err = s.scanSessions(ctx, customerID, filter)
+		sessions, err = s.queryRecentSessions(ctx, customerID, filter)
 		if err != nil {
 			return nil, nil, err
 		}

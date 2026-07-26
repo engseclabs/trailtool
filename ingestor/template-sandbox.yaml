@@ -210,6 +210,17 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+        # Recency: newest sessions across everyone. One descending Query
+        # (customerId = :cid, ScanIndexForward=false, Limit=N) replaces the
+        # cross-everyone Scan. See docs/design/session-recency-gsi.md.
+        - IndexName: recency_index
+          KeySchema:
+            - AttributeName: customerId
+              KeyType: HASH
+            - AttributeName: start_time
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
   AccountsTable:
     Type: AWS::DynamoDB::Table
