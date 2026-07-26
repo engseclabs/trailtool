@@ -14,9 +14,11 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"golang.org/x/sync/errgroup"
 
 	ddblib "github.com/engseclabs/trailtool/ingestor/lib/dynamodb"
 	"github.com/engseclabs/trailtool/ingestor/lib/identity"
@@ -24,6 +26,32 @@ import (
 	"github.com/engseclabs/trailtool/ingestor/lib/session"
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
+
+// writeConcurrency bounds the number of in-flight DynamoDB writes per entity
+// type. Entity writes are independent (each map is keyed by its item's natural
+// DynamoDB key, so no two writes in a batch target the same item), so they run
+// concurrently to keep a busy batch inside the Lambda timeout. The per-item path
+// is still read-merge-write; parallelism hides its latency, it does not remove it.
+const writeConcurrency = 32
+
+// writeAll runs fn over every value in items with bounded concurrency, waiting
+// for all of them to finish. fn writes one item and owns its own error handling
+// (each write logs and swallows its failure, matching the prior per-loop
+// behavior), so one failed write never aborts the rest of the batch.
+func writeAll[T any](ctx context.Context, items map[string]T, fn func(context.Context, T)) {
+	if len(items) == 0 {
+		return
+	}
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(writeConcurrency)
+	for _, item := range items {
+		g.Go(func() error {
+			fn(ctx, item)
+			return nil
+		})
+	}
+	_ = g.Wait()
+}
 
 // DefaultIdleGap bounds the windowed session fallback: consecutive events
 // further apart than this start a new win# session. It applies only to
@@ -456,35 +484,45 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		return sessions, nil
 	}
 
-	for _, role := range roles {
+	// Entity writes run concurrently within each type. Each map is keyed by the
+	// item's natural DynamoDB key, so no two writes in a batch hit the same item;
+	// each write logs its own error and never aborts the batch (unchanged from the
+	// prior serial loops). Types are written in sequence so their internal
+	// concurrency stays bounded and the log output keeps its per-type grouping.
+	writeAll(ctx, roles, func(ctx context.Context, role *types.DynamoDBRole) {
 		role.CustomerID = ns
 		if err := ddblib.WriteRoleToDynamoDB(ctx, ddbClient, cfg.Tables.Roles, role); err != nil {
 			log.Printf("ERROR: Failed to write role: %v", err)
 		}
-	}
+	})
 
-	for _, service := range services {
+	writeAll(ctx, services, func(ctx context.Context, service *types.DynamoDBService) {
 		service.CustomerID = ns
 		if err := ddblib.WriteServiceToDynamoDB(ctx, ddbClient, cfg.Tables.Services, service); err != nil {
 			log.Printf("ERROR: Failed to write service: %v", err)
 		}
-	}
+	})
 
-	for _, resource := range resourceMap {
+	writeAll(ctx, resourceMap, func(ctx context.Context, resource *types.DynamoDBResource) {
 		resource.CustomerID = ns
 		if err := ddblib.WriteResourceToDynamoDB(ctx, ddbClient, cfg.Tables.Resources, resource); err != nil {
 			log.Printf("ERROR: Failed to write resource: %v", err)
 		}
-	}
+	})
 
-	for _, person := range people {
+	writeAll(ctx, people, func(ctx context.Context, person *types.DynamoDBPerson) {
 		person.CustomerID = ns
 		if err := ddblib.WritePersonToDynamoDB(ctx, ddbClient, cfg.Tables.People, person); err != nil {
 			log.Printf("ERROR: Failed to write person: %v", err)
 		}
-	}
+	})
 
-	for _, sess := range sessions {
+	// win# session writes may fold into a resolved ref and rewrite the relations
+	// collector in place (replaceID does a full clear+rebuild). The DynamoDB write
+	// runs concurrently, but relMu serializes that in-memory reconciliation so the
+	// shared collector is never mutated by two goroutines at once.
+	var relMu sync.Mutex
+	writeAll(ctx, sessions, func(ctx context.Context, sess *types.DynamoDBSession) {
 		var err error
 		sess.Sid = identity.Sid(sess.PersonKey, sess.SK)
 		if strings.HasPrefix(sess.SK, "win#") {
@@ -493,7 +531,9 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			if err == nil {
 				oldRef := identity.SessionRef(sess.PersonKey, sess.SK)
 				newRef := identity.SessionRef(persisted.PersonKey, persisted.SK)
+				relMu.Lock()
 				relations.replaceID(ddblib.RelationKindSession, oldRef, newRef)
+				relMu.Unlock()
 			}
 		} else {
 			err = ddblib.WriteSession(ctx, ddbClient, cfg.Tables.Sessions, sess)
@@ -501,7 +541,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		if err != nil {
 			log.Printf("ERROR: Failed to write session %s: %v", sess.SK, err)
 		}
-	}
+	})
 
 	// Persist identity links so later batches can resolve tier 2 and keep anchor
 	// continuity (the read side lands with the §5 link-layer port).
@@ -541,12 +581,12 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		}
 	}
 
-	for _, account := range accounts {
+	writeAll(ctx, accounts, func(ctx context.Context, account *types.DynamoDBAccount) {
 		account.CustomerID = ns
 		if err := ddblib.WriteAccountToDynamoDB(ctx, ddbClient, cfg.Tables.Accounts, account); err != nil {
 			log.Printf("ERROR: Failed to write account: %v", err)
 		}
-	}
+	})
 
 	if cfg.Tables.Relations != "" {
 		if err := ddblib.WriteRelations(ctx, ddbClient, cfg.Tables.Relations, relations.edges()); err != nil {
