@@ -77,6 +77,9 @@ func accumulateSessionEvent(sess *types.DynamoDBSession, event types.CloudTrailR
 	if eventTime > sess.EndTime {
 		sess.EndTime = eventTime
 	}
+	if sess.RoleSessionName == "" {
+		sess.RoleSessionName = session.ExtractRoleSessionName(event)
+	}
 
 	// Forward-access sessions: an AWS service calling with the human's
 	// credentials. Included in the session, counted separately, never ClickOps.

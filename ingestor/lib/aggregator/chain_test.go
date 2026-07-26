@@ -217,6 +217,27 @@ func TestExtractSessionTags(t *testing.T) {
 	}
 }
 
+func TestExtractSessionPolicyPresence(t *testing.T) {
+	tests := []struct {
+		name   string
+		params interface{}
+		want   bool
+	}{
+		{name: "inline policy", params: map[string]interface{}{"policy": `{"Version":"2012-10-17"}`}, want: true},
+		{name: "managed policy ARN", params: map[string]interface{}{"policyArns": []interface{}{map[string]interface{}{"arn": "arn:aws:iam::aws:policy/ReadOnlyAccess"}}}, want: true},
+		{name: "empty policy fields", params: map[string]interface{}{"policy": "", "policyArns": []interface{}{}}, want: false},
+		{name: "no policy fields", params: map[string]interface{}{"roleArn": "arn:aws:iam::123456789012:role/DeployRole"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := types.CloudTrailRecord{EventName: "AssumeRole", RequestParameters: tt.params}
+			if got := ExtractSessionPolicyPresence(event); got != tt.want {
+				t.Fatalf("ExtractSessionPolicyPresence() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsMCPServerResource(t *testing.T) {
 	tests := []struct {
 		name     string

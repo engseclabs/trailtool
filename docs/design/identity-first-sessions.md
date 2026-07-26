@@ -108,7 +108,7 @@ The chain/login/MCP correlation layer (C2) is the one piece of pre-1.0's session
 
 ### 5.1 Role chaining (C2 — the layer that must survive)
 
-On each `AssumeRole` event whose caller resolves to a person: write `chain#<issuedAccessKeyId>` (from `responseElements`) and `chain#<assumedRoleID>#<eventTime>` links carrying the person_key, parent session ref, assumed role ARN, session tags, and session policy. The child session is written under the *person's own partition* with `assumed_from_session` set — so "all of Alice's sessions" naturally includes her chained ones. This is structurally pre-1.0's Pass 1 / Pass 2 logic with the fragile `email:roleID:creationDate` parent keys replaced by stable person keys and anchors.
+On each `AssumeRole` event whose caller resolves to a person: write `chain#<issuedAccessKeyId>` (from `responseElements`) and `chain#<assumedRoleID>#<eventTime>` links carrying the person_key, parent session ref, assumed role ARN, session tags, inline session policy, and whether any inline or managed session policy was supplied. The child session is written under the *person's own partition* with `assumed_from_session` set, so "all of Alice's sessions" naturally includes her chained ones. This is structurally pre-1.0's Pass 1 / Pass 2 logic with the fragile `email:roleID:creationDate` parent keys replaced by stable person keys and anchors.
 
 Both chaining channels are covered, and the child's anchor comes from the ordinary cascade:
 
@@ -136,7 +136,7 @@ PK: customerId # person_key
 SK: anchor # roleID                              # deterministic → cross-batch writes hit the same item
     (windowed fallback: "win#" + roleID + "#" + firstWrittenStart, sticky)
 Attributes:
-  person_key, role_arn, role_id, account_id
+  person_key, role_arn, role_id, role_session_name, account_id
   session_type: cli | web | agent | login
   start_time, end_time (true bounds), version (optimistic lock; load-bearing only for win#)
   events_count, source_ips[], clients[], event_counts{}, resources_accessed{}
@@ -146,6 +146,7 @@ Attributes:
   service_driven_event_count                      # events with userIdentity.invokedBy set (§7)
   sign_in_session_arn (when present)
   assumed_from_session, assumed_from_role_arn     # chained child → parent session ref (§5.1)
+  session_tags{}, session_policy, has_session_policy
   chained_session_refs[]                          # parent → children
   denied_* fields, clickops_* fields              # carried over from pre-1.0 shape
 GSI role_index:    PK customerId#role_arn,   SK start_time
@@ -172,7 +173,8 @@ PK (single string key, disjoint prefixes), all TTL 12h (STS max):
   cred#<accessKeyId>                     → person_key, role_arn, anchor       (§3.3, §4.1)
   cred#<principalId>#<creationDate>      → same                                (§3.3, console)
   chain#<issuedAccessKeyId>              → person_key, parent_session_ref, assumed_role_arn,
-                                            session_tags{}, session_policy     (§5.1, CLI)
+                                            session_tags{}, session_policy,
+                                            has_session_policy                 (§5.1, CLI)
   chain#<assumedRoleID>#<creationDate>   → same                                (§5.1, console switch-role)
   login#<roleID>#<creationDate>          → person_key, parent_session_ref      (§5.2)
   mcp#<signInSessionArn>                 → person_key, parent_session_ref, mcp_resource (§5.3)

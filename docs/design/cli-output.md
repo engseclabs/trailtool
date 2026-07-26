@@ -202,7 +202,9 @@ policy**. Views differ in which sections appear, never in order or style.
   **not** printed for plain lists (keeps them pipe-clean); the ClickOps report is
   the one exception (it already prints "Found N …").
 - **`sessions list`:** `Table` with the `CHAINED` column carrying lineage markers
-  (§4.3). Responsive column policy in §6.
+  (§4.3). Very wide output also shows the top client, role-session name, a tag
+  summary, and whether the session was constrained by a session policy.
+  Responsive column policy in §6.
 - **Standard detail (`accounts`/`roles`/`services detail`):** `Title` plus
   `KV` facts plus per-section `Table`s (services, events, resources), each "top"
   list **count-descending**.
@@ -257,7 +259,8 @@ Break widths and behavior, tested deterministically by constructing a
 
 | Width | Behavior |
 |---|---|
-| ≥ 132 (wide) | all columns; full role names when `--long`; no truncation unless a single field exceeds a generous cap |
+| ≥ 180 (very wide) | session lists add client, role-session name, tags, and session-policy columns |
+| ≥ 132 (wide) | all standard columns; full role names when `--long`; no truncation unless a single field exceeds a generous cap |
 | ~100 (normal-wide) | all essential and collapsible columns; ARNs/role names middle-truncate to fit |
 | ~80 (normal, default) | essential columns only; collapsible columns dropped; long identifiers middle-truncate |
 | ~60 (narrow) | essential columns only, aggressively truncated; if a row can't fit, wrap the least-essential field to a muted continuation line |
@@ -265,7 +268,8 @@ Break widths and behavior, tested deterministically by constructing a
 - **Column tiers** per table declared in `cli/view`: *essential* (never dropped),
   *collapsible* (dropped below a threshold), *`--long`-only* (full role names).
   `sessions list`: essential = `SID WHEN USER ROLE EVENTS`; collapsible =
-  `ACCOUNT TYPE DURATION CHAINED`.
+  `ACCOUNT TYPE DURATION CHAINED`; very-wide context =
+  `CLIENT SESSION NAME TAGS POLICY`.
 - **Long identifiers** (ARNs, emails, role names, resource ids) middle-truncate
   with `…`/`...`, preserving the distinguishing head and tail
   (`aws-reserved/…/AdministratorAccess_7d88aa2a`). `--long` disables role-name
@@ -298,9 +302,9 @@ Break widths and behavior, tested deterministically by constructing a
 Unchanged by this work, each with a guarding test:
 
 - Command names and hierarchy; all flag names and semantics; exit codes.
-- **All JSON field names, shapes, and values**, including the `clients[]` schema
-  and aggregation key/semantics. `--format json` output is byte-for-byte
-  unchanged except where a field was already broken.
+- Existing JSON field names and shapes remain stable. Sessions add
+  `role_session_name` and `has_session_policy`; the `clients[]` schema and
+  aggregation semantics do not change.
 - No new AWS API calls made for presentation.
 - Pipe-friendliness: redirected output usable, no ANSI in non-TTY output.
 - The non-interactive, one-command/one-result model. Not a TUI.
@@ -349,10 +353,5 @@ PRs 1-3 link `Part of #25`; PR 4 links `Closes #25`.
 - `--verbose` on `sessions detail` to surface `components` and
   `raw_user_agent_samples` in human output (JSON already exposes them). Additive
   flag; deferrable.
-- A mixed-client **indicator** on `sessions list` (e.g. a `CLIENTS` column or a
-  marker when a session spans client families). Recommendation: a **neutral**
-  count/marker only (TrailTool reports, it does not adjudicate) rather than a
-  security signal. Deferrable to a follow-up issue since it touches the list
-  schema.
 
-Neither is required for #25; both would be separate slices if pursued.
+This is not required for #25 and would be a separate slice if pursued.

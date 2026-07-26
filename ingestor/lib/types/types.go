@@ -337,12 +337,13 @@ type DynamoDBSession struct {
 	Anchor      string `dynamodbav:"anchor"`       // sis#… | web#… | key#… | win#… (fallback)
 	SessionType string `dynamodbav:"session_type"` // cli | web | agent | login
 
-	RoleARN    string `dynamodbav:"role_arn"`
-	RoleID     string `dynamodbav:"role_id"`
-	RoleName   string `dynamodbav:"role_name"`
-	AccountID  string `dynamodbav:"account_id"`
-	RoleKey    string `dynamodbav:"role_key"`    // customerId#canonical role ARN; role_index GSI hash
-	AccountKey string `dynamodbav:"account_key"` // customerId#account_id; account_index GSI hash
+	RoleARN         string `dynamodbav:"role_arn"`
+	RoleID          string `dynamodbav:"role_id"`
+	RoleName        string `dynamodbav:"role_name"`
+	RoleSessionName string `dynamodbav:"role_session_name,omitempty"`
+	AccountID       string `dynamodbav:"account_id"`
+	RoleKey         string `dynamodbav:"role_key"`    // customerId#canonical role ARN; role_index GSI hash
+	AccountKey      string `dynamodbav:"account_key"` // customerId#account_id; account_index GSI hash
 
 	// True session bounds. For win# sessions the SK keeps the first-written start
 	// even when a later batch extends the window earlier; StartTime moves instead.
@@ -407,8 +408,9 @@ type DynamoDBSession struct {
 
 	// SessionTags/SessionPolicy come from the AssumeRole requestParameters that
 	// created this child session.
-	SessionTags   map[string]string `dynamodbav:"session_tags,omitempty"`
-	SessionPolicy string            `dynamodbav:"session_policy,omitempty"`
+	SessionTags      map[string]string `dynamodbav:"session_tags,omitempty"`
+	SessionPolicy    string            `dynamodbav:"session_policy,omitempty"`
+	HasSessionPolicy bool              `dynamodbav:"has_session_policy"`
 
 	// aws login attribution: ref of the human session that authorized the
 	// CreateOAuth2Token grant that vended this session's credentials.
@@ -446,11 +448,12 @@ type DynamoDBIdentityLink struct {
 	ParentSessionRef string `dynamodbav:"parent_session_ref,omitempty"`
 	ParentRoleARN    string `dynamodbav:"parent_role_arn,omitempty"`
 
-	// AssumedRoleARN, SessionTags, SessionPolicy are set on chain# links from the
-	// AssumeRole request, and propagate to the child session record.
-	AssumedRoleARN string            `dynamodbav:"assumed_role_arn,omitempty"`
-	SessionTags    map[string]string `dynamodbav:"session_tags,omitempty"`
-	SessionPolicy  string            `dynamodbav:"session_policy,omitempty"`
+	// AssumedRoleARN and the session attributes are set on chain# links from
+	// the AssumeRole request, and propagate to the child session record.
+	AssumedRoleARN   string            `dynamodbav:"assumed_role_arn,omitempty"`
+	SessionTags      map[string]string `dynamodbav:"session_tags,omitempty"`
+	SessionPolicy    string            `dynamodbav:"session_policy,omitempty"`
+	HasSessionPolicy bool              `dynamodbav:"has_session_policy"`
 
 	// MCPResource is the AWS MCP Server resource from the grant's
 	// requestParameters.resource. Set only on mcp# links.

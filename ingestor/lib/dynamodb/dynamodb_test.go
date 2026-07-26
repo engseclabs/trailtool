@@ -65,6 +65,21 @@ func TestMergeSessionMigratesRoleIndexKey(t *testing.T) {
 	}
 }
 
+func TestMergeSessionPreservesRoleSessionContext(t *testing.T) {
+	existing := winSession("win#role#2026-07-24T10:00:00Z", "2026-07-24T10:00:00Z", "2026-07-24T10:05:00Z", 1, 1)
+	existing.RoleSessionName = "deploy-session"
+	existing.SessionPolicy = `{"Version":"2012-10-17"}`
+	incoming := winSession("win#role#2026-07-24T10:00:00Z", "2026-07-24T10:05:00Z", "2026-07-24T10:10:00Z", 1, 1)
+
+	got := MergeSession(existing, incoming)
+	if got.RoleSessionName != existing.RoleSessionName {
+		t.Fatalf("RoleSessionName = %q, want %q", got.RoleSessionName, existing.RoleSessionName)
+	}
+	if !got.HasSessionPolicy {
+		t.Fatal("HasSessionPolicy = false despite an inline policy")
+	}
+}
+
 func TestFoldWindowsCreatesWhenNothingAdjacent(t *testing.T) {
 	incoming := winSession("win#AIDADEPLOYBOT1234567#2026-07-15T10:00:00Z", "2026-07-15T10:00:00Z", "2026-07-15T10:10:00Z", 2, 1)
 	merged, expectedVersion, deletions := FoldWindows(nil, incoming, 30*time.Minute)

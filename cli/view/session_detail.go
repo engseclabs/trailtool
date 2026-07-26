@@ -41,9 +41,13 @@ func SessionTitleKV(ctx render.Context, sess *models.Session, personLabel, timeL
 	if sess.Anchor != "" {
 		kv.Add("Anchor", ctx.Style(render.Muted, sess.Anchor))
 	}
+	if sess.RoleSessionName != "" {
+		kv.Add("Role session", ctx.Style(render.Ident, sess.RoleSessionName))
+	}
 	kv.Add("Time", ctx.Style(render.Time, timeLine)).
 		Add("Events", eventsFact(ctx, sess)).
-		Add("Resources", count(ctx, sess.ResourcesCount))
+		Add("Resources", count(ctx, sess.ResourcesCount)).
+		Add("Session policy", sessionPolicySummary(ctx, sess))
 	if len(sess.SourceIPs) > 0 {
 		sourceIPs := append([]string(nil), sess.SourceIPs...)
 		sort.Strings(sourceIPs)

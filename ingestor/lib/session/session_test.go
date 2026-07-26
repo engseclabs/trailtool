@@ -2,6 +2,8 @@ package session
 
 import (
 	"testing"
+
+	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
 
 func TestExtractEmailFromPrincipalID(t *testing.T) {
@@ -85,6 +87,45 @@ func TestExtractRoleIDFromPrincipalID(t *testing.T) {
 			got := ExtractRoleIDFromPrincipalID(tt.principalID)
 			if got != tt.want {
 				t.Errorf("ExtractRoleIDFromPrincipalID(%q) = %q, want %q", tt.principalID, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractRoleSessionName(t *testing.T) {
+	tests := []struct {
+		name  string
+		event types.CloudTrailRecord
+		want  string
+	}{
+		{
+			name: "assumed-role ARN",
+			event: types.CloudTrailRecord{UserIdentity: types.UserIdentity{
+				ARN:         "arn:aws:sts::123456789012:assumed-role/DeployRole/deploy-20260726",
+				PrincipalID: "AROAROLEID:ignored-fallback",
+			}},
+			want: "deploy-20260726",
+		},
+		{
+			name: "principal ID fallback",
+			event: types.CloudTrailRecord{UserIdentity: types.UserIdentity{
+				PrincipalID: "AROAROLEID:alice@example.com",
+			}},
+			want: "alice@example.com",
+		},
+		{
+			name: "IAM user principal",
+			event: types.CloudTrailRecord{UserIdentity: types.UserIdentity{
+				PrincipalID: "AIDAUSERID:unexpected",
+				ARN:         "arn:aws:iam::123456789012:user/alice",
+			}},
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ExtractRoleSessionName(tt.event); got != tt.want {
+				t.Fatalf("ExtractRoleSessionName() = %q, want %q", got, tt.want)
 			}
 		})
 	}

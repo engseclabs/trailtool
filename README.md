@@ -135,6 +135,8 @@ b7k9mp  5 mins ago  alice@example.com  AdminAccess  123456789012  3       LOGIN 
 c3d5e7  5 mins ago  alice@example.com  AdminAccess  123456789012  9       AGENT  4m        ← granted by k7m2qp
 ```
 
+At terminal widths of 180 columns or more, the list also shows the top client
+name, role-session name, a tag summary, and whether a session policy was used.
 
 | `TYPE` | Meaning |
 |--------|---------|

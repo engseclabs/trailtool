@@ -94,6 +94,9 @@ type Session struct {
 	RoleARN   string `json:"role_arn" dynamodbav:"role_arn"`
 	RoleID    string `json:"role_id,omitempty" dynamodbav:"role_id"`
 	RoleName  string `json:"role_name" dynamodbav:"role_name"`
+	// RoleSessionName is the STS role-session name recorded in the assumed-role
+	// ARN and principal ID.
+	RoleSessionName string `json:"role_session_name,omitempty" dynamodbav:"role_session_name,omitempty"`
 
 	EventsCount int `json:"events_count" dynamodbav:"events_count"`
 	// ServiceDrivenEventCount counts events an AWS service made with the
@@ -165,6 +168,9 @@ type Session struct {
 	// SessionPolicy is the raw inline IAM policy from requestParameters.policy in the
 	// AssumeRole event that created this child session. Stored as a JSON string.
 	SessionPolicy string `json:"session_policy,omitempty" dynamodbav:"session_policy,omitempty"`
+	// HasSessionPolicy is true when AssumeRole included an inline or managed
+	// session policy. SessionPolicy contains the inline document when available.
+	HasSessionPolicy bool `json:"has_session_policy" dynamodbav:"has_session_policy"`
 }
 
 // Ref returns the session's stable reference ("person_key|sk") — the format
