@@ -56,6 +56,13 @@ func sessionsListCmd() *cobra.Command {
 				After:     after,
 				Before:    before,
 			}
+			// Let the store's recency Query stop after `limit` newest rows on the
+			// cross-everyone path. Tag filtering happens client-side below, so when
+			// --tag is set we can't bound server-side without under-fetching; fall
+			// back to no server limit and let the client-side cap apply.
+			if len(tags) == 0 {
+				filter.Limit = limit
+			}
 
 			sessions, personKeys, err := session.ListSessions(ctx, s, CustomerID, user, filter)
 			if err != nil {
