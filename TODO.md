@@ -1,5 +1,21 @@
 # TODO
 
+## Ingest scaling follow-ups ([#44](https://github.com/engseclabs/trailtool/issues/44))
+
+Issue #44 parallelized entity writes but intentionally deferred three related
+changes:
+
+- **Replace read-merge-put writers with atomic `UpdateItem` expressions.**
+  This would remove one DynamoDB round trip per entity and close the concurrent
+  lost-update window. The design must preserve additive counts, set unions, and
+  file-level idempotency.
+- **Benchmark and tune Lambda memory and timeout.** Choose deployment defaults
+  from representative CloudTrail workloads after parallel-write performance is
+  measured.
+- **Add ingestion buffering and failure handling.** Evaluate an SQS buffer, DLQ,
+  and reserved concurrency together so retries, backpressure, and partial-batch
+  failures have one coherent design.
+
 ## Ingest durability & consistency gaps — accepted for now (ingestor)
 
 Four documented, accepted limitations of the 1.0 ingest path. Each captures why
