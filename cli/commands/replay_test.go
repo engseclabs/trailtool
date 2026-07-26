@@ -8,16 +8,49 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	cfntypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
 	"github.com/spf13/cobra"
 
 	"github.com/engseclabs/trailtool/core/replay"
 )
 
-func TestBuildReplayOptionsSelection(t *testing.T) {
-	t.Run("prefix mode", func(t *testing.T) {
-		opts, err := buildReplayOptions(&replayFlags{bucket: "b", prefix: "AWSLogs/1/CloudTrail/us-east-1/2026/07/"})
+func TestValidateReplaySelection(t *testing.T) {
+	t.Run("prefix alone is ok", func(t *testing.T) {
+		if err := validateReplaySelection(&replayFlags{prefix: "p/"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("from and to together is ok", func(t *testing.T) {
+		if err := validateReplaySelection(&replayFlags{from: "2026-07-25", to: "2026-07-26"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("prefix and range together is an error", func(t *testing.T) {
+		if err := validateReplaySelection(&replayFlags{prefix: "p/", from: "2026-07-25", to: "2026-07-26"}); err == nil {
+			t.Fatal("expected error for --prefix with --from/--to")
+		}
+	})
+	t.Run("range without both bounds is an error", func(t *testing.T) {
+		if err := validateReplaySelection(&replayFlags{from: "2026-07-25"}); err == nil {
+			t.Fatal("expected error for --from without --to")
+		}
+	})
+	t.Run("nothing selected is an error", func(t *testing.T) {
+		if err := validateReplaySelection(&replayFlags{}); err == nil {
+			t.Fatal("expected error when no selection given")
+		}
+	})
+}
+
+func TestBuildReplayOptions(t *testing.T) {
+	t.Run("prefix mode carries the resolved bucket", func(t *testing.T) {
+		opts, err := buildReplayOptions(&replayFlags{prefix: "AWSLogs/1/CloudTrail/us-east-1/2026/07/"}, "resolved-bucket")
 		if err != nil {
 			t.Fatal(err)
+		}
+		if opts.Bucket != "resolved-bucket" {
+			t.Fatalf("bucket = %q, want the resolved value", opts.Bucket)
 		}
 		if len(opts.Prefixes) != 1 || opts.Prefixes[0] != "AWSLogs/1/CloudTrail/us-east-1/2026/07/" {
 			t.Fatalf("prefixes = %v", opts.Prefixes)
@@ -26,9 +59,9 @@ func TestBuildReplayOptionsSelection(t *testing.T) {
 
 	t.Run("day range expands to per-day prefixes", func(t *testing.T) {
 		opts, err := buildReplayOptions(&replayFlags{
-			bucket: "b", account: "123", region: "us-east-1",
+			account: "123", region: "us-east-1",
 			from: "2026-07-25", to: "2026-07-26",
-		})
+		}, "b")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -37,27 +70,42 @@ func TestBuildReplayOptionsSelection(t *testing.T) {
 		}
 	})
 
-	t.Run("prefix and range together is an error", func(t *testing.T) {
-		if _, err := buildReplayOptions(&replayFlags{bucket: "b", prefix: "p/", from: "2026-07-25", to: "2026-07-26"}); err == nil {
-			t.Fatal("expected error for --prefix with --from/--to")
-		}
-	})
-
-	t.Run("range without both bounds is an error", func(t *testing.T) {
-		if _, err := buildReplayOptions(&replayFlags{bucket: "b", from: "2026-07-25"}); err == nil {
-			t.Fatal("expected error for --from without --to")
-		}
-	})
-
 	t.Run("sub-day instant is rejected", func(t *testing.T) {
 		_, err := buildReplayOptions(&replayFlags{
-			bucket: "b", account: "1", region: "us-east-1",
+			account: "1", region: "us-east-1",
 			from: "2026-07-25T10:00:00Z", to: "2026-07-26",
-		})
+		}, "b")
 		if err == nil {
 			t.Fatal("expected date-only rejection of an RFC3339 instant")
 		}
 	})
+}
+
+func TestBucketFromStackPrefersOutputThenParameter(t *testing.T) {
+	out := cfntypes.Stack{
+		Outputs: []cfntypes.Output{
+			{OutputKey: aws.String("CloudTrailBucketName"), OutputValue: aws.String("from-output")},
+		},
+		Parameters: []cfntypes.Parameter{
+			{ParameterKey: aws.String("CloudTrailBucketName"), ParameterValue: aws.String("from-param")},
+		},
+	}
+	if got := bucketFromStack(out); got != "from-output" {
+		t.Fatalf("bucket = %q, want output to win", got)
+	}
+
+	paramOnly := cfntypes.Stack{
+		Parameters: []cfntypes.Parameter{
+			{ParameterKey: aws.String("CloudTrailBucketName"), ParameterValue: aws.String("from-param")},
+		},
+	}
+	if got := bucketFromStack(paramOnly); got != "from-param" {
+		t.Fatalf("bucket = %q, want parameter fallback", got)
+	}
+
+	if got := bucketFromStack(cfntypes.Stack{}); got != "" {
+		t.Fatalf("bucket = %q, want empty for a stack without the key", got)
+	}
 }
 
 type stubLister struct{ keys []string }

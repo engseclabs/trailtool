@@ -431,6 +431,10 @@ Outputs:
     Description: ARN of the CloudTrail ingestor Lambda function
     Value: !GetAtt TrailToolIngestorFunction.Arn
 
+  CloudTrailBucketName:
+    Description: Name of the S3 bucket holding the CloudTrail logs (used by 'trailtool replay')
+    Value: !Ref CloudTrailBucketName
+
   SessionsTableName:
     Description: Name of the sessions DynamoDB table
     Value: !Ref SessionsTable

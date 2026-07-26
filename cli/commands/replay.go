@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"path"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	cfntypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/spf13/cobra"
@@ -20,17 +23,69 @@ import (
 type replayDeps struct {
 	lister  replay.Lister
 	invoker replay.Invoker
+	bucket  string // resolved bucket (flag override or discovered from the stack)
 }
 
+// openReplayDeps builds the driver's AWS clients and resolves the CloudTrail
+// bucket. When bucket is empty it is discovered from the ingestor
+// CloudFormation stack, so the operator does not have to repeat what the
+// deployment already knows. A package var so tests swap in fakes.
 var openReplayDeps = func(ctx context.Context, bucket, function string) (replayDeps, error) {
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return replayDeps{}, err
 	}
+	if bucket == "" {
+		bucket, err = resolveCloudTrailBucket(ctx, cloudformation.NewFromConfig(cfg))
+		if err != nil {
+			return replayDeps{}, err
+		}
+	}
 	return replayDeps{
 		lister:  replay.S3Lister{Client: s3.NewFromConfig(cfg), Bucket: bucket},
 		invoker: replay.LambdaInvoker{Client: lambda.NewFromConfig(cfg), Function: function},
+		bucket:  bucket,
 	}, nil
+}
+
+// ingestorStackNames are the CloudFormation stack names the CLI probes for the
+// ingestor deployment, matching `trailtool status`.
+var ingestorStackNames = []string{"trailtool-ingestor", "trailtool", "sam-app"}
+
+// resolveCloudTrailBucket reads the CloudTrail bucket name from the ingestor
+// stack. It prefers the CloudTrailBucketName output and falls back to the stack
+// parameter of the same name (so it works on stacks deployed before the output
+// was added). Returns an actionable error when no stack or value is found.
+func resolveCloudTrailBucket(ctx context.Context, cfn *cloudformation.Client) (string, error) {
+	for _, name := range ingestorStackNames {
+		out, err := cfn.DescribeStacks(ctx, &cloudformation.DescribeStacksInput{
+			StackName: aws.String(name),
+		})
+		if err != nil || len(out.Stacks) == 0 {
+			continue
+		}
+		if b := bucketFromStack(out.Stacks[0]); b != "" {
+			return b, nil
+		}
+	}
+	return "", fmt.Errorf("could not find the CloudTrail bucket in the ingestor stack; pass --bucket")
+}
+
+// bucketFromStack pulls CloudTrailBucketName from a stack's outputs, then its
+// parameters.
+func bucketFromStack(stack cfntypes.Stack) string {
+	const key = "CloudTrailBucketName"
+	for _, o := range stack.Outputs {
+		if aws.ToString(o.OutputKey) == key {
+			return aws.ToString(o.OutputValue)
+		}
+	}
+	for _, p := range stack.Parameters {
+		if aws.ToString(p.ParameterKey) == key {
+			return aws.ToString(p.ParameterValue)
+		}
+	}
+	return ""
 }
 
 type replayFlags struct {
@@ -60,19 +115,24 @@ func ReplayCmd() *cobra.Command {
 			"the same time. Replaying the current, still-growing day is not supported.\n" +
 			"Reset first (trailtool reset) for a clean rebuild from scratch.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts, err := buildReplayOptions(&f)
-			if err != nil {
+			// Validate selection flags before any AWS call, so a bad invocation
+			// fails fast without hitting CloudFormation.
+			if err := validateReplaySelection(&f); err != nil {
 				return fatal("%v", err)
 			}
 			deps, err := openReplayDeps(cmd.Context(), f.bucket, f.function)
 			if err != nil {
-				return fatalAWS("Set AWS_PROFILE and AWS_REGION, then re-authenticate.", err)
+				return fatalAWS("Deploy the ingestor stack, or pass --bucket.", err)
+			}
+			opts, err := buildReplayOptions(&f, deps.bucket)
+			if err != nil {
+				return fatal("%v", err)
 			}
 			return runReplay(cmd, deps, opts)
 		},
 	}
 	flags := cmd.Flags()
-	flags.StringVar(&f.bucket, "bucket", "", "S3 bucket holding the CloudTrail logs (required)")
+	flags.StringVar(&f.bucket, "bucket", "", "CloudTrail S3 bucket (default: discovered from the ingestor stack)")
 	flags.StringVar(&f.function, "function", "trailtool-ingestor", "Ingestor Lambda function name")
 	flags.StringVar(&f.prefix, "prefix", "", "Replay every object under this S3 key prefix (single account/region)")
 	flags.StringVar(&f.from, "from", "", "First day of range, YYYY-MM-DD (needs --account and --region)")
@@ -80,14 +140,29 @@ func ReplayCmd() *cobra.Command {
 	flags.StringVar(&f.account, "account", "", "Account ID for the standard CloudTrail key layout")
 	flags.StringVar(&f.region, "region", "", "Region for the standard CloudTrail key layout")
 	flags.BoolVar(&f.dryRun, "dry-run", false, "List and count matching objects without invoking the ingestor")
-	_ = cmd.MarkFlagRequired("bucket")
 	return cmd
 }
 
-// buildReplayOptions validates the selection flags and resolves them to the S3
-// prefixes to list. Exactly one of --prefix or --from/--to must be given.
-func buildReplayOptions(f *replayFlags) (replay.Options, error) {
-	opts := replay.Options{Bucket: f.bucket, DryRun: f.dryRun}
+// validateReplaySelection checks that exactly one of --prefix or --from/--to is
+// given, before any AWS call. It does not touch the bucket.
+func validateReplaySelection(f *replayFlags) error {
+	switch {
+	case f.prefix != "" && (f.from != "" || f.to != ""):
+		return fmt.Errorf("use either --prefix or --from/--to, not both")
+	case f.prefix != "":
+		return nil
+	case f.from != "" && f.to != "":
+		return nil
+	default:
+		return fmt.Errorf("specify --prefix, or --from and --to together")
+	}
+}
+
+// buildReplayOptions resolves the selection flags to the S3 prefixes to list,
+// using the already-resolved bucket. Selection is pre-validated by
+// validateReplaySelection.
+func buildReplayOptions(f *replayFlags, bucket string) (replay.Options, error) {
+	opts := replay.Options{Bucket: bucket, DryRun: f.dryRun}
 
 	switch {
 	case f.prefix != "" && (f.from != "" || f.to != ""):
