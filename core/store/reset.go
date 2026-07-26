@@ -75,16 +75,23 @@ func (s *Store) CountItems(ctx context.Context, tables []string) ([]TableReset, 
 	return out, nil
 }
 
+// ResetProgress reports reset progress as it happens: which table (1-based
+// index of total), and how many items have been deleted from it so far. It is
+// called from Reset's single goroutine, so implementations need not be
+// concurrency-safe. done reports whether the table just finished.
+type ResetProgress func(table string, tableIndex, totalTables, deleted int, done bool)
+
 // Reset empties each named table by scanning its keys and batch-deleting every
 // item, keeping the table and its GSIs intact so live ingestion resumes the
 // moment reset finishes (docs/design/cloudtrail-replay.md §4). A missing table
-// is skipped, not fatal. It returns a per-table deletion count.
+// is skipped, not fatal. It returns a per-table deletion count. A nil progress
+// callback is fine.
 //
 // Reset is destructive to the derived projection and recoverable only by
 // replaying the log. The caller owns confirmation.
-func (s *Store) Reset(ctx context.Context, tables []string) ([]TableReset, error) {
+func (s *Store) Reset(ctx context.Context, tables []string, progress ResetProgress) ([]TableReset, error) {
 	out := make([]TableReset, 0, len(tables))
-	for _, table := range tables {
+	for i, table := range tables {
 		keys, err := s.tableKeyAttributes(ctx, table)
 		if err != nil {
 			if isTableNotFound(err) {
@@ -93,9 +100,16 @@ func (s *Store) Reset(ctx context.Context, tables []string) ([]TableReset, error
 			}
 			return nil, err
 		}
-		deleted, err := s.truncateTable(ctx, table, keys)
+		var tableProgress func(int)
+		if progress != nil {
+			tableProgress = func(deleted int) { progress(table, i+1, len(tables), deleted, false) }
+		}
+		deleted, err := s.truncateTable(ctx, table, keys, tableProgress)
 		if err != nil {
 			return nil, err
+		}
+		if progress != nil {
+			progress(table, i+1, len(tables), deleted, true)
 		}
 		out = append(out, TableReset{Table: table, Deleted: deleted})
 	}
@@ -124,8 +138,9 @@ func (s *Store) tableKeyAttributes(ctx context.Context, table string) ([]string,
 
 // truncateTable scans the table projecting only its key attributes and deletes
 // every item in batches of 25 (the BatchWriteItem limit), retrying unprocessed
-// items. It returns the number of items deleted.
-func (s *Store) truncateTable(ctx context.Context, table string, keyAttrs []string) (int, error) {
+// items. It returns the number of items deleted. onProgress, if non-nil, is
+// called with the running deleted count after each scan page.
+func (s *Store) truncateTable(ctx context.Context, table string, keyAttrs []string, onProgress func(deleted int)) (int, error) {
 	projection, names := keyProjection(keyAttrs)
 
 	deleted := 0
@@ -147,6 +162,9 @@ func (s *Store) truncateTable(ctx context.Context, table string, keyAttrs []stri
 				return deleted, err
 			}
 			deleted += n
+		}
+		if onProgress != nil {
+			onProgress(deleted)
 		}
 
 		if page.LastEvaluatedKey == nil {

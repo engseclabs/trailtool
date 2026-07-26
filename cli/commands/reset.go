@@ -19,7 +19,7 @@ import (
 // satisfies it; tests inject a fake so the command is exercised without AWS.
 type resetter interface {
 	CountItems(ctx context.Context, tables []string) ([]store.TableReset, error)
-	Reset(ctx context.Context, tables []string) ([]store.TableReset, error)
+	Reset(ctx context.Context, tables []string, progress store.ResetProgress) ([]store.TableReset, error)
 }
 
 // openResetter builds a store-backed resetter from the ambient AWS config. It is
@@ -81,7 +81,20 @@ func runReset(cmd *cobra.Command, r resetter, assumeYes bool) error {
 		}
 	}
 
-	results, err := r.Reset(ctx, tables)
+	rctx := renderContext()
+	rctx.Err = cmd.ErrOrStderr()
+	var progress store.ResetProgress
+	if Format != "json" {
+		progress = func(table string, idx, total, deleted int, done bool) {
+			fmt.Fprintf(rctx.Err, "\r%s", rctx.Style(render.Muted,
+				fmt.Sprintf("clearing %d/%d  %-28s %d deleted", idx, total, table, deleted)))
+		}
+	}
+
+	results, err := r.Reset(ctx, tables, progress)
+	if progress != nil {
+		fmt.Fprintln(rctx.Err)
+	}
 	if err != nil {
 		return fatalAWS("The reset may be partial; re-run to finish clearing.", err)
 	}
