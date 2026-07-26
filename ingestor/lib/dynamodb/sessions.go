@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -116,7 +117,7 @@ func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSessi
 		RoleID:      firstNonEmpty(existing.RoleID, incoming.RoleID),
 		RoleName:    firstNonEmpty(existing.RoleName, incoming.RoleName),
 		AccountID:   firstNonEmpty(existing.AccountID, incoming.AccountID),
-		RoleKey:     firstNonEmpty(existing.RoleKey, incoming.RoleKey),
+		RoleKey:     mergeRoleKey(existing.RoleKey, incoming.RoleKey),
 		AccountKey:  firstNonEmpty(existing.AccountKey, incoming.AccountKey),
 
 		StartTime:       startTime,
@@ -165,6 +166,27 @@ func MergeSession(existing *types.DynamoDBSession, incoming *types.DynamoDBSessi
 		MCPResource:              firstNonEmpty(existing.MCPResource, incoming.MCPResource),
 		AgentAuthorizedBySession: firstNonEmpty(existing.AgentAuthorizedBySession, incoming.AgentAuthorizedBySession),
 	}
+}
+
+func mergeRoleKey(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	aCanonical := strings.Contains(a, "#arn:")
+	bCanonical := strings.Contains(b, "#arn:")
+	if aCanonical != bCanonical {
+		if aCanonical {
+			return a
+		}
+		return b
+	}
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func selectSessionSummary(a, b *types.DynamoDBSession) *types.DynamoDBSession {

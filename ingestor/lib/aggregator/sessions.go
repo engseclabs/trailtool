@@ -53,7 +53,7 @@ func newSession(ns, personKey, sk, anchor, sessionType, roleARN, roleID, account
 		RoleID:                  roleID,
 		RoleName:                session.ExtractRoleNameFromARN(roleARN),
 		AccountID:               accountID,
-		RoleKey:                 ns + "#" + roleID,
+		RoleKey:                 ns + "#" + roleARN,
 		AccountKey:              ns + "#" + accountID,
 		Version:                 1,
 		SourceIPs:               []string{},

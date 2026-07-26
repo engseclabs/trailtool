@@ -210,6 +210,22 @@ func TestSessionCommandsAcceptOnePositionalSelector(t *testing.T) {
 	}
 }
 
+func TestSessionListUsesTypedFilters(t *testing.T) {
+	cmd := sessionsListCmd()
+	for _, flag := range []string{
+		"user", "role", "account", "days", "after", "before",
+		"type", "has-denied", "tag",
+	} {
+		if cmd.Flag(flag) == nil {
+			t.Fatalf("sessions list is missing --%s", flag)
+		}
+	}
+	if usage := cmd.Flag("role").Usage; strings.Contains(usage, "substring") ||
+		!strings.Contains(usage, "role ID") {
+		t.Fatalf("--role usage = %q", usage)
+	}
+}
+
 func TestLatestSessionUsesStartTimeThenSID(t *testing.T) {
 	sessions := []models.Session{
 		{Sid: "z", StartTime: "2025-01-01T00:00:00Z"},

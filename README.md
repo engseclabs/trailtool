@@ -67,6 +67,8 @@ trailtool people detail 5nmama                    # by PID (prefix ok)
 
 # Sessions
 trailtool sessions list --user alice@example.com --days 7
+trailtool sessions list --role jlnjlx --account 123456789012 --has-denied
+trailtool sessions list --type agent --after 2026-07-01T00:00:00Z
 trailtool sessions list --user alice@example.com --days 7 --long  # show full role names
 trailtool sessions detail k7m2qp          # by id (SID column, prefix ok)
 trailtool sessions detail latest

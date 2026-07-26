@@ -47,7 +47,7 @@ Query recency_index
 
 - **Cost.** One Query reading N items. Bounded by the user's limit, independent of table size. This is the whole point.
 - **Correctness.** The index is fully `start_time`-ordered, so a descending Query with `Limit=N` returns the true global newest N. No approximation, unlike the sort-then-truncate stopgap in #45. Ties break naturally on the index; the client re-applies `SortSessionsForList` for the `sid`-tiebreak contract.
-- **Filtered paths are unaffected.** `--role` and `--account` should use the existing `role_index` / `account_index` (already `start_time`-ranged, currently latent — the store still Scans for these; wiring them is a natural follow-up, §6). `--user` keeps its per-partition Query. This GSI serves only the cross-everyone case.
+- **Filtered paths use their noun index.** `--role` queries `role_index`, `--account` queries `account_index`, and `--user` queries the person's partition. The store applies any remaining predicates after choosing one indexed anchor. This GSI serves the cross-everyone case.
 
 ### 4.1 `start_time` is mutable for `win#` sessions
 
@@ -56,7 +56,6 @@ Windowed-fallback sessions move `StartTime` earlier when a later batch extends t
 ## 5. Out of scope
 
 - **CLI flag surface** (owned by #45, shipped).
-- **Wiring `role_index` / `account_index` into the filtered read paths.** They exist but the store still Scans for `--role` / `--account`. A natural follow-up once this GSI proves out the indexed recency read; tracked separately.
 - **Cross-customer / global recency.** This index is customer-scoped by design; a global view is not a TrailTool use case.
 
 ## 6. Rollout

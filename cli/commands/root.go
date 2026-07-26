@@ -121,7 +121,7 @@ func printMoreRefs(rctx render.Context, n int) {
 // error.
 func resolveSession(ctx context.Context, s *store.Store, sel string) (*models.Session, error) {
 	if sel == "latest" {
-		sessions, _, err := session.ListSessions(ctx, s, CustomerID, "", store.SessionFilter{})
+		sessions, _, err := session.ListSessions(ctx, s, CustomerID, "", store.SessionFilter{Limit: 1})
 		if err != nil {
 			return nil, err
 		}

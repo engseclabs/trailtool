@@ -34,6 +34,8 @@ func sessionsListCmd() *cobra.Command {
 	var account string
 	var after string
 	var before string
+	var sessionType string
+	var hasDenied bool
 	var tags []string
 	var long bool
 	var reverse bool
@@ -43,19 +45,36 @@ func sessionsListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List sessions",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			filter := store.SessionFilter{
+				Days:        days,
+				AccountID:   account,
+				After:       after,
+				Before:      before,
+				SessionType: sessionType,
+				HasDenied:   hasDenied,
+			}
+			if err := filter.Validate(); err != nil {
+				return fatal("%v", err)
+			}
+
 			ctx := context.Background()
 			s, err := store.NewStore(ctx)
 			if err != nil {
 				return fatalAWS("Check AWS credentials and region (AWS_PROFILE, AWS_REGION), then re-run.", err)
 			}
 
-			filter := store.SessionFilter{
-				Days:      days,
-				Role:      role,
-				AccountID: account,
-				After:     after,
-				Before:    before,
+			var roleARN string
+			if role != "" {
+				resolvedRole, resolveErr := lookupRole(ctx, s, role, account)
+				if resolveErr != nil {
+					return fatal("%v", resolveErr)
+				}
+				if resolvedRole == nil {
+					return fatal("role not found: %s (check 'trailtool roles list')", role)
+				}
+				roleARN = resolvedRole.ARN
 			}
+			filter.RoleARN = roleARN
 			// Let the store's recency Query stop after `limit` newest rows on the
 			// cross-everyone path. Tag filtering happens client-side below, so when
 			// --tag is set we can't bound server-side without under-fetching; fall
@@ -105,12 +124,14 @@ func sessionsListCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&user, "user", "", "Filter by user email")
+	cmd.Flags().StringVar(&user, "user", "", "Filter by user email, PID, or person key")
 	cmd.Flags().IntVar(&days, "days", 0, "Filter to last N days")
-	cmd.Flags().StringVar(&role, "role", "", "Filter by role name (substring match)")
+	cmd.Flags().StringVar(&role, "role", "", "Filter by role ID, ARN, or exact name")
 	cmd.Flags().StringVar(&account, "account", "", "Filter by AWS account ID")
-	cmd.Flags().StringVar(&after, "after", "", "Only sessions starting at or after this time (ISO8601)")
-	cmd.Flags().StringVar(&before, "before", "", "Only sessions starting before this time (ISO8601)")
+	cmd.Flags().StringVar(&after, "after", "", "Only sessions starting at or after this time (RFC3339)")
+	cmd.Flags().StringVar(&before, "before", "", "Only sessions starting before this time (RFC3339)")
+	cmd.Flags().StringVar(&sessionType, "type", "", "Filter by session type: cli, web, agent, or login")
+	cmd.Flags().BoolVar(&hasDenied, "has-denied", false, "Only show sessions with denied activity")
 	cmd.Flags().StringArrayVar(&tags, "tag", nil, "Filter by session tag KEY=VALUE (repeatable, AND semantics)")
 	cmd.Flags().BoolVar(&long, "long", false, "Show full role names instead of shortened SSO permission-set names")
 	cmd.Flags().BoolVar(&reverse, "reverse", false, "Show oldest sessions first (default is newest first)")

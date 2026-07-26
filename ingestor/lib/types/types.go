@@ -341,8 +341,8 @@ type DynamoDBSession struct {
 	RoleID     string `dynamodbav:"role_id"`
 	RoleName   string `dynamodbav:"role_name"`
 	AccountID  string `dynamodbav:"account_id"`
-	RoleKey    string `dynamodbav:"role_key"`    // customerId#role_id — role_index GSI hash
-	AccountKey string `dynamodbav:"account_key"` // customerId#account_id — account_index GSI hash
+	RoleKey    string `dynamodbav:"role_key"`    // customerId#canonical role ARN; role_index GSI hash
+	AccountKey string `dynamodbav:"account_key"` // customerId#account_id; account_index GSI hash
 
 	// True session bounds. For win# sessions the SK keeps the first-written start
 	// even when a later batch extends the window earlier; StartTime moves instead.

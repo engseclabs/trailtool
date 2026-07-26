@@ -148,11 +148,12 @@ Attributes:
   assumed_from_session, assumed_from_role_arn     # chained child → parent session ref (§5.1)
   chained_session_refs[]                          # parent → children
   denied_* fields, clickops_* fields              # carried over from pre-1.0 shape
-GSI role_index:    PK customerId#role_id,    SK start_time
+GSI role_index:    PK customerId#role_arn,   SK start_time
 GSI account_index: PK customerId#account_id, SK start_time
+GSI recency_index: PK customerId,            SK start_time
 ```
 
-Session refs are `person_key|sk`. "All of one person's sessions" is one Query on the partition; the CLI sorts by `start_time` (SKs are anchors, not timestamps). The global `time_index` GSI is skipped for 1.0: `customerId`-keyed GSIs hot-partition under SaaS load, so "recent sessions across everyone" scans-with-limit until a real need justifies the GSI.
+Session refs are `person_key|sk`. "All of one person's sessions" is one Query on the partition; the CLI sorts by `start_time` (SKs are anchors, not timestamps). Cross-person recency uses `recency_index`, as defined in [session-recency-gsi.md](session-recency-gsi.md).
 
 ### 6.2 `trailtool-people`
 

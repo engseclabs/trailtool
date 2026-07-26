@@ -32,9 +32,10 @@ Use the PID shown by `people list`. An unambiguous prefix is accepted.
 ### Sessions
 ```bash
 trailtool sessions list                        # List all sessions
-trailtool sessions list --user <email> --days 7  # Filter by user and recency
-trailtool sessions list --role <name> --user <email>  # Filter by role name (substring match)
+trailtool sessions list --user <email-or-pid> --days 7  # Filter by user and recency
+trailtool sessions list --role <role-id> --user <email-or-pid>  # Combine exact noun selectors
 trailtool sessions list --account <id>         # Filter by AWS account ID
+trailtool sessions list --type agent --has-denied  # Denied agent sessions
 trailtool sessions list --after 2026-01-01T00:00:00Z --before 2026-01-02T00:00:00Z  # Time range
 trailtool sessions list --long                 # Show full role names (SSO roles shortened by default)
 trailtool sessions detail k7m2qp                # Session detail by id (SID column, prefix ok)
@@ -47,7 +48,7 @@ trailtool sessions policy k7m2qp                # Least-privilege policy for thi
 trailtool sessions policy latest --include-denied --explain
 ```
 
-**Filtering tips:** Combine flags to narrow results. `--role` does substring matching (e.g. `--role BreakGlass` matches `AWSReservedSSO_BreakGlassEmergency_...`). `--after`/`--before` take ISO8601 timestamps and override `--days` if both are set.
+**Filtering tips:** Combine flags to narrow results; all predicates use AND semantics. `--user` accepts an email, PID, or person key. `--role` accepts the role ID shown by `roles list`, a full ARN, or an exact unambiguous name. `--type` accepts `cli`, `web`, `agent`, or `login`. `--after` and `--before` use RFC3339 timestamps with an inclusive lower bound and exclusive upper bound. `--days` and `--after` are mutually exclusive.
 
 **Session detail tips:** Pass the id shown in the SID column of `sessions list` as the positional selector. It is a stable, deterministic handle for one specific session. A short prefix (the 6 characters shown) is enough, and the CLI asks you to lengthen it if a prefix is ambiguous. `latest` always means the globally latest session. To find one person's latest session, run `sessions list --user <email-or-pid> --limit 1` and pass its SID to the detail command. Detail includes resource activity, source IPs, ClickOps, denial context, cached summary metadata, related nouns, and lineage.
 
@@ -174,7 +175,7 @@ If you are an AI agent with credentials vended via `aws login`, you can look up 
 When someone uses emergency/break-glass access, compare what they said they would do (the justification) with what they actually did (the session).
 
 **Steps:**
-1. `trailtool sessions list --user <email> --role <break-glass-role> --after <time> --before <time> --format json` — find the specific break-glass session using role name, user, and time range
+1. `trailtool sessions list --user <email-or-pid> --role <role-id> --after <time> --before <time> --format json` — find the specific break-glass session using exact noun selectors and a time range
 2. `trailtool sessions detail <sid> --format json`: get the full session, including events, resources, services, and denied actions (the SID is the id column from step 1's list)
 3. Compare the session activity against the stated justification
 4. Flag discrepancies: actions that don't align with the justification, unexpected services accessed, or resources modified that weren't mentioned

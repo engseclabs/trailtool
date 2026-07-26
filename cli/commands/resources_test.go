@@ -22,6 +22,7 @@ func TestNounListFilterUsesRollingWindowAndExclusiveBefore(t *testing.T) {
 	}
 
 	resources := []models.Resource{
+		{Identifier: "unobserved", TotalDeniedEvents: 1},
 		{Identifier: "before", LastSeen: "2026-07-17T15:29:59Z", TotalDeniedEvents: 1},
 		{Identifier: "allowed", LastSeen: "2026-07-20T00:00:00Z"},
 		{Identifier: "match", LastSeen: "2026-07-24T23:59:59Z", TotalDeniedEvents: 1},

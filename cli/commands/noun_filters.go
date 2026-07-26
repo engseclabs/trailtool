@@ -21,10 +21,10 @@ type normalizedNounListFilter struct {
 }
 
 func addNounListFilterFlags(cmd *cobra.Command, filter *nounListFilter) {
-	cmd.Flags().IntVar(&filter.days, "days", 0, "Only show nouns last seen in the last N days; activity totals remain lifetime totals")
-	cmd.Flags().StringVar(&filter.after, "after", "", "Only show nouns last seen at or after this time (RFC3339); activity totals remain lifetime totals")
-	cmd.Flags().StringVar(&filter.before, "before", "", "Only show nouns last seen before this time (RFC3339); activity totals remain lifetime totals")
-	cmd.Flags().BoolVar(&filter.hasDenied, "has-denied", false, "Only show nouns with denied activity")
+	cmd.Flags().IntVar(&filter.days, "days", 0, "Only show items last seen in the last N days; activity totals remain lifetime totals")
+	cmd.Flags().StringVar(&filter.after, "after", "", "Only show items last seen at or after this time (RFC3339); activity totals remain lifetime totals")
+	cmd.Flags().StringVar(&filter.before, "before", "", "Only show items last seen before this time (RFC3339); activity totals remain lifetime totals")
+	cmd.Flags().BoolVar(&filter.hasDenied, "has-denied", false, "Only show items with denied activity")
 }
 
 func (filter nounListFilter) normalize(now time.Time) (normalizedNounListFilter, error) {
@@ -81,6 +81,9 @@ func filterNouns[T any](
 	filtered := items[:0]
 	for _, item := range items {
 		seen := lastSeen(item)
+		if seen == "" && (filter.after != "" || filter.before != "") {
+			continue
+		}
 		if filter.after != "" && seen < filter.after {
 			continue
 		}
