@@ -55,9 +55,10 @@ func ReplayCmd() *cobra.Command {
 			"and --region) or under an explicit --prefix, then invokes the ingestor\n" +
 			"Lambda once per object, in chronological order. Uses the normal ingestion\n" +
 			"path, so replayed and live data are identical.\n\n" +
-			"Run while live delivery is quiet: replay assumes it is the only writer\n" +
-			"(concurrent processing of the same object can double-count). Reset first\n" +
-			"(trailtool reset) for a clean rebuild.",
+			"Replay past (closed) days. Their objects are separate from what live\n" +
+			"delivery writes to today's prefix, so replay and live ingestion can run at\n" +
+			"the same time. Replaying the current, still-growing day is not supported.\n" +
+			"Reset first (trailtool reset) for a clean rebuild from scratch.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts, err := buildReplayOptions(&f)
 			if err != nil {
