@@ -43,10 +43,9 @@ func ResetCmd() *cobra.Command {
 			"accounts, services, relations, identity-links) and the ingested-files\n" +
 			"markers. The CloudTrail log is never touched, so a reset is recoverable by\n" +
 			"replaying it. This is destructive and irreversible except by replay.\n\n" +
-			"Reset is an offline operation: run it only when live delivery is quiet.\n" +
-			"Truncation is not atomic across tables, so an object the ingestor writes\n" +
-			"mid-reset can land split across cleared and not-yet-cleared tables and be\n" +
-			"double-counted on the next replay. Reset, then replay the range.",
+			"Run reset while live delivery is quiet. It clears all tables and does not\n" +
+			"do so atomically, so an object the ingestor writes mid-reset could land\n" +
+			"inconsistently. Reset, then replay the range to rebuild.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := openResetter(cmd.Context())
 			if err != nil {
