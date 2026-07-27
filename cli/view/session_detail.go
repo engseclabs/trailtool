@@ -1,6 +1,7 @@
 package view
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -8,46 +9,59 @@ import (
 	"github.com/engseclabs/trailtool/internal/render"
 )
 
-// Session-detail sections (§5), each a pure render of already-fetched models.
-// The command layer orchestrates the fixed section order and interleaves the
-// store-backed lineage output (printRefNav), which cannot live here because
-// it touches the store. Order and semantics match the shipped detail view; only
-// styling and the Top-Events sort change.
+// SessionOriginReference is the resolved session that created or authorized
+// the current session. The command layer owns the store lookup; this view only
+// formats the result.
+type SessionOriginReference struct {
+	Ref         string
+	PersonLabel string
+	Session     *models.Session
+}
 
-// SessionTitleKV renders the Title (user) and the KV key-facts block (§5): role,
-// account, type, session id, time, events. timeLine is the already-formatted
-// interval + relative suffix built by the command (which owns "now"). Kept
-// separate from lineage so the command can print store-backed sections in the
-// fixed order between the header and the policy.
-func SessionTitleKV(ctx render.Context, sess *models.Session, personLabel, timeLine string) string {
+// SessionLineageRow is one outbound session relationship. Compact session
+// identity, including the top client, is rendered consistently with noun detail
+// Recent Sessions tables.
+type SessionLineageRow struct {
+	Relation    string
+	Ref         string
+	PersonLabel string
+	Role        string
+	Session     *models.Session
+}
+
+// SessionOverview renders the session identity and high-signal scalar facts.
+// Diagnostic storage keys are available only in verbose output.
+func SessionOverview(ctx render.Context, sess *models.Session, personLabel, timeLine string, verbose bool) string {
 	var b strings.Builder
-	b.WriteString(ctx.Title(personLabel))
 
 	sid := sess.Sid
 	if sid == "" {
 		sid = models.SidForRef(sess.Ref())
 	}
-	personFact := personLabel
-	if personKey := ShortPersonKey(sess.PersonKey); personKey != personLabel {
-		personFact += "  " + ctx.Style(render.Muted, "("+personKey+")")
+	b.WriteString(ctx.Title("Session " + sid))
+
+	role := sess.RoleName
+	if role == "" {
+		role = sess.RoleARN
+	}
+	if sess.RoleARN != "" && sess.RoleARN != role {
+		role = ctx.Style(render.Ident, role) + "  " + ctx.Style(render.Muted, "("+sess.RoleARN+")")
+	} else {
+		role = ctx.Style(render.Ident, role)
 	}
 	kv := render.NewKV().
-		Add("SID", ctx.Style(render.Ident, sid)).
-		Add("Person", personFact).
-		Add("Role", ctx.Style(render.Ident, sess.RoleName)+"  "+ctx.Style(render.Muted, "("+sess.RoleARN+")")).
+		Add("Person", personLabel).
+		Add("Role", role).
 		Add("Account", sess.AccountID).
 		Add("Type", sess.DetectSessionType()).
-		Add("Internal SK", ctx.Style(render.Muted, sess.SK))
-	if sess.Anchor != "" {
-		kv.Add("Anchor", ctx.Style(render.Muted, sess.Anchor))
+		Add("Time", ctx.Style(render.Time, timeLine)).
+		Add("Activity", activityFact(ctx, sess))
+	if verbose {
+		kv.Add("Internal SK", ctx.Style(render.Muted, sess.SK))
+		if sess.Anchor != "" {
+			kv.Add("Anchor", ctx.Style(render.Muted, sess.Anchor))
+		}
 	}
-	if sess.RoleSessionName != "" {
-		kv.Add("Role session", ctx.Style(render.Ident, sess.RoleSessionName))
-	}
-	kv.Add("Time", ctx.Style(render.Time, timeLine)).
-		Add("Events", eventsFact(ctx, sess)).
-		Add("Resources", count(ctx, sess.ResourcesCount)).
-		Add("Session policy", sessionPolicySummary(ctx, sess))
 	if len(sess.SourceIPs) > 0 {
 		sourceIPs := append([]string(nil), sess.SourceIPs...)
 		sort.Strings(sourceIPs)
@@ -66,26 +80,178 @@ func SessionTitleKV(ctx render.Context, sess *models.Session, personLabel, timeL
 	return b.String()
 }
 
-// eventsFact renders the "Events" fact: "N across M services".
-func eventsFact(ctx render.Context, sess *models.Session) string {
-	return ctx.Style(render.Count, n(sess.EventsCount)) + " across " + n(sess.ServicesCount) + " services"
+func activityFact(ctx render.Context, sess *models.Session) string {
+	events := ctx.Style(render.Count, quantity(sess.EventsCount, "event"))
+	return fmt.Sprintf("%s across %s, %s",
+		events,
+		quantity(sess.ServicesCount, "service"),
+		quantity(sess.ResourcesCount, "resource"),
+	)
 }
 
-// SessionTags renders the Session Tags section (sorted by key), or "" when none.
-func SessionTags(ctx render.Context, tags map[string]string) string {
-	if len(tags) == 0 {
+func quantity(value int, singular string) string {
+	label := singular
+	if value != 1 {
+		label += "s"
+	}
+	return n(value) + " " + label
+}
+
+// SessionOrigin renders how the credentials were created or authorized. It
+// collects role-session, tag, policy, MCP, login, and chain metadata into one
+// aligned section instead of emitting loose facts throughout the page.
+func SessionOrigin(
+	ctx render.Context,
+	sess *models.Session,
+	parent SessionOriginReference,
+	verbose bool,
+) string {
+	method, relation := sessionOriginMethod(sess)
+	hasOrigin := method != "" ||
+		sess.RoleSessionName != "" ||
+		len(sess.SessionTags) > 0 ||
+		sessionHasPolicy(sess) ||
+		parent.Ref != "" ||
+		sess.MCPResource != "" ||
+		(verbose && sess.SignInSessionArn != "")
+	if !hasOrigin {
 		return ""
 	}
+
+	kv := render.NewKV()
+	if method != "" {
+		kv.Add("Method", method)
+	}
+	if sess.MCPResource != "" {
+		kv.Add("Resource", ctx.Style(render.Ident, sess.MCPResource))
+	}
+	if sess.RoleSessionName != "" {
+		kv.Add("Role session", ctx.Style(render.Ident, sess.RoleSessionName))
+	}
+	if tags := sessionTagsInline(sess.SessionTags); tags != "" {
+		kv.Add("Tags", tags)
+	}
+	kv.Add("Session policy", sessionPolicySummary(ctx, sess))
+	if verbose && sess.SignInSessionArn != "" {
+		kv.Add("Sign-in session", ctx.Style(render.Muted, sess.SignInSessionArn))
+	}
+	if parent.Ref != "" {
+		kv.Add(relation, sessionReferenceSummary(ctx, parent))
+	}
+	return ctx.Section(render.Heading("Origin", -1), ctx.RenderKV(kv, render.BodyIndent))
+}
+
+func sessionOriginMethod(sess *models.Session) (method, relation string) {
+	switch {
+	case sess.AgentAuthorizedBySession != "" || sess.MCPResource != "":
+		return "AWS MCP Server OAuth", "Authorized by"
+	case sess.LoginGrantedBySession != "":
+		return "aws login", "Granted by"
+	case sess.AssumedFromSession != "":
+		return "AssumeRole", "Assumed by"
+	default:
+		return "", "Created by"
+	}
+}
+
+func sessionTagsInline(tags map[string]string) string {
 	keys := make([]string, 0, len(tags))
 	for k := range tags {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	var b strings.Builder
+	values := make([]string, 0, len(keys))
 	for _, k := range keys {
-		b.WriteString("  " + k + ": " + tags[k] + "\n")
+		values = append(values, k+"="+tags[k])
 	}
-	return ctx.Section(render.Heading("Session Tags", -1), b.String())
+	return strings.Join(values, ", ")
+}
+
+func sessionReferenceSummary(ctx render.Context, reference SessionOriginReference) string {
+	parts := []string{ident(ctx, shortID(models.SidForRef(reference.Ref), sidDisplayMin))}
+	if reference.PersonLabel != "" {
+		parts = append(parts, reference.PersonLabel)
+	}
+	if reference.Session != nil {
+		role := reference.Session.RoleName
+		if role == "" {
+			role = reference.Session.RoleARN
+		}
+		if role != "" {
+			parts = append(parts, ident(ctx, ShortRoleName(role)))
+		}
+		if reference.Session.StartTime != "" {
+			parts = append(parts, ctx.Style(render.Time, ctx.Relative(reference.Session.StartTime)))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// SessionLineage renders sessions this session assumed or authorized.
+func SessionLineage(ctx render.Context, rows []SessionLineageRow, omitted int) string {
+	if len(rows) == 0 && omitted == 0 {
+		return ""
+	}
+	showClient := ctx.Width >= 80
+	columns := []render.Column{
+		{Header: "RELATION", Align: render.AlignLeft},
+		{Header: "SID", Align: render.AlignLeft},
+		{Header: "PERSON", Align: render.AlignLeft},
+		{Header: "ROLE", Align: render.AlignLeft},
+	}
+	if showClient {
+		columns = append(columns, render.Column{Header: "CLIENT", Align: render.AlignLeft})
+	}
+	columns = append(columns,
+		render.Column{Header: "EVENTS", Align: render.AlignRight},
+		render.Column{Header: "TIME", Align: render.AlignLeft},
+	)
+
+	table := render.NewTable(columns...)
+	for _, row := range rows {
+		sid := "-"
+		person := row.PersonLabel
+		role := row.Role
+		client := "-"
+		events := "-"
+		when := "-"
+		if row.Ref != "" {
+			sid = shortID(models.SidForRef(row.Ref), sidDisplayMin)
+		}
+		if row.Session != nil {
+			if row.Session.Sid != "" {
+				sid = shortID(row.Session.Sid, sidDisplayMin)
+			}
+			if role == "" {
+				role = row.Session.RoleName
+				if role == "" {
+					role = row.Session.RoleARN
+				}
+			}
+			client = topClientSummary(row.Session.Clients)
+			events = count(ctx, row.Session.EventsCount)
+			if row.Session.StartTime != "" {
+				when = ctx.Relative(row.Session.StartTime)
+			}
+		}
+		cells := []string{
+			row.Relation,
+			ident(ctx, sid),
+			optional(ctx, person),
+			optional(ctx, ctx.Truncate(ShortRoleName(role), 24)),
+		}
+		if showClient {
+			cells = append(cells, optional(ctx, ctx.Truncate(client, 16)))
+		}
+		cells = append(cells, events, ctx.Style(render.Time, when))
+		table.Row(cells...)
+	}
+
+	body := ctx.RenderTable(table, render.BodyIndent)
+	if omitted > 0 {
+		body += "  " + ctx.Style(render.Muted, fmt.Sprintf("+%d more (use --all to show every row)", omitted)) + "\n"
+	}
+	return ctx.Section(render.Heading("Lineage", len(rows)+omitted), body)
 }
 
 // DeniedEvents renders the Denied Events section (§5): the API calls this

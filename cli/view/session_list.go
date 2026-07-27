@@ -98,21 +98,12 @@ func SessionList(ctx render.Context, sessions []models.Session, sidWidth int, lo
 }
 
 func topClientSummary(clients []models.ClientAggregate) string {
-	if len(clients) == 0 {
+	rows := compactClientRows(clients)
+	if len(rows) == 0 {
 		return ""
 	}
-	sorted := append([]models.ClientAggregate(nil), clients...)
-	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].TotalEventCount != sorted[j].TotalEventCount {
-			return sorted[i].TotalEventCount > sorted[j].TotalEventCount
-		}
-		return sorted[i].Key < sorted[j].Key
-	})
-	name := sorted[0].Name
-	if name == "" {
-		name = sorted[0].Category
-	}
-	if extra := len(sorted) - 1; extra > 0 {
+	name := rows[0].name
+	if extra := len(rows) - 1; extra > 0 {
 		name += fmt.Sprintf(" +%d", extra)
 	}
 	return name

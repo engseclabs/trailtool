@@ -1,50 +1,53 @@
-Alice Example
-SID:             cj6bhlwrp6hfapnw
-Person:          Alice Example  (email#alice@example.com)
-Role:            DeployRole  (arn:aws:iam::123456789012:role/DeployRole)
-Account:         123456789012
-Type:            WEB
-Internal SK:     sis#session-1
-Anchor:          sis#credential-1
-Time:            2026-07-24T09:00:00Z → 2026-07-24T09:45:00Z [2h ago] (45m)
-Events:          120 across 1 services
-Resources:       1
-Session policy:  no
-Source IPs:      198.51.100.4, 203.0.113.8
-Denied Events:   3
-ClickOps:        3
+Session cj6bhlwrp6hfapnw
+Person:         Alice Example
+Role:           DeployRole  (arn:aws:iam::123456789012:role/DeployRole)
+Account:        123456789012
+Type:           AGENT
+Time:           2026-07-24T09:00:00Z → 2026-07-24T09:45:00Z [2h ago] (45m)
+Activity:       120 events across 1 service, 1 resource
+Source IPs:     198.51.100.4, 203.0.113.8
+Denied Events:  3
+ClickOps:       3
 
-⊘ Denied Events (calls AWS rejected):
-  EVENT           DENIED
-  DeleteFunction       3
+Origin:
+  Method:          AWS MCP Server OAuth
+  Resource:        https://aws-mcp.us-east-1.api.aws/mcp
+  Role session:    claude-code-worker
+  Tags:            AgentName=claude-code, Task=deploy-worker
+  Session policy:  no
+  Authorized by:   bgtp4i · Alice Example · AdministratorAccess · 3h ago
 
-ClickOps Events (3):
-  EVENT               CLICKOPS
-  UpdateFunctionCode         3
+Summary:
+  Updated the worker function through the console.
+
+  anthropic.claude-sonnet · 2026-07-24T10:00:00Z [2h ago]
+
+Clients (2):
+  CLIENT   REQUESTS  DENIED  LAST USED  COMMANDS
+  aws-cli        50       4  2h ago     lambda.update (3)
+  Boto3          12       0  3h ago     -
 
 Top Events (2):
   EVENT               COUNT
   Invoke                 80
   UpdateFunctionCode     40
 
-Event to Resource Activity (1):
+Resource Activity (1):
   SERVICE               EVENT   RESOURCE                ACCOUNT       COUNT
   lambda.amazonaws.com  Invoke  lambda:function:worker  123456789012     80
+
+ClickOps Events (3):
+  EVENT               CLICKOPS
+  UpdateFunctionCode         3
 
 ⊘ Denied Activity Details (1):
   SERVICE               EVENT           RESOURCE                ACCOUNT       DENIED  POLICY ARN  POLICY TYPE  ERROR
   lambda.amazonaws.com  DeleteFunction  lambda:function:worker  123456789012       3              SCP          blocked by organization policy blocked by organization policy blocked by organization policy bl…
 
-Cached Summary:
-  Updated the worker function through the console.
-
-  Model:      anthropic.claude-sonnet
-  Generated:  2026-07-24T10:00:00Z [2h ago]
-
-Services (1):
-  EVENT SOURCE          LAST RELATED
-  lambda.amazonaws.com  2h ago
-
 Resources (1):
   RID     RESOURCE                ACCOUNT       LAST RELATED
   fyf7wf  lambda:function:worker  123456789012  2h ago
+
+Lineage (1):
+  RELATION    SID     PERSON         ROLE        CLIENT   EVENTS  TIME
+  authorized  n5vndy  Alice Example  DeployRole  aws-cli      12  3h ago

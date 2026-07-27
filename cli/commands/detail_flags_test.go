@@ -34,3 +34,13 @@ func TestDetailCommandsExposeDeniedDetailsFlag(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionDetailExposesVerboseFlag(t *testing.T) {
+	flag := sessionsDetailCmd().Flags().Lookup("verbose")
+	if flag == nil {
+		t.Fatal("missing --verbose")
+	}
+	if flag.DefValue != "false" {
+		t.Fatalf("default = %q, want false", flag.DefValue)
+	}
+}

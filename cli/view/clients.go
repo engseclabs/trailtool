@@ -9,25 +9,58 @@ import (
 	"github.com/engseclabs/trailtool/internal/render"
 )
 
-// Clients renders the session's per-client user-agent aggregates as a section
-// (§5.1): one block per client with identity (name/version/category), platform
-// subtitle, reconciled request counts, first/last-seen interval, and top API
-// events / client commands. Shipped semantics are preserved — only styling and
-// width-awareness change.
-//
-// hasEvents reports whether the session recorded any events. An empty clients
-// slice is ambiguous, not proof of no client: when the session has events but no
-// aggregates, a muted note says so rather than silently omitting the section.
+type compactClient struct {
+	name     string
+	requests int
+	denied   int
+	lastSeen string
+	commands map[string]int
+	sortKey  string
+}
+
+// Clients renders one glanceable row per client name. Aggregates split by
+// version or platform are folded together because those diagnostics are
+// available in VerboseClients and JSON.
 func Clients(ctx render.Context, clients []models.ClientAggregate, hasEvents bool) string {
 	if len(clients) == 0 {
-		if hasEvents {
-			return ctx.Section(render.Heading("Clients", -1),
-				"  "+ctx.Style(render.Muted, "none recorded (pre-cutover data, service-only traffic, or no accepted user agent)")+"\n")
-		}
-		return ""
+		return emptyClients(ctx, hasEvents)
 	}
 
-	// Deterministic order: most active first, ties broken by key.
+	rows := compactClientRows(clients)
+	table := render.NewTable(
+		render.Column{Header: "CLIENT", Align: render.AlignLeft},
+		render.Column{Header: "REQUESTS", Align: render.AlignRight},
+		render.Column{Header: "DENIED", Align: render.AlignRight},
+		render.Column{Header: "LAST USED", Align: render.AlignLeft},
+		render.Column{Header: "COMMANDS", Align: render.AlignLeft},
+	)
+	for _, client := range rows {
+		lastUsed := "-"
+		if client.lastSeen != "" {
+			lastUsed = ctx.Relative(client.lastSeen)
+		}
+		commands := topCommands(client.commands, 3)
+		if commands == "" {
+			commands = "-"
+		}
+		table.Row(
+			ident(ctx, client.name),
+			count(ctx, client.requests),
+			denied(ctx, client.denied),
+			ctx.Style(render.Time, lastUsed),
+			commands,
+		)
+	}
+	return ctx.Section(render.Heading("Clients", len(rows)), ctx.RenderTable(table, render.BodyIndent))
+}
+
+// VerboseClients retains version, platform, interval, and per-client API
+// details for sessions detail --verbose.
+func VerboseClients(ctx render.Context, clients []models.ClientAggregate, hasEvents bool) string {
+	if len(clients) == 0 {
+		return emptyClients(ctx, hasEvents)
+	}
+
 	sorted := make([]models.ClientAggregate, len(clients))
 	copy(sorted, clients)
 	sort.Slice(sorted, func(i, j int) bool {
@@ -38,10 +71,63 @@ func Clients(ctx render.Context, clients []models.ClientAggregate, hasEvents boo
 	})
 
 	var b strings.Builder
-	for _, c := range sorted {
-		b.WriteString(clientBlock(ctx, c))
+	for _, client := range sorted {
+		b.WriteString(clientBlock(ctx, client))
 	}
 	return ctx.Section(render.Heading("Clients", len(sorted)), b.String())
+}
+
+func emptyClients(ctx render.Context, hasEvents bool) string {
+	if !hasEvents {
+		return ""
+	}
+	return ctx.Section(render.Heading("Clients", -1),
+		"  "+ctx.Style(render.Muted, "none recorded (pre-cutover data, service-only traffic, or no accepted user agent)")+"\n")
+}
+
+func compactClientRows(clients []models.ClientAggregate) []compactClient {
+	byName := make(map[string]*compactClient)
+	for _, client := range clients {
+		name := strings.TrimSpace(client.Name)
+		if name == "" {
+			name = strings.TrimSpace(client.Category)
+		}
+		if name == "" {
+			name = "(unknown)"
+		}
+		key := strings.ToLower(name)
+		row, ok := byName[key]
+		if !ok {
+			row = &compactClient{name: name, sortKey: key, commands: map[string]int{}}
+			byName[key] = row
+		} else if name < row.name {
+			row.name = name
+		}
+		row.requests += client.TotalEventCount
+		row.denied += client.DeniedEventCount
+		if client.LastSeen > row.lastSeen {
+			row.lastSeen = client.LastSeen
+		}
+		for command, commandCount := range client.Commands {
+			if clientCommand, ok := strings.CutPrefix(command, "ua:"); ok {
+				if clientCommand = strings.TrimSpace(clientCommand); clientCommand != "" {
+					row.commands[clientCommand] += commandCount
+				}
+			}
+		}
+	}
+
+	rows := make([]compactClient, 0, len(byName))
+	for _, row := range byName {
+		rows = append(rows, *row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].requests != rows[j].requests {
+			return rows[i].requests > rows[j].requests
+		}
+		return rows[i].sortKey < rows[j].sortKey
+	})
+	return rows
 }
 
 // clientBlock renders one client's block (indented two spaces).

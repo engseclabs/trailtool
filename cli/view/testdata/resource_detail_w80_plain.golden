@@ -36,8 +36,8 @@ People (1):
   5nmama  Alice Example  2h ago
 
 Recent Sessions (1):
-  SID     ROLE        ACCOUNT       TYPE  EVENTS  TIME
-  cj6bhl  DeployRole  123456789012  WEB       12  3h ago
+  SID     ROLE        CLIENT   ACCOUNT       TYPE  EVENTS  TIME
+  cj6bhl  DeployRole  aws-cli  123456789012  WEB       12  3h ago
 
 Console Operations (1):
   ACTOR          EVENT               COUNT  TIME    SID

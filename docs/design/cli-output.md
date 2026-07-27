@@ -208,12 +208,12 @@ policy**. Views differ in which sections appear, never in order or style.
 - **Standard detail (`accounts`/`roles`/`services detail`):** `Title` plus
   `KV` facts plus per-section `Table`s (services, events, resources), each "top"
   list **count-descending**.
-- **`sessions detail`:** `Title` (user), `KV` (role, ARN, account, type, SID,
-  time, events), `Clients (N)` section (§5.1), Session Tags, Denied Events, Top
-  Events (**count desc**, fixes today's alphabetical sort), Event to Resource
-  Activity, related Services and Resources, agent/login/parent/child lineage
-  (word-led, §4.3), Session Policy (indented JSON). Resource counts remain in the
-  header; the Resources section contains the resource records.
+- **`sessions detail`:** `Session <SID>` title, overview KV, optional Origin,
+  Summary, compact Clients, Top Events, Resource Activity, ClickOps, optional
+  denied details, Resources, and Lineage. Origin owns role-session name, tags,
+  session-policy presence, and MCP/login/chaining attribution. `--verbose`
+  exposes internal keys, full client diagnostics, sign-in session ARN, and the
+  raw inline session policy.
 - **`status`:** three `Status` lines to **stdout** (`✓/⚠/✗` plus label); every
   diagnostic detail to **stderr**, emitted *after* its own status line so
   `Data access: FAIL` precedes its detail (fixes today's interleaving).
@@ -231,21 +231,17 @@ policy**. Views differ in which sections appear, never in order or style.
   the raw SDK error (request id, `ResourceNotFoundException`, HTTP status) is
   shown only when `TRAILTOOL_DEBUG=1` (or `--debug`). Exit 1.
 
-### 5.1 Clients section (keep shipped semantics, restyle only)
+### 5.1 Clients section
 
-The shipped rendering is semantically correct; we only restyle and make it
-width-aware.
-
-- Heading `Clients (N):`; clients sorted by `total_event_count` desc, then key.
-- Identity line: `name [version] [category]  N requests: M ok[, K denied][, S service-driven]`.
-  "requests" stays the label (inclusive of denied), kept distinct from the
-  session's success-only Events line. Denied count `Denied`-styled plus word.
-- Platform subtitle: `os osversion · arch · runtime` (middle dots), `Muted`.
-- Seen line: `seen <start> → <end>` (§4.5 style).
-- **API events** and **client commands** stay two separate labeled lists
-  (different semantic levels), each count-desc, capped at 5.
-- `components` and `raw_user_agent_samples` remain **JSON-only** by default; a
-  `--verbose` on `sessions detail` may surface them (optional, §11).
+- Default detail uses a table: `CLIENT REQUESTS DENIED LAST USED COMMANDS`.
+- Rows with the same client name but different versions or platforms combine.
+- Client names, request totals, denied totals, last use, and client-reported
+  commands are the default signal. API events stay in Top Events.
+- `--verbose` restores per-aggregate version, category, platform, interval, API
+  events, and client commands.
+- Recent Sessions and Lineage tables show the top unique client name plus the
+  number of additional client names, such as `aws-cli +1`.
+- `components` and `raw_user_agent_samples` remain JSON-only.
 - **Empty `clients[]` is ambiguous**, not proof of no client. When a session has
   events but no client aggregates, print a `Muted` note:
   `Clients: none recorded (pre-cutover data, service-only traffic, or no accepted user agent)`.
@@ -292,10 +288,10 @@ Break widths and behavior, tested deterministically by constructing a
 | Raw AWS failure | `Fail` | `✗` | – | clean msg and hint; raw behind `--debug` |
 | Long identifiers | – | – | – | middle-truncate `…` |
 | No client aggregates | – | – | – | ambiguity note (§5.1) |
-| Multiple client families | – | – | – | one block each, sorted |
-| Version/platform drift | – | – | – | separate aggregates, separate blocks |
-| Agent and AWS MCP Server | – | – | – | word-led attribution, no implied causality |
-| Long raw UA samples | – | – | – | JSON-only; truncated if `--verbose` |
+| Multiple client families | – | – | – | one compact row per client name |
+| Version/platform drift | – | – | – | folded by name; diagnostics in `--verbose` |
+| Agent and AWS MCP Server | – | – | – | Origin KV names the method, resource, and authorizing session |
+| Long raw UA samples | – | – | – | JSON-only |
 
 ## 8. Compatibility contract (preserved, tested)
 
@@ -325,33 +321,3 @@ Unchanged by this work, each with a guarding test:
 - **Redirected-output test:** render with a non-TTY `Context` (Width 80, Color
   off) and assert stability.
 - `go test ./...` **and** `go -C ingestor test ./...` green.
-
-## 10. Rollout (stacked PRs off #25)
-
-The design doc is PR 1. Implementation is four PRs, refactor before styling:
-
-1. **`internal/render` core:** capability detection, styles, symbols,
-   `Table`/`KV`/`Section`/`Status`/`Empty`/`Error`, `time.go`, with unit/golden
-   tests. No command wiring; output unchanged.
-2. **Behavior-preserving refactor:** split `main.go` into `cli/commands/` and
-   `cli/view/`; existing output **byte-identical**, existing tests green. Pure
-   move; reviewable as relocation.
-3. **Wire lists, status, errors, and empty** to `render`: color, symbols,
-   responsive tables; fix Top-Events sort, timestamps, `status` stream ordering,
-   AWS-error mapping.
-4. **Wire session detail, Clients, ClickOps, and policy:** responsive detail,
-   Clients restyle plus empty-ambiguity note, JSON-purity tests.
-
-PRs 1-3 link `Part of #25`; PR 4 links `Closes #25`.
-
-## 11. Accepted scope boundaries and optional follow-ups
-
-**In scope (compatibility-preserving):** everything in §3-§9.
-
-**Optional product recommendations (flagged, not bundled):**
-
-- `--verbose` on `sessions detail` to surface `components` and
-  `raw_user_agent_samples` in human output (JSON already exposes them). Additive
-  flag; deferrable.
-
-This is not required for #25 and would be a separate slice if pursued.
