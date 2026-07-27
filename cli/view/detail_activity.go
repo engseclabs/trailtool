@@ -32,7 +32,7 @@ func SessionResourceActivity(ctx render.Context, accesses []models.ResourceAcces
 			count:     access.Count,
 		})
 	}
-	return detailAccessTable(ctx, "Event to Resource Activity", rows, false)
+	return detailAccessTable(ctx, "Resource Activity", rows, false)
 }
 
 // RoleResourceActivity renders successful event-to-resource activity for a
@@ -48,7 +48,7 @@ func RoleResourceActivity(ctx render.Context, accesses []models.ResourceAccessIt
 			count:     access.Count,
 		})
 	}
-	return detailAccessTable(ctx, "Event to Resource Activity", rows, false)
+	return detailAccessTable(ctx, "Resource Activity", rows, false)
 }
 
 // SessionDeniedActivity renders resource-backed and resource-less denied calls
@@ -204,7 +204,8 @@ func SessionClickOps(ctx render.Context, total int, counts map[string]int) strin
 	return ctx.Section(render.Heading("ClickOps Events", total), ctx.RenderTable(table, render.BodyIndent))
 }
 
-// SessionSummary renders a cached summary and its provenance.
+// SessionSummary renders the summary near the top of the detail view. Cache
+// provenance stays on one muted line so it does not compete with the content.
 func SessionSummary(ctx render.Context, session *models.Session) string {
 	if session.Summary == "" {
 		return ""
@@ -215,14 +216,14 @@ func SessionSummary(ctx render.Context, session *models.Session) string {
 	}
 	if session.SummaryModel != "" || session.SummaryGeneratedAt != "" {
 		body.WriteByte('\n')
-		kv := render.NewKV()
+		var provenance []string
 		if session.SummaryModel != "" {
-			kv.Add("Model", session.SummaryModel)
+			provenance = append(provenance, session.SummaryModel)
 		}
 		if session.SummaryGeneratedAt != "" {
-			kv.Add("Generated", ctx.Style(render.Time, ctx.Timestamp(session.SummaryGeneratedAt)))
+			provenance = append(provenance, ctx.Timestamp(session.SummaryGeneratedAt))
 		}
-		body.WriteString(ctx.RenderKV(kv, render.BodyIndent))
+		body.WriteString("  " + ctx.Style(render.Muted, strings.Join(provenance, " · ")) + "\n")
 	}
-	return ctx.Section(render.Heading("Cached Summary", -1), body.String())
+	return ctx.Section(render.Heading("Summary", -1), body.String())
 }

@@ -21,8 +21,8 @@ Top Events (2):
   DeleteFunction       3
 
 Recent Sessions (1):
-  SID     ROLE        ACCOUNT       TYPE  EVENTS  TIME
-  cj6bhl  DeployRole  123456789012  WEB       12  3h ago
+  SID     ROLE        CLIENT   ACCOUNT       TYPE  EVENTS  TIME
+  cj6bhl  DeployRole  aws-cli  123456789012  WEB       12  3h ago
 
 People (1):
   PID     PERSON         LAST RELATED

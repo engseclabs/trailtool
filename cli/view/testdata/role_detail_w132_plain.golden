@@ -22,7 +22,7 @@ Services (1):
   EVENT SOURCE          COUNT
   lambda.amazonaws.com    120
 
-Event to Resource Activity (1):
+Resource Activity (1):
   SERVICE               EVENT   RESOURCE                ACCOUNT       COUNT
   lambda.amazonaws.com  Invoke  lambda:function:worker  123456789012     80
 
@@ -32,8 +32,8 @@ Event to Resource Activity (1):
   lambda.amazonaws.com  ListFunctions   -                       -                  1                                                                                      identity-based  no identity policy allows this action
 
 Recent Sessions (1):
-  SID     ROLE        ACCOUNT       TYPE  EVENTS  TIME
-  cj6bhl  DeployRole  123456789012  WEB       12  3h ago
+  SID     ROLE        CLIENT   ACCOUNT       TYPE  EVENTS  TIME
+  cj6bhl  DeployRole  aws-cli  123456789012  WEB       12  3h ago
 
 People (1):
   PID     PERSON         LAST RELATED

@@ -202,7 +202,7 @@ Session detail uses SID as its primary selector and includes:
 - services and resources;
 - existing client, tag, policy, grant, login, and chaining data.
 
-The header owns the resource total. Event to Resource Activity owns the activity
+The header owns the resource total. Resource Activity owns the activity
 evidence. The Resources section owns the resource records. Session detail does
 not render a separate Resources Accessed summary.
 

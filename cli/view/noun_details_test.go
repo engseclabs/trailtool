@@ -17,6 +17,7 @@ func samplePersonDetail() *models.PersonDetail {
 				PersonKey: "email#alice@example.com", SK: "sis#session-1",
 				RoleName: "DeployRole", AccountID: "123456789012", SessionType: "cli",
 				EventsCount: 30, StartTime: "2026-07-24T09:00:00Z",
+				Clients: oneClient(),
 			},
 			RelationshipBounds: models.RelationshipBounds{RelationshipLastSeen: "2026-07-24T09:45:00Z"},
 		},
@@ -75,6 +76,7 @@ func sampleResourceDetail() *models.ResourceDetail {
 			PersonKey: "email#alice@example.com", SK: "sis#session-1",
 			RoleName: "DeployRole", AccountID: "123456789012", SessionType: "web",
 			EventsCount: 12, StartTime: "2026-07-24T09:00:00Z",
+			Clients: oneClient(),
 		},
 		RelationshipBounds: models.RelationshipBounds{RelationshipLastSeen: "2026-07-24T09:45:00Z"},
 	}}
@@ -100,6 +102,21 @@ func sampleResourceDetail() *models.ResourceDetail {
 func TestGoldenPersonDetail(t *testing.T) {
 	for _, width := range []int{60, 80, 100, 132} {
 		assertGolden(t, "person_detail_w"+n(width)+"_plain", PersonDetail(ctxFor(width, false, true), samplePersonDetail(), true))
+	}
+}
+
+func TestPersonDetailDoesNotRepeatEmailIdentity(t *testing.T) {
+	detail := samplePersonDetail()
+	detail.Person.DisplayName = ""
+	detail.Person.Email = "alex@engseclabs.com"
+	detail.Person.EmailsSeen = []string{"alex@engseclabs.com", "ALEX@engseclabs.com"}
+
+	output := PersonDetail(ctxFor(100, false, true), detail, false)
+	if count := strings.Count(strings.ToLower(output), "alex@engseclabs.com"); count != 1 {
+		t.Fatalf("primary email appears %d times:\n%s", count, output)
+	}
+	if strings.Contains(output, "Primary Email:") || strings.Contains(output, "Email Aliases:") {
+		t.Fatalf("redundant email facts remain:\n%s", output)
 	}
 }
 

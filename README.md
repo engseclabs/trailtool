@@ -72,6 +72,7 @@ trailtool sessions list --type agent --after 2026-07-01T00:00:00Z
 trailtool sessions list --user alice@example.com --days 7 --long  # show full role names
 trailtool sessions detail k7m2qp          # by id (SID column, prefix ok)
 trailtool sessions detail latest
+trailtool sessions detail k7m2qp --verbose # internal ids, full client metadata, raw session policy
 trailtool sessions summarize k7m2qp        # requires Bedrock
 trailtool sessions summarize k7m2qp --refresh
 

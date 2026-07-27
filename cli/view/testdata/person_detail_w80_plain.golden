@@ -3,7 +3,7 @@ PID:              5nmamaaeshnhs6xu
 Person Key:       email#alice@example.com
 Resolution Tier:  Identity Center
 Primary Email:    alice@example.com
-Email Aliases:    a.smith@example.com, alice@example.com
+Email Aliases:    a.smith@example.com
 First Seen:       2026-07-01T08:00:00Z [23d ago]
 Last Seen:        2026-07-24T09:45:00Z [2h ago]
 Events:           120
@@ -20,8 +20,8 @@ Denied Events:    3
   s3.amazonaws.com:DeleteBucket       1
 
 Recent Sessions (1):
-  SID     ROLE        ACCOUNT       TYPE  EVENTS  TIME
-  cj6bhl  DeployRole  123456789012  CLI       30  3h ago
+  SID     ROLE        CLIENT   ACCOUNT       TYPE  EVENTS  TIME
+  cj6bhl  DeployRole  aws-cli  123456789012  CLI       30  3h ago
 
 Accounts (1):
   ACCOUNT ID    NAME        LAST RELATED

@@ -40,6 +40,7 @@ trailtool sessions list --after 2026-01-01T00:00:00Z --before 2026-01-02T00:00:0
 trailtool sessions list --long                 # Show full role names (SSO roles shortened by default)
 trailtool sessions detail k7m2qp                # Session detail by id (SID column, prefix ok)
 trailtool sessions detail latest                # Most recent session
+trailtool sessions detail k7m2qp --verbose      # Internal ids, full client metadata, raw session policy
 trailtool sessions list --user alice@example.com --limit 1  # Find one user's latest SID
 trailtool sessions summarize k7m2qp             # AI-generated session summary (requires Bedrock)
 trailtool sessions summarize latest             # Summarize the globally latest session
@@ -50,9 +51,11 @@ trailtool sessions policy latest --include-denied --explain
 
 **Filtering tips:** Combine flags to narrow results; all predicates use AND semantics. `--user` accepts an email, PID, or person key. `--role` accepts the role ID shown by `roles list`, a full ARN, or an exact unambiguous name. `--type` accepts `cli`, `web`, `agent`, or `login`. `--after` and `--before` use RFC3339 timestamps with an inclusive lower bound and exclusive upper bound. `--days` and `--after` are mutually exclusive.
 
-**Session detail tips:** Pass the id shown in the SID column of `sessions list` as the positional selector. It is a stable, deterministic handle for one specific session. A short prefix (the 6 characters shown) is enough, and the CLI asks you to lengthen it if a prefix is ambiguous. `latest` always means the globally latest session. To find one person's latest session, run `sessions list --user <email-or-pid> --limit 1` and pass its SID to the detail command. Detail includes clients, role-session name, session tags and policy presence, resource activity, source IPs, ClickOps, denial context, cached summary metadata, related nouns, and lineage.
+**Session detail tips:** Pass the id shown in the SID column of `sessions list` as the positional selector. It is a stable, deterministic handle for one specific session. A short prefix (the 6 characters shown) is enough, and the CLI asks you to lengthen it if a prefix is ambiguous. `latest` always means the globally latest session. To find one person's latest session, run `sessions list --user <email-or-pid> --limit 1` and pass its SID to the detail command. Detail is ordered as overview, origin, summary, clients, activity, resources, and lineage. Use `--verbose` for internal keys, full client metadata, the sign-in session ARN, and the raw inline session policy.
 
 **Wide session lists:** At widths of 180 columns or more, `sessions list` adds `CLIENT`, `SESSION NAME`, `TAGS`, and `POLICY`. `CLIENT` shows only the top client name and the number of additional clients, for example `aws-cli +1`.
+
+**Session references in noun detail:** Recent Sessions tables on people, roles, accounts, services, and resources include the same compact top-client summary when space permits.
 
 **Session summaries:** TrailTool stores each summary with its model, generation time, token usage, and a digest of the session activity used as input. It reuses the cache only while that digest matches. New activity makes the cache stale; `--refresh` bypasses a current cache.
 

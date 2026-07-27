@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -12,7 +13,6 @@ import (
 	"github.com/engseclabs/trailtool/core/policy"
 	"github.com/engseclabs/trailtool/core/session"
 	"github.com/engseclabs/trailtool/core/store"
-	"github.com/engseclabs/trailtool/internal/render"
 )
 
 func SessionsCmd() *cobra.Command {
@@ -144,6 +144,7 @@ func sessionsDetailCmd() *cobra.Command {
 	var limit int
 	var all bool
 	var includeDeniedDetails bool
+	var verbose bool
 
 	cmd := &cobra.Command{
 		Use:   "detail [sid-or-latest]",
@@ -154,7 +155,8 @@ most recent session.
 
 Examples:
   trailtool sessions detail k7m2qp
-  trailtool sessions detail latest`,
+  trailtool sessions detail latest
+  trailtool sessions detail k7m2qp --verbose`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			selector, selectErr := sessionSelector(args)
@@ -195,104 +197,36 @@ Examples:
 			}
 
 			rctx := renderContext()
-			now := rctx.Now
 			label := personLabels(ctx, s)
 
-			// Title + key facts (§5). The time line uses the render context's
-			// centralized clock and interval rule (§4.5).
 			timeLine := fmt.Sprintf("%s (%dm)",
 				rctx.Interval(sess.StartTime, sess.EndTime), sess.DurationMinutes)
-			fmt.Print(view.SessionTitleKV(rctx, sess, label(sess.PersonKey), timeLine))
+			origin := loadSessionOrigin(ctx, s, sess, label)
+			lineageRows, omittedLineage := loadSessionLineage(ctx, s, sess, label, relationLimit)
 
-			// Clients (§5.1) — restyle plus the empty-ambiguity note.
-			fmt.Print(view.Clients(rctx, sess.Clients, sess.EventsCount > 0))
-
-			fmt.Print(view.SessionTags(rctx, sess.SessionTags))
-			if includeDeniedDetails {
-				fmt.Print(view.DeniedEvents(rctx, sess.DeniedEventCount, sess.DeniedEventCounts))
+			fmt.Print(view.SessionOverview(rctx, sess, label(sess.PersonKey), timeLine, verbose))
+			fmt.Print(view.SessionOrigin(rctx, sess, origin, verbose))
+			fmt.Print(view.SessionSummary(rctx, sess))
+			if verbose {
+				fmt.Print(view.VerboseClients(rctx, sess.Clients, sess.EventsCount > 0))
+			} else {
+				fmt.Print(view.Clients(rctx, sess.Clients, sess.EventsCount > 0))
 			}
-			fmt.Print(view.SessionClickOps(rctx, sess.ClickOpsEventCount, sess.ClickOpsEventCounts))
-			// Top Events sort count-descending (§5).
 			fmt.Print(view.TopEvents(rctx, sess.EventCounts))
 			fmt.Print(view.SessionResourceActivity(rctx, sess.ResourceAccesses))
+			fmt.Print(view.SessionClickOps(rctx, sess.ClickOpsEventCount, sess.ClickOpsEventCounts))
 			if includeDeniedDetails {
-				fmt.Print(view.SessionDeniedActivity(rctx, sess.DeniedResourceAccesses, sess.DeniedEventAccesses))
+				deniedDetails := view.SessionDeniedActivity(rctx, sess.DeniedResourceAccesses, sess.DeniedEventAccesses)
+				if deniedDetails == "" {
+					deniedDetails = view.DeniedEvents(rctx, sess.DeniedEventCount, sess.DeniedEventCounts)
+				}
+				fmt.Print(deniedDetails)
 			}
-			fmt.Print(view.SessionSummary(rctx, sess))
 			fmt.Print(view.SessionRelationships(rctx, &detail))
-
-			// AWS MCP Server agent traffic: show the MCP resource and the human session that
-			// authorized the OAuth grant these agent credentials were minted under.
-			if sess.AgentAuthorizedBySession != "" || sess.MCPResource != "" {
-				if sess.MCPResource != "" {
-					fmt.Fprintf(rctx.Out, "\n%s %s\n", rctx.Style(render.Header, "AWS MCP Server:"), rctx.Style(render.Ident, sess.MCPResource))
-				}
-				if sess.SignInSessionArn != "" {
-					fmt.Fprintf(rctx.Out, "%s %s\n", rctx.Style(render.Header, "Sign-in session:"), rctx.Style(render.Ident, sess.SignInSessionArn))
-				}
-				if sess.AgentAuthorizedBySession != "" && sess.AgentAuthorizedBySession != sess.Ref() {
-					printRefNav(ctx, rctx, s, "OAuth grant authorized by", sess.AgentAuthorizedBySession, label, now)
-				}
+			fmt.Print(view.SessionLineage(rctx, lineageRows, omittedLineage))
+			if verbose {
+				fmt.Print(view.SessionPolicy(rctx, sess.SessionPolicy))
 			}
-
-			// Login grant: show the human session that ran aws login to create these credentials
-			if sess.LoginGrantedBySession != "" {
-				fmt.Fprintln(rctx.Out)
-				printRefNav(ctx, rctx, s, "Credentials granted via aws login by", sess.LoginGrantedBySession, label, now)
-			}
-
-			// Chaining: child view — show parent with navigable time
-			if sess.AssumedFromSession != "" {
-				fmt.Fprintln(rctx.Out)
-				printRefNav(ctx, rctx, s, "Assumed by", sess.AssumedFromSession, label, now)
-			}
-
-			// Chaining: parent view — show each child session with navigable time.
-			// Capped to relationLimit refs (each is a sequential GetSessionByRef);
-			// a session that assumed hundreds of roles would otherwise fan out into
-			// hundreds of round-trips before rendering. --all (relationLimit 0) shows
-			// every ref.
-			if len(sess.ChainedSessionRefs) > 0 || len(sess.ChainedRoles) > 0 {
-				fmt.Fprint(rctx.Out, rctx.Section(
-					fmt.Sprintf("Assumed Roles (%d, %d events):", len(sess.ChainedRoles), sess.ChainedEventCount), ""))
-				shown := 0
-				childRefs := capList(sess.ChainedSessionRefs, relationLimit)
-				for _, childRef := range childRefs {
-					childSess, _ := s.GetSessionByRef(ctx, CustomerID, childRef)
-					if childSess == nil {
-						fmt.Fprintf(rctx.Out, "  %s\n", childRef)
-						continue
-					}
-					shown++
-					printChildRow(rctx, childSess, childSess.RoleName, childRef, now)
-				}
-				printMoreRefs(rctx, len(sess.ChainedSessionRefs)-len(childRefs))
-				if shown == 0 && len(sess.ChainedSessionRefs) == 0 {
-					for _, childRoleARN := range sess.ChainedRoles {
-						fmt.Fprintf(rctx.Out, "  %s\n", rctx.Style(render.Ident, childRoleARN))
-					}
-				}
-			}
-
-			// Grants: parent view — sessions whose credentials this session
-			// authorized via aws login / MCP OAuth grants. Same per-ref
-			// GetSessionByRef cost, capped the same way.
-			if len(sess.GrantedSessionRefs) > 0 {
-				fmt.Fprint(rctx.Out, rctx.Section(
-					fmt.Sprintf("Authorized Sessions (%d):", len(sess.GrantedSessionRefs)), ""))
-				grantRefs := capList(sess.GrantedSessionRefs, relationLimit)
-				for _, gRef := range grantRefs {
-					gSess, _ := s.GetSessionByRef(ctx, CustomerID, gRef)
-					if gSess == nil {
-						fmt.Fprintf(rctx.Out, "  %s\n", gRef)
-						continue
-					}
-					printChildRow(rctx, gSess, view.ShortRoleName(gSess.RoleName), gRef, now)
-				}
-				printMoreRefs(rctx, len(sess.GrantedSessionRefs)-len(grantRefs))
-			}
-
-			fmt.Print(view.SessionPolicy(rctx, sess.SessionPolicy))
 
 			return nil
 		},
@@ -301,8 +235,81 @@ Examples:
 	cmd.Flags().IntVar(&limit, "limit", defaultDetailLimit, "Maximum rows in each related section")
 	cmd.Flags().BoolVar(&all, "all", false, "Show every related record")
 	cmd.Flags().BoolVar(&includeDeniedDetails, "include-denied-details", false, "Show denied event breakdowns and access details")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Show internal identifiers, full client metadata, and raw session policy")
 
 	return cmd
+}
+
+func loadSessionOrigin(
+	ctx context.Context,
+	s *store.Store,
+	sess *models.Session,
+	label func(string) string,
+) view.SessionOriginReference {
+	ref := ""
+	switch {
+	case sess.AgentAuthorizedBySession != "":
+		ref = sess.AgentAuthorizedBySession
+	case sess.LoginGrantedBySession != "":
+		ref = sess.LoginGrantedBySession
+	case sess.AssumedFromSession != "":
+		ref = sess.AssumedFromSession
+	}
+	if ref == "" || ref == sess.Ref() {
+		return view.SessionOriginReference{}
+	}
+	parent, _ := s.GetSessionByRef(ctx, CustomerID, ref)
+	return view.SessionOriginReference{
+		Ref:         ref,
+		PersonLabel: label(view.RefPersonKey(ref)),
+		Session:     parent,
+	}
+}
+
+func loadSessionLineage(
+	ctx context.Context,
+	s *store.Store,
+	sess *models.Session,
+	label func(string) string,
+	limit int,
+) ([]view.SessionLineageRow, int) {
+	var rows []view.SessionLineageRow
+	omitted := 0
+	capRefs := func(refs []string) []string {
+		if limit == 0 {
+			return refs
+		}
+		remaining := max(limit-len(rows), 0)
+		if len(refs) <= remaining {
+			return refs
+		}
+		omitted += len(refs) - remaining
+		return refs[:remaining]
+	}
+	appendRefs := func(relation string, refs []string) {
+		for _, ref := range capRefs(refs) {
+			target, _ := s.GetSessionByRef(ctx, CustomerID, ref)
+			rows = append(rows, view.SessionLineageRow{
+				Relation:    relation,
+				Ref:         ref,
+				PersonLabel: label(view.RefPersonKey(ref)),
+				Session:     target,
+			})
+		}
+	}
+
+	appendRefs("assumed", sess.ChainedSessionRefs)
+	if len(sess.ChainedSessionRefs) == 0 {
+		for _, roleARN := range capRefs(sess.ChainedRoles) {
+			role := roleARN
+			if slash := strings.LastIndexByte(roleARN, '/'); slash != -1 && slash+1 < len(roleARN) {
+				role = roleARN[slash+1:]
+			}
+			rows = append(rows, view.SessionLineageRow{Relation: "assumed", Role: role})
+		}
+	}
+	appendRefs("authorized", sess.GrantedSessionRefs)
+	return rows, omitted
 }
 
 func sessionsSummarizeCmd() *cobra.Command {

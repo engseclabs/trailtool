@@ -24,6 +24,7 @@ func sampleEnrichedRelated() models.RelatedNouns {
 			Sid: models.SidForRef(enrichedSessionRef), PersonKey: "email#alice@example.com", SK: "sis#session-1",
 			RoleName: "DeployRole", AccountID: "123456789012", SessionType: "web",
 			EventsCount: 12, StartTime: "2026-07-24T09:00:00Z",
+			Clients: oneClient(),
 		},
 		RelationshipBounds: models.RelationshipBounds{RelationshipLastSeen: "2026-07-24T09:45:00Z"},
 	}}
@@ -108,13 +109,18 @@ func sampleSessionDetail() *models.SessionDetail {
 	return &models.SessionDetail{
 		Session: models.Session{
 			Sid: models.SidForRef(enrichedSessionRef), PersonKey: "email#alice@example.com",
-			SK: "sis#session-1", Anchor: "sis#credential-1", SessionType: "web",
+			SK: "sis#session-1", Anchor: "sis#credential-1", SessionType: "agent",
 			StartTime: "2026-07-24T09:00:00Z", EndTime: "2026-07-24T09:45:00Z", DurationMinutes: 45,
 			AccountID: "123456789012", RoleARN: "arn:aws:iam::123456789012:role/DeployRole",
 			RoleName: "DeployRole", EventsCount: 120, ServicesCount: 1, ResourcesCount: 1,
-			SourceIPs:         []string{"203.0.113.8", "198.51.100.4"},
-			EventCounts:       map[string]int{"Invoke": 80, "UpdateFunctionCode": 40},
-			ResourcesAccessed: map[string]int{"lambda:function:worker": 120},
+			RoleSessionName:          "claude-code-worker",
+			Clients:                  mixedFamilies(),
+			SessionTags:              map[string]string{"AgentName": "claude-code", "Task": "deploy-worker"},
+			MCPResource:              "https://aws-mcp.us-east-1.api.aws/mcp",
+			AgentAuthorizedBySession: "email#alice@example.com|sis#parent-session",
+			SourceIPs:                []string{"203.0.113.8", "198.51.100.4"},
+			EventCounts:              map[string]int{"Invoke": 80, "UpdateFunctionCode": 40},
+			ResourcesAccessed:        map[string]int{"lambda:function:worker": 120},
 			ResourceAccesses: []models.ResourceAccess{{
 				Service: "lambda.amazonaws.com", EventName: "Invoke",
 				Resource: "lambda:function:worker", ResourceAccountID: "123456789012", Count: 80,
@@ -139,18 +145,37 @@ func renderSampleSessionDetail(width int, includeDeniedDetails bool) string {
 	ctx := ctxFor(width, false, true)
 	timeLine := ctx.Interval(session.StartTime, session.EndTime) + " (45m)"
 	var b strings.Builder
-	b.WriteString(SessionTitleKV(ctx, session, "Alice Example", timeLine))
-	if includeDeniedDetails {
-		b.WriteString(DeniedEvents(ctx, session.DeniedEventCount, session.DeniedEventCounts))
-	}
-	b.WriteString(SessionClickOps(ctx, session.ClickOpsEventCount, session.ClickOpsEventCounts))
+	b.WriteString(SessionOverview(ctx, session, "Alice Example", timeLine, false))
+	b.WriteString(SessionOrigin(ctx, session, SessionOriginReference{
+		Ref:         session.AgentAuthorizedBySession,
+		PersonLabel: "Alice Example",
+		Session: &models.Session{
+			Sid:       models.SidForRef(session.AgentAuthorizedBySession),
+			PersonKey: "email#alice@example.com",
+			SK:        "sis#parent-session",
+			RoleName:  "AdministratorAccess",
+			StartTime: "2026-07-24T08:30:00Z",
+		},
+	}, false))
+	b.WriteString(SessionSummary(ctx, session))
+	b.WriteString(Clients(ctx, session.Clients, true))
 	b.WriteString(TopEvents(ctx, session.EventCounts))
 	b.WriteString(SessionResourceActivity(ctx, session.ResourceAccesses))
+	b.WriteString(SessionClickOps(ctx, session.ClickOpsEventCount, session.ClickOpsEventCounts))
 	if includeDeniedDetails {
 		b.WriteString(SessionDeniedActivity(ctx, session.DeniedResourceAccesses, session.DeniedEventAccesses))
 	}
-	b.WriteString(SessionSummary(ctx, session))
 	b.WriteString(SessionRelationships(ctx, detail))
+	childRef := "email#alice@example.com|key#child-session"
+	child := detail.Related.Sessions[0].Session
+	child.Sid = models.SidForRef(childRef)
+	child.SK = "key#child-session"
+	b.WriteString(SessionLineage(ctx, []SessionLineageRow{{
+		Relation:    "authorized",
+		Ref:         childRef,
+		PersonLabel: "Alice Example",
+		Session:     &child,
+	}}, 0))
 	return b.String()
 }
 
@@ -166,7 +191,7 @@ func TestSessionDetailDoesNotDuplicateResourceSummary(t *testing.T) {
 	if strings.Contains(output, "Resources Accessed") {
 		t.Fatal("session detail includes the redundant Resources Accessed section")
 	}
-	for _, section := range []string{"Event to Resource Activity", "Resources (1)"} {
+	for _, section := range []string{"Resource Activity", "Resources (1)"} {
 		if !strings.Contains(output, section) {
 			t.Fatalf("session detail missing %q", section)
 		}

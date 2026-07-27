@@ -12,19 +12,18 @@ import (
 // copy-pasteable commands for a person.
 func PersonDetail(ctx render.Context, detail *models.PersonDetail, includeDeniedDetails bool) string {
 	person := &detail.Person
+	title := person.DisplayLabel()
 	var b strings.Builder
-	b.WriteString(ctx.Title(person.DisplayLabel()))
+	b.WriteString(ctx.Title(title))
 
 	kv := render.NewKV().
 		Add("PID", ident(ctx, person.PID())).
 		Add("Person Key", ident(ctx, person.PersonKey)).
 		Add("Resolution Tier", personTierLabel(person.Tier))
-	if person.Email != "" {
+	if person.Email != "" && !strings.EqualFold(person.Email, title) {
 		kv.Add("Primary Email", ident(ctx, person.Email))
 	}
-	if len(person.EmailsSeen) > 0 {
-		aliases := append([]string(nil), person.EmailsSeen...)
-		sort.Strings(aliases)
+	if aliases := personEmailAliases(person.EmailsSeen, person.Email, title); len(aliases) > 0 {
 		kv.Add("Email Aliases", strings.Join(aliases, ", "))
 	}
 	kv.Add("First Seen", ctx.Style(render.Time, ctx.Timestamp(person.FirstSeen))).
@@ -49,6 +48,24 @@ func PersonDetail(ctx render.Context, detail *models.PersonDetail, includeDenied
 	b.WriteString(relatedServices(ctx, detail.Related.Services))
 	b.WriteString(relatedResources(ctx, detail.Related.Resources))
 	return b.String()
+}
+
+func personEmailAliases(emails []string, primary, title string) []string {
+	seen := map[string]bool{
+		strings.ToLower(primary): true,
+		strings.ToLower(title):   true,
+	}
+	aliases := make([]string, 0, len(emails))
+	for _, email := range emails {
+		key := strings.ToLower(strings.TrimSpace(email))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		aliases = append(aliases, email)
+	}
+	sort.Strings(aliases)
+	return aliases
 }
 
 // ResourceDetail renders resource facts, activity, relationships, ClickOps
@@ -127,14 +144,21 @@ func relatedSessions(ctx render.Context, sessions []models.RelatedSession) strin
 		base[i] = sessions[i].Session
 	}
 	sidWidth := SidDisplayWidth(base)
-	t := render.NewTable(
+	showClient := ctx.Width >= 80
+	columns := []render.Column{
 		render.Column{Header: "SID", Align: render.AlignLeft},
 		render.Column{Header: "ROLE", Align: render.AlignLeft},
+	}
+	if showClient {
+		columns = append(columns, render.Column{Header: "CLIENT", Align: render.AlignLeft})
+	}
+	columns = append(columns,
 		render.Column{Header: "ACCOUNT", Align: render.AlignLeft},
 		render.Column{Header: "TYPE", Align: render.AlignLeft},
 		render.Column{Header: "EVENTS", Align: render.AlignRight},
 		render.Column{Header: "TIME", Align: render.AlignLeft},
 	)
+	t := render.NewTable(columns...)
 	for i := range sessions {
 		session := &sessions[i].Session
 		sid := ShortSid(session, sidWidth)
@@ -145,14 +169,20 @@ func relatedSessions(ctx render.Context, sessions []models.RelatedSession) strin
 		if role == "" {
 			role = session.RoleARN
 		}
-		t.Row(
+		row := []string{
 			ident(ctx, sid),
 			ident(ctx, ShortRoleName(role)),
+		}
+		if showClient {
+			row = append(row, optional(ctx, ctx.Truncate(topClientSummary(session.Clients), 16)))
+		}
+		row = append(row,
 			session.AccountID,
 			session.DetectSessionType(),
 			count(ctx, session.EventsCount),
 			ctx.Style(render.Time, ctx.Relative(session.StartTime)),
 		)
+		t.Row(row...)
 	}
 	return ctx.Section(render.Heading("Recent Sessions", len(sessions)), ctx.RenderTable(t, render.BodyIndent))
 }
@@ -309,11 +339,8 @@ func resourceClickOps(ctx render.Context, detail *models.ResourceDetail) string 
 	return ctx.Section(render.Heading("Console Operations", len(accesses)), ctx.RenderTable(t, render.BodyIndent))
 }
 
-// SessionRelationships renders the non-canonical related nouns. Account, role,
-// and person already appear in the key facts.
+// SessionRelationships keeps resource navigation. Services already appear in
+// Top Events and Resource Activity, so repeating them here adds no new action.
 func SessionRelationships(ctx render.Context, detail *models.SessionDetail) string {
-	var b strings.Builder
-	b.WriteString(relatedServices(ctx, detail.Related.Services))
-	b.WriteString(relatedResources(ctx, detail.Related.Resources))
-	return b.String()
+	return relatedResources(ctx, detail.Related.Resources)
 }

@@ -1,0 +1,7 @@
+Session cj6bhlwrp6hfapnw
+Person:    Alice Example
+Role:      AdministratorAccess  (arn:aws:iam::123456789012:role/AdministratorAccess)
+Account:   123456789012
+Type:      API
+Time:      2026-07-24T09:00:00Z → 2026-07-24T09:45:00Z [2h ago] (45m)
+Activity:  30 events across 3 services, 0 resources
