@@ -600,3 +600,67 @@ func TestEventIDDedupe(t *testing.T) {
 		t.Errorf("EventsCount = %d, want 1 (duplicate eventID must count once)", sess.EventsCount)
 	}
 }
+
+// TestSignInBootstrapProducesNoSession verifies the rule that a session always
+// has a role: the Identity Center and console authentication exchange happens
+// before any role is assumed, so it is session-creation metadata, not a session.
+// These events previously fell to the windowed fallback and surfaced as a
+// scatter of roleless one-event sessions.
+func TestSignInBootstrapProducesNoSession(t *testing.T) {
+	newEvent := func(eventTime, source, name string) types.CloudTrailRecord {
+		return types.CloudTrailRecord{
+			EventTime:   eventTime,
+			EventName:   name,
+			EventSource: source,
+			UserIdentity: types.UserIdentity{
+				Type:        "Unknown",
+				PrincipalID: "AROASIGNIN1234567890:alice@example.com",
+				AccountID:   "111111111111",
+			},
+		}
+	}
+
+	sessions, err := processForTest([]types.CloudTrailRecord{
+		newEvent("2026-07-15T10:00:00Z", "signin.amazonaws.com", "CredentialChallenge"),
+		newEvent("2026-07-15T10:00:01Z", "signin.amazonaws.com", "CredentialVerification"),
+		newEvent("2026-07-15T10:00:02Z", "signin.amazonaws.com", "UserAuthentication"),
+		newEvent("2026-07-15T10:00:03Z", "sso.amazonaws.com", "Authenticate"),
+		newEvent("2026-07-15T10:00:04Z", "sso.amazonaws.com", "Federate"),
+		newEvent("2026-07-15T10:00:05Z", "sso.amazonaws.com", "ListApplications"),
+		newEvent("2026-07-15T10:00:06Z", "sso.amazonaws.com", "ListProfilesForApplication"),
+		newEvent("2026-07-15T10:00:07Z", "sso.amazonaws.com", "CreateToken"),
+		newEvent("2026-07-15T10:00:08Z", "sso.amazonaws.com", "GetRoleCredentials"),
+	})
+	if err != nil {
+		t.Fatalf("processForTest() error: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("got %d sessions, want 0; keys: %v", len(sessions), sessionKeys(sessions))
+	}
+}
+
+// TestNoRolelessWindowedSession is the invariant behind the skip list above: an
+// anchor-less event carrying no role at all never resolves to a win# session,
+// whatever its event name. The skip list names the events known to do this;
+// this guards the ones AWS has not shipped yet.
+func TestNoRolelessWindowedSession(t *testing.T) {
+	sessions, err := processForTest([]types.CloudTrailRecord{{
+		EventTime:   "2026-07-15T10:00:00Z",
+		EventName:   "SomeFutureSignInEvent",
+		EventSource: "signin.amazonaws.com",
+		UserIdentity: types.UserIdentity{
+			Type:        "Unknown",
+			PrincipalID: "AROAFUTURE1234567890:alice@example.com",
+			AccountID:   "111111111111",
+		},
+	}})
+	if err != nil {
+		t.Fatalf("processForTest() error: %v", err)
+	}
+	for ref, sess := range sessions {
+		if sess.RoleName == "" || sess.RoleARN == "" {
+			t.Errorf("roleless session %q created: role_arn=%q role_name=%q",
+				ref, sess.RoleARN, sess.RoleName)
+		}
+	}
+}

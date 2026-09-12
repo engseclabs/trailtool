@@ -121,9 +121,24 @@ already written.
 
 ## Sign-in bootstrap events misclassified (ingestor)
 
-Console sign-in bootstrap events from `signin.amazonaws.com` are not being
-attributed to the console session they belong to. Two related symptoms observed
-in sandbox after a fresh wipe + re-ingest:
+**Largely resolved.** The authentication exchange that precedes a session —
+`signin.amazonaws.com` CredentialChallenge/CredentialVerification/UserAuthentication
+and `sso.amazonaws.com` Authenticate/Federate/ListApplications/
+ListProfilesForApplication/CreateToken/GetRoleCredentials — is now skipped as
+session-creation metadata (`isSignInBootstrapEvent`), alongside a backstop that
+refuses to build a windowed session for any event carrying no role at all. A
+session is the lifetime of a credential held by a role, so it always has one;
+these events happen before a role is assumed and are not sessions.
+
+**Remaining: chain the sign-in to the session it authorizes.** Skipping drops the
+sign-in's identity rather than attaching it. The console case has an in-batch
+fold (`foldConsoleSignIn`), but nothing survives across batches, and the Identity
+Center exchange has no equivalent at all. The mechanism should be the
+`trailtool-identity-links` layer already used for `aws login` grants and AAM
+metadata, keyed on the principalId the sign-in shares with the session it opens.
+
+Historical detail, retained because the two symptoms below explain the shape of
+the fix:
 
 1. **Lone `ConsoleLogin` → spurious windowed session.**
    A `ConsoleLogin` under a direct-SAML role (e.g. `SandboxAdminDirect`) with no
@@ -133,9 +148,8 @@ in sandbox after a fresh wipe + re-ingest:
    own 1-event session. `foldConsoleSignIn` only folds when a matching `rc#`
    console group with the same principalId exists in the same batch — a lone
    sign-in has none.
-   - Partially mitigated: the blank ROLE column is fixed (ExtractRoleNameFromARN
-     now handles `sts:assumed-role` ARNs). The spurious-session issue itself
-     remains.
+   - Resolved: `ExtractRoleNameFromARN` handles `sts:assumed-role` ARNs, and a
+     sign-in with no role no longer becomes a session at all.
 
 2. **`GetSigninToken` → misclassified as CLI (`key#` anchor).**
    Unlike `ConsoleLogin`, `GetSigninToken` carries a temporary access key and no
