@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -92,6 +93,8 @@ type replayFlags struct {
 	bucket   string
 	function string
 	prefix   string
+	orgID    string
+	keyPref  string
 	from     string
 	to       string
 	account  string
@@ -135,6 +138,8 @@ func ReplayCmd() *cobra.Command {
 	flags.StringVar(&f.bucket, "bucket", "", "CloudTrail S3 bucket (default: discovered from the ingestor stack)")
 	flags.StringVar(&f.function, "function", "trailtool-ingestor", "Ingestor Lambda function name")
 	flags.StringVar(&f.prefix, "prefix", "", "Replay every object under this S3 key prefix (single account/region)")
+	flags.StringVar(&f.orgID, "org-id", "", "Organization ID for an organization trail's AWSLogs/<org-id>/<account>/ layout")
+	flags.StringVar(&f.keyPref, "key-prefix", "", "Trail's S3 key prefix, when the trail writes under one")
 	flags.StringVar(&f.from, "from", "", "First day of range, YYYY-MM-DD (needs --account and --region)")
 	flags.StringVar(&f.to, "to", "", "Last day of range, inclusive, YYYY-MM-DD")
 	flags.StringVar(&f.account, "account", "", "Account ID for the standard CloudTrail key layout")
@@ -170,7 +175,7 @@ func buildReplayOptions(f *replayFlags, bucket string) (replay.Options, error) {
 		return opts, nil
 	}
 
-	base, err := replay.CloudTrailBase(f.account, f.region)
+	base, err := replay.CloudTrailBase(f.keyPref, f.orgID, f.account, f.region)
 	if err != nil {
 		return opts, err
 	}
@@ -234,6 +239,7 @@ func printReplayResult(rctx render.Context, opts replay.Options, res replay.Resu
 	if opts.DryRun {
 		fmt.Fprintln(rctx.Out, rctx.Status(render.StatusOK,
 			fmt.Sprintf("Dry run: %d objects match. None invoked.", res.Matched)))
+		printEmptyPrefixHint(rctx, opts, res)
 		return
 	}
 	level := render.StatusOK
@@ -246,4 +252,22 @@ func printReplayResult(rctx render.Context, opts replay.Options, res replay.Resu
 	for _, key := range res.Failed {
 		fmt.Fprintf(rctx.Out, "  %s %s\n", rctx.Symbol(render.SymNav), rctx.Style(render.Muted, "failed: "+key))
 	}
+	printEmptyPrefixHint(rctx, opts, res)
+}
+
+// printEmptyPrefixHint names the prefixes that were searched when none of them
+// held anything. A wrong layout lists cleanly and matches nothing, so without
+// this the only signal is a bare zero — which reads as "no activity that day"
+// rather than "looked in the wrong place". Organization trails nest the account
+// under the org ID, and a trail with an S3 key prefix nests everything again.
+func printEmptyPrefixHint(rctx render.Context, opts replay.Options, res replay.Result) {
+	if res.Matched > 0 || len(opts.Prefixes) == 0 {
+		return
+	}
+	fmt.Fprintf(rctx.Out, "  %s %s\n", rctx.Symbol(render.SymNav),
+		rctx.Style(render.Muted, "searched: "+strings.Join(opts.Prefixes, ", ")))
+	fmt.Fprintf(rctx.Out, "  %s %s\n", rctx.Symbol(render.SymNav),
+		rctx.Style(render.Muted,
+			"if the trail is an organization trail or writes under an S3 key prefix, "+
+				"pass --org-id / --key-prefix, or an explicit --prefix"))
 }

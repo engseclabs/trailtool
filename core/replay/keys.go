@@ -67,12 +67,29 @@ func ParseDate(s string) (time.Time, error) {
 	return t.UTC(), nil
 }
 
-// CloudTrailBase builds the standard-layout prefix up to the region segment:
-// AWSLogs/<account>/CloudTrail/<region>/. Operators with a non-standard layout
-// (org trails, custom bucket prefix) pass an explicit --prefix instead.
-func CloudTrailBase(account, region string) (string, error) {
+// CloudTrailBase builds the prefix up to and including the region segment.
+//
+// The layout has two optional segments, and an organization trail behind a
+// Control Tower log archive uses both:
+//
+//	[<keyPrefix>/]AWSLogs/[<orgID>/]<account>/CloudTrail/<region>/
+//
+// keyPrefix is the trail's S3 key prefix, orgID the organization the trail
+// belongs to. Omitting both yields the standard single-account layout. Getting
+// either wrong lists a prefix that exists but holds nothing, so the caller
+// reports the prefix it searched rather than a bare "0 objects".
+func CloudTrailBase(keyPrefix, orgID, account, region string) (string, error) {
 	if account == "" || region == "" {
 		return "", fmt.Errorf("time-range replay needs --account and --region (or use --prefix)")
 	}
-	return fmt.Sprintf("AWSLogs/%s/CloudTrail/%s/", account, region), nil
+	var b strings.Builder
+	if p := strings.Trim(keyPrefix, "/"); p != "" {
+		b.WriteString(p + "/")
+	}
+	b.WriteString("AWSLogs/")
+	if o := strings.Trim(orgID, "/"); o != "" {
+		b.WriteString(o + "/")
+	}
+	b.WriteString(account + "/CloudTrail/" + region + "/")
+	return b.String(), nil
 }
