@@ -1,0 +1,89 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  TrailTool CloudTrail forwarder - deploy in the account that OWNS the CloudTrail
+  bucket (e.g. a Control Tower log archive account) to forward the bucket's S3
+  object-created events to the account running the ingestor.
+
+# Why this stack exists: S3 emits its EventBridge notifications onto the default
+# bus of the bucket's own account. An ingestor deployed in a different account
+# therefore never sees them, no matter how its rule is written. This stack adds
+# the missing hop, bus to bus.
+#
+# Prerequisites, both outside this stack because the bucket is usually managed by
+# Control Tower and not by CloudFormation:
+#   1. EventBridge notifications enabled on the bucket
+#      (aws s3api put-bucket-notification-configuration --bucket <b> \
+#         --notification-configuration '{"EventBridgeConfiguration":{}}')
+#   2. The bucket policy grants the ingestor account s3:GetObject (and
+#      s3:ListBucket for `trailtool replay`).
+# `make deploy-forwarder` checks (1) before deploying.
+
+Parameters:
+  CloudTrailBucketName:
+    Type: String
+    Description: Bucket holding the CloudTrail logs, owned by this account
+
+  IngestorAccountId:
+    Type: String
+    Description: Account ID running the TrailTool ingestor stack
+
+  IngestorRegion:
+    Type: String
+    Default: us-east-1
+    Description: Region of the ingestor's default event bus
+
+Resources:
+  ForwarderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: trailtool-cloudtrail-forwarder-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PutEventsToIngestorBus
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !Sub 'arn:aws:events:${IngestorRegion}:${IngestorAccountId}:event-bus/default'
+
+  # Only real event logs are forwarded. Digest and Insight sidecars are also
+  # .json.gz but live under /CloudTrail-Digest/ and /CloudTrail-Insight/, and the
+  # ingestor discards them (core/replay/keys.go, ingest.go), so matching
+  # */CloudTrail/*.json.gz keeps them off the cross-account path entirely.
+  ForwardingRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: trailtool-cloudtrail-forwarding-to-ingestor
+      Description: Forwards CloudTrail log deliveries to the TrailTool ingestor account
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - Object Created
+        detail:
+          bucket:
+            name:
+              - !Ref CloudTrailBucketName
+          object:
+            key:
+              - wildcard: '*/CloudTrail/*.json.gz'
+      Targets:
+        - Arn: !Sub 'arn:aws:events:${IngestorRegion}:${IngestorAccountId}:event-bus/default'
+          Id: TrailToolIngestorBus
+          RoleArn: !GetAtt ForwarderRole.Arn
+
+Outputs:
+  ForwardingRuleName:
+    Description: Name of the forwarding rule
+    Value: !Ref ForwardingRule
+
+  ForwarderRoleArn:
+    Description: Role EventBridge assumes to put events on the ingestor's bus
+    Value: !GetAtt ForwarderRole.Arn

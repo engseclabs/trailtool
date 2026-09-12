@@ -7,6 +7,30 @@ Parameters:
     Type: String
     Description: Name of the S3 bucket containing CloudTrail logs
 
+  # Cross-account deployments (e.g. an organization trail whose bucket lives in
+  # a Control Tower log archive account) cannot touch the bucket's notification
+  # config and never see its S3 events directly. Both default to the
+  # same-account behavior, so existing stacks are unaffected.
+  ManageBucketNotification:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Whether this stack enables EventBridge notifications on the CloudTrail
+      bucket. Set to 'false' when the bucket is owned by another account; its
+      owner enables notifications and forwards the events instead.
+
+  EventSourceAccount:
+    Type: String
+    Default: ''
+    Description: >-
+      Account ID allowed to forward S3 events onto this account's default event
+      bus. Set to the bucket owner's account ID for a cross-account deployment.
+
+Conditions:
+  ManageNotification: !Equals [!Ref ManageBucketNotification, 'true']
+  CrossAccountEvents: !Not [!Equals [!Ref EventSourceAccount, '']]
+
 Globals:
   Function:
     Timeout: 300
@@ -295,6 +319,7 @@ Resources:
   # Custom Resource - Enable EventBridge notifications on S3 bucket
   BucketEventBridgeHelperRole:
     Type: AWS::IAM::Role
+    Condition: ManageNotification
     Properties:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
@@ -318,6 +343,7 @@ Resources:
 
   BucketEventBridgeHelperFunction:
     Type: AWS::Lambda::Function
+    Condition: ManageNotification
     Properties:
       FunctionName: trailtool-bucket-eventbridge
       Runtime: python3.12
@@ -379,14 +405,31 @@ Resources:
 
   EnableBucketEventBridge:
     Type: Custom::EnableEventBridge
+    Condition: ManageNotification
     Properties:
       ServiceToken: !GetAtt BucketEventBridgeHelperFunction.Arn
       BucketName: !Ref CloudTrailBucketName
 
+  # Cross-account only: let the bucket owner's account forward the bucket's S3
+  # events onto this account's default bus, where CloudTrailEventRule picks them
+  # up. S3 emits its EventBridge events in the bucket's own account, so without
+  # this hop a rule here would never fire.
+  CrossAccountEventBusPolicy:
+    Type: AWS::Events::EventBusPolicy
+    Condition: CrossAccountEvents
+    Properties:
+      EventBusName: default
+      StatementId: TrailToolCrossAccountS3Events
+      Statement:
+        Effect: Allow
+        Principal:
+          AWS: !Sub 'arn:aws:iam::${EventSourceAccount}:root'
+        Action: events:PutEvents
+        Resource: !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default'
+
   # EventBridge Rule to trigger on S3 object creation
   CloudTrailEventRule:
     Type: AWS::Events::Rule
-    DependsOn: EnableBucketEventBridge
     Properties:
       Name: trailtool-cloudtrail-trigger
       Description: Triggers ingestor when new CloudTrail logs are written to S3
