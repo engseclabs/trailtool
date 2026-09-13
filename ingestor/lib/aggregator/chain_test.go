@@ -175,6 +175,32 @@ func TestExtractSessionTags(t *testing.T) {
 			want: nil,
 		},
 		{
+			name: "Identity Center AssumeRoleWithSAML principal tags",
+			event: types.CloudTrailRecord{
+				EventName: "AssumeRoleWithSAML",
+				RequestParameters: map[string]interface{}{
+					"principalTags": map[string]interface{}{
+						"email":      "alex@engseclabs.com",
+						"department": "security",
+					},
+				},
+			},
+			want: map[string]string{
+				"email":      "alex@engseclabs.com",
+				"department": "security",
+			},
+		},
+		{
+			name: "AssumeRoleWithSAML without principal tags",
+			event: types.CloudTrailRecord{
+				EventName: "AssumeRoleWithSAML",
+				RequestParameters: map[string]interface{}{
+					"roleArn": "arn:aws:iam::123456789012:role/AWSReservedSSO_Admin_abc",
+				},
+			},
+			want: nil,
+		},
+		{
 			name: "non-AssumeRole event",
 			event: types.CloudTrailRecord{
 				EventName: "GetCallerIdentity",
@@ -214,6 +240,28 @@ func TestExtractSessionTags(t *testing.T) {
 				t.Errorf("ExtractSessionTags() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExtractFullAssumedRoleID(t *testing.T) {
+	event := types.CloudTrailRecord{
+		EventName: "AssumeRoleWithSAML",
+		ResponseElements: map[string]interface{}{
+			"credentials": map[string]interface{}{
+				"accessKeyId": "ASIAISSUEDKEY000001",
+			},
+			"assumedRoleUser": map[string]interface{}{
+				"assumedRoleId": "AROAUB266OVZCWROZTVQR:alex@engseclabs.com",
+			},
+		},
+	}
+	if got, want := ExtractFullAssumedRoleID(event), "AROAUB266OVZCWROZTVQR:alex@engseclabs.com"; got != want {
+		t.Fatalf("ExtractFullAssumedRoleID() = %q, want %q", got, want)
+	}
+
+	event.EventName = "GetCallerIdentity"
+	if got := ExtractFullAssumedRoleID(event); got != "" {
+		t.Fatalf("ExtractFullAssumedRoleID(non-creation event) = %q, want empty", got)
 	}
 }
 

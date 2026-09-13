@@ -260,7 +260,7 @@ Resources:
       TableName: trailtool-identity-links
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
-        - AttributeName: pk # cred#… | chain#… | login#… | mcp#…
+        - AttributeName: pk # cred#… | chain#… | creation#… | login#… | mcp#…
           AttributeType: S
       KeySchema:
         - AttributeName: pk

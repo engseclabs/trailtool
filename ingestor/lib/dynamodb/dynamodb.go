@@ -40,13 +40,38 @@ type LinkGetter interface {
 	BatchGetItem(ctx context.Context, params *dynamodb.BatchGetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.BatchGetItemOutput, error)
 }
 
-// mergeSessionTags returns the non-nil session tags map, preferring existing over new.
-// If both are non-nil, existing wins (the first write has the authoritative tags).
+// LinkUpdater is the DynamoDB surface used by creation# correlation records.
+// UpdateItem lets metadata and target refs arrive independently without either
+// side replacing the fields written by the other.
+type LinkUpdater interface {
+	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+}
+
+// SessionTagStore is the DynamoDB surface used by late creation-metadata
+// updates. The read supplies the optimistic-lock version; UpdateItem changes
+// only session_tags and version, preserving concurrently written activity.
+type SessionTagStore interface {
+	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+}
+
+// mergeSessionTags combines observed session tags, preserving an existing value
+// when the same key appears again. This lets late session-creation metadata add
+// keys without replacing the first observed value.
 func mergeSessionTags(existing, new map[string]string) map[string]string {
-	if existing != nil {
-		return existing
+	if len(existing) == 0 && len(new) == 0 {
+		return nil
 	}
-	return new
+	merged := make(map[string]string, len(existing)+len(new))
+	for key, value := range existing {
+		merged[key] = value
+	}
+	for key, value := range new {
+		if _, found := merged[key]; !found {
+			merged[key] = value
+		}
+	}
+	return merged
 }
 
 // firstNonEmpty returns the first non-empty string from the arguments.

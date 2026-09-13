@@ -80,6 +80,32 @@ func TestMergeSessionPreservesRoleSessionContext(t *testing.T) {
 	}
 }
 
+func TestMergeSessionTagsAddsMissingKeysAndPreservesExistingValues(t *testing.T) {
+	existing := map[string]string{
+		"email": "first@example.com",
+		"team":  "security",
+	}
+	incoming := map[string]string{
+		"email":      "later@example.com",
+		"department": "engineering",
+	}
+
+	got := mergeSessionTags(existing, incoming)
+	want := map[string]string{
+		"email":      "first@example.com",
+		"team":       "security",
+		"department": "engineering",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("mergeSessionTags() = %v, want %v", got, want)
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Errorf("mergeSessionTags()[%q] = %q, want %q", key, got[key], value)
+		}
+	}
+}
+
 func TestFoldWindowsCreatesWhenNothingAdjacent(t *testing.T) {
 	incoming := winSession("win#AIDADEPLOYBOT1234567#2026-07-15T10:00:00Z", "2026-07-15T10:00:00Z", "2026-07-15T10:10:00Z", 2, 1)
 	merged, expectedVersion, deletions := FoldWindows(nil, incoming, 30*time.Minute)
@@ -175,6 +201,8 @@ type fakeStore struct {
 	// onQuery runs after each Query returns — the hook window where a
 	// concurrent writer can sneak in.
 	onQuery func(s *fakeStore)
+	// onUpdate runs immediately before an UpdateItem condition is checked.
+	onUpdate func(s *fakeStore)
 }
 
 func newFakeStore() *fakeStore {
@@ -245,6 +273,31 @@ func (s *fakeStore) PutItem(_ context.Context, params *dynamodb.PutItemInput, _ 
 	return &dynamodb.PutItemOutput{}, nil
 }
 
+func (s *fakeStore) UpdateItem(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	key := itemKey(params.Key)
+	if s.onUpdate != nil {
+		hook := s.onUpdate
+		s.onUpdate = nil
+		hook(s)
+	}
+	existing, exists := s.items[key]
+	if !exists {
+		return nil, &ddbtypes.ConditionalCheckFailedException{}
+	}
+	expected := params.ExpressionAttributeValues[":expected"].(*ddbtypes.AttributeValueMemberN).Value
+	if itemVersion(existing) != expected {
+		return nil, &ddbtypes.ConditionalCheckFailedException{}
+	}
+	updated := make(map[string]ddbtypes.AttributeValue, len(existing))
+	for name, value := range existing {
+		updated[name] = value
+	}
+	updated["session_tags"] = params.ExpressionAttributeValues[":tags"]
+	updated["version"] = params.ExpressionAttributeValues[":next"]
+	s.items[key] = updated
+	return &dynamodb.UpdateItemOutput{}, nil
+}
+
 func (s *fakeStore) TransactWriteItems(_ context.Context, params *dynamodb.TransactWriteItemsInput, _ ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
 	// Check every condition first — all-or-nothing.
 	for _, tw := range params.TransactItems {
@@ -291,6 +344,184 @@ func (s *fakeStore) session(t *testing.T, key string) *types.DynamoDBSession {
 		t.Fatalf("unmarshal %q: %v", key, err)
 	}
 	return &sess
+}
+
+func TestUpdateSessionTagsPatchesExistingSessionWithoutCreatingActivity(t *testing.T) {
+	store := newFakeStore()
+	const (
+		table     = "sessions"
+		customer  = "test"
+		personKey = "idc#arn:aws:identitystore::123456789012:identitystore/d-example#user-123"
+		sk        = "web#AROAROLE#2026-08-20T02:56:50Z#AROAROLE"
+	)
+	existing := &types.DynamoDBSession{
+		PK:          customer + "#" + personKey,
+		SK:          sk,
+		CustomerID:  customer,
+		PersonKey:   personKey,
+		EventsCount: 7,
+		Version:     3,
+		SessionTags: map[string]string{"email": "alex@example.com"},
+	}
+	item, err := attributevalue.MarshalMap(existing)
+	if err != nil {
+		t.Fatalf("marshal existing session: %v", err)
+	}
+	store.items[itemKey(item)] = item
+
+	ref := personKey + "|" + sk
+	tags := map[string]string{
+		"email":      "later@example.com",
+		"department": "security",
+	}
+	if err := UpdateSessionTags(context.Background(), store, table, customer, ref, tags); err != nil {
+		t.Fatalf("UpdateSessionTags() error: %v", err)
+	}
+
+	got := store.session(t, existing.PK+"|"+sk)
+	if got.EventsCount != existing.EventsCount {
+		t.Errorf("EventsCount = %d, want %d", got.EventsCount, existing.EventsCount)
+	}
+	if got.Version != existing.Version+1 {
+		t.Errorf("Version = %d, want %d", got.Version, existing.Version+1)
+	}
+	if got.SessionTags["email"] != "alex@example.com" {
+		t.Errorf("email tag = %q, want first observed value", got.SessionTags["email"])
+	}
+	if got.SessionTags["department"] != "security" {
+		t.Errorf("department tag = %q, want security", got.SessionTags["department"])
+	}
+
+	// Replaying the same metadata is idempotent and does not bump the version.
+	if err := UpdateSessionTags(context.Background(), store, table, customer, ref, tags); err != nil {
+		t.Fatalf("second UpdateSessionTags() error: %v", err)
+	}
+	if replayed := store.session(t, existing.PK+"|"+sk); replayed.Version != existing.Version+1 {
+		t.Errorf("version after replay = %d, want %d", replayed.Version, existing.Version+1)
+	}
+}
+
+func TestUpdateSessionTagsRetriesWithoutReplacingConcurrentActivity(t *testing.T) {
+	store := newFakeStore()
+	const (
+		table     = "sessions"
+		customer  = "test"
+		personKey = "idc#arn:aws:identitystore::123456789012:identitystore/d-example#user-123"
+		sk        = "web#AROAROLE#2026-08-20T02:56:50Z#AROAROLE"
+	)
+	existing := &types.DynamoDBSession{
+		PK:          customer + "#" + personKey,
+		SK:          sk,
+		CustomerID:  customer,
+		PersonKey:   personKey,
+		EventsCount: 7,
+		Version:     3,
+	}
+	item, err := attributevalue.MarshalMap(existing)
+	if err != nil {
+		t.Fatalf("marshal existing session: %v", err)
+	}
+	key := itemKey(item)
+	store.items[key] = item
+	store.onUpdate = func(s *fakeStore) {
+		// Simulate another writer landing activity between our consistent read
+		// and conditional tag update.
+		s.items[key]["events_count"] = &ddbtypes.AttributeValueMemberN{Value: "11"}
+		s.items[key]["version"] = &ddbtypes.AttributeValueMemberN{Value: "4"}
+	}
+
+	ref := personKey + "|" + sk
+	if err := UpdateSessionTags(context.Background(), store, table, customer, ref, map[string]string{"team": "security"}); err != nil {
+		t.Fatalf("UpdateSessionTags() error: %v", err)
+	}
+	got := store.session(t, key)
+	if got.EventsCount != 11 {
+		t.Errorf("EventsCount = %d, want concurrent value 11", got.EventsCount)
+	}
+	if got.Version != 5 {
+		t.Errorf("Version = %d, want 5 after conflict and retry", got.Version)
+	}
+	if got.SessionTags["team"] != "security" {
+		t.Errorf("SessionTags = %v, want team tag", got.SessionTags)
+	}
+}
+
+type fakeLinkUpdater struct {
+	items map[string]map[string]ddbtypes.AttributeValue
+}
+
+func newFakeLinkUpdater() *fakeLinkUpdater {
+	return &fakeLinkUpdater{items: make(map[string]map[string]ddbtypes.AttributeValue)}
+}
+
+func (f *fakeLinkUpdater) UpdateItem(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	pk := params.Key["pk"].(*ddbtypes.AttributeValueMemberS).Value
+	item := f.items[pk]
+	if item == nil {
+		item = map[string]ddbtypes.AttributeValue{"pk": &ddbtypes.AttributeValueMemberS{Value: pk}}
+	}
+	item["ttl"] = params.ExpressionAttributeValues[":ttl"]
+	if tags, ok := params.ExpressionAttributeValues[":tags"]; ok {
+		item["session_tags"] = tags
+	}
+	if targets, ok := params.ExpressionAttributeValues[":targets"].(*ddbtypes.AttributeValueMemberSS); ok {
+		seen := make(map[string]bool)
+		if current, ok := item["target_session_refs"].(*ddbtypes.AttributeValueMemberSS); ok {
+			for _, ref := range current.Value {
+				seen[ref] = true
+			}
+		}
+		for _, ref := range targets.Value {
+			seen[ref] = true
+		}
+		merged := make([]string, 0, len(seen))
+		for ref := range seen {
+			merged = append(merged, ref)
+		}
+		item["target_session_refs"] = &ddbtypes.AttributeValueMemberSS{Value: merged}
+	}
+	f.items[pk] = item
+	return &dynamodb.UpdateItemOutput{}, nil
+}
+
+func TestWriteCreationLinkMergesMetadataAndMultipleTargetsInEitherOrder(t *testing.T) {
+	const pk = "creation#AROAROLE:session#2026-08-20T02:56:50Z"
+	metadata := &types.DynamoDBIdentityLink{
+		PK:          pk,
+		SessionTags: map[string]string{"team": "security"},
+		TTL:         123,
+	}
+	targets := []*types.DynamoDBIdentityLink{
+		{PK: pk, TargetSessionRefs: []string{"person|web#session"}, TTL: 123},
+		{PK: pk, TargetSessionRefs: []string{"person|key#login"}, TTL: 123},
+	}
+
+	for _, tc := range []struct {
+		name  string
+		links []*types.DynamoDBIdentityLink
+	}{
+		{name: "metadata first", links: []*types.DynamoDBIdentityLink{metadata, targets[0], targets[1]}},
+		{name: "targets first", links: []*types.DynamoDBIdentityLink{targets[0], targets[1], metadata}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeLinkUpdater()
+			for _, link := range tc.links {
+				if err := WriteCreationLink(context.Background(), store, "links", link); err != nil {
+					t.Fatalf("WriteCreationLink() error: %v", err)
+				}
+			}
+			var got types.DynamoDBIdentityLink
+			if err := attributevalue.UnmarshalMap(store.items[pk], &got); err != nil {
+				t.Fatalf("unmarshal creation link: %v", err)
+			}
+			if got.SessionTags["team"] != "security" {
+				t.Errorf("SessionTags = %v, want metadata retained", got.SessionTags)
+			}
+			if len(got.TargetSessionRefs) != 2 {
+				t.Errorf("TargetSessionRefs = %v, want both targets", got.TargetSessionRefs)
+			}
+		})
+	}
 }
 
 // fakeLinkGetter is a scripted BatchGetItem client: it returns each queued

@@ -4,6 +4,7 @@ package dynamodb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -38,6 +39,52 @@ func WriteIdentityLink(ctx context.Context, ddbClient SessionStore, tableName st
 	return nil
 }
 
+// WriteCreationLink atomically merges the two independently delivered sides
+// of a creation# record. Metadata owns session_tags, while activity adds one or
+// more target_session_refs. Neither update can erase the other.
+func WriteCreationLink(ctx context.Context, ddbClient LinkUpdater, tableName string, link *types.DynamoDBIdentityLink) error {
+	if link == nil || link.PK == "" {
+		return fmt.Errorf("creation link requires a pk")
+	}
+
+	names := map[string]string{
+		"#ttl": "ttl",
+	}
+	values := map[string]ddbtypes.AttributeValue{
+		":ttl": &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", link.TTL)},
+	}
+	setParts := []string{"#ttl = :ttl"}
+	if len(link.SessionTags) > 0 {
+		tags, err := attributevalue.Marshal(link.SessionTags)
+		if err != nil {
+			return fmt.Errorf("failed to marshal creation-link tags: %w", err)
+		}
+		names["#tags"] = "session_tags"
+		values[":tags"] = tags
+		setParts = append(setParts, "#tags = :tags")
+	}
+
+	update := "SET " + strings.Join(setParts, ", ")
+	if len(link.TargetSessionRefs) > 0 {
+		names["#targets"] = "target_session_refs"
+		values[":targets"] = &ddbtypes.AttributeValueMemberSS{Value: link.TargetSessionRefs}
+		update += " ADD #targets :targets"
+	}
+
+	_, err := ddbClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                 aws.String(tableName),
+		Key:                       map[string]ddbtypes.AttributeValue{"pk": &ddbtypes.AttributeValueMemberS{Value: link.PK}},
+		UpdateExpression:          aws.String(update),
+		ExpressionAttributeNames:  names,
+		ExpressionAttributeValues: values,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to write creation link: %w", err)
+	}
+	log.Printf("CREATION_LINK_WRITE: pk=%s tags=%d targets=%d", link.PK, len(link.SessionTags), len(link.TargetSessionRefs))
+	return nil
+}
+
 // BatchGetIdentityLinks fetches identity link records for a set of PKs.
 // Returns a map of pk -> DynamoDBIdentityLink for found records.
 func BatchGetIdentityLinks(ctx context.Context, ddbClient LinkGetter, tableName string, pks []string) (map[string]*types.DynamoDBIdentityLink, error) {
@@ -46,15 +93,15 @@ func BatchGetIdentityLinks(ctx context.Context, ddbClient LinkGetter, tableName 
 		return result, nil
 	}
 
-	collect := func(items []map[string]ddbtypes.AttributeValue) {
+	collect := func(items []map[string]ddbtypes.AttributeValue) error {
 		for _, item := range items {
 			var link types.DynamoDBIdentityLink
 			if err := attributevalue.UnmarshalMap(item, &link); err != nil {
-				log.Printf("WARNING: failed to unmarshal identity link: %v", err)
-				continue
+				return fmt.Errorf("failed to unmarshal identity link: %w", err)
 			}
 			result[link.PK] = &link
 		}
+		return nil
 	}
 
 	// DynamoDB BatchGetItem limit is 100 keys per request
@@ -89,15 +136,16 @@ func BatchGetIdentityLinks(ctx context.Context, ddbClient LinkGetter, tableName 
 				return result, fmt.Errorf("batch get identity links failed: %w", err)
 			}
 
-			collect(out.Responses[tableName])
+			if err := collect(out.Responses[tableName]); err != nil {
+				return result, err
+			}
 
 			unprocessed, ok := out.UnprocessedKeys[tableName]
 			if !ok || len(unprocessed.Keys) == 0 {
 				break
 			}
 			if attempt+1 >= maxAttempts {
-				log.Printf("WARNING: batch get identity links exhausted retries, dropping %d unprocessed keys", len(unprocessed.Keys))
-				break
+				return result, fmt.Errorf("batch get identity links exhausted retries with %d unprocessed keys", len(unprocessed.Keys))
 			}
 			req = map[string]ddbtypes.KeysAndAttributes{
 				tableName: unprocessed,
@@ -108,6 +156,79 @@ func BatchGetIdentityLinks(ctx context.Context, ddbClient LinkGetter, tableName 
 	}
 
 	return result, nil
+}
+
+// UpdateSessionTags attaches newly observed creation metadata to one exact
+// session. It changes only session_tags and version, with an optimistic retry,
+// so a concurrent activity write cannot be replaced by a stale full-item Put.
+// A missing session is left alone; its creation# record remains available for
+// a later activity batch.
+func UpdateSessionTags(ctx context.Context, ddbClient SessionTagStore, tableName, customerID, sessionRef string, tags map[string]string) error {
+	if len(tags) == 0 {
+		return nil
+	}
+	personKey, sk, ok := strings.Cut(sessionRef, "|")
+	if !ok || personKey == "" || sk == "" {
+		return fmt.Errorf("invalid session ref: %s", sessionRef)
+	}
+	pk := customerID + "#" + personKey
+
+	key := map[string]ddbtypes.AttributeValue{
+		"pk": &ddbtypes.AttributeValueMemberS{Value: pk},
+		"sk": &ddbtypes.AttributeValueMemberS{Value: sk},
+	}
+	const maxAttempts = 4
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		getOut, err := ddbClient.GetItem(ctx, &dynamodb.GetItemInput{
+			TableName:      aws.String(tableName),
+			Key:            key,
+			ConsistentRead: aws.Bool(true),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to get session %s for tag update: %w", sessionRef, err)
+		}
+		if len(getOut.Item) == 0 {
+			log.Printf("SESSION_TAG_UPDATE: session not yet in DDB, skipping update for %s", sessionRef)
+			return nil
+		}
+
+		var existing types.DynamoDBSession
+		if err := attributevalue.UnmarshalMap(getOut.Item, &existing); err != nil {
+			return fmt.Errorf("failed to unmarshal session %s for tag update: %w", sessionRef, err)
+		}
+		merged := mergeSessionTags(existing.SessionTags, tags)
+		if len(merged) == len(existing.SessionTags) {
+			return nil
+		}
+		marshaledTags, err := attributevalue.Marshal(merged)
+		if err != nil {
+			return fmt.Errorf("failed to marshal tags for session %s: %w", sessionRef, err)
+		}
+		_, err = ddbClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+			TableName:           aws.String(tableName),
+			Key:                 key,
+			UpdateExpression:    aws.String("SET #tags = :tags, #version = :next"),
+			ConditionExpression: aws.String("attribute_exists(pk) AND (attribute_not_exists(#version) OR #version = :expected)"),
+			ExpressionAttributeNames: map[string]string{
+				"#tags":    "session_tags",
+				"#version": "version",
+			},
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+				":tags":     marshaledTags,
+				":expected": &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", existing.Version)},
+				":next":     &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", existing.Version+1)},
+			},
+		})
+		if err == nil {
+			log.Printf("SESSION_TAG_UPDATE: updated session=%s tags=%d", sessionRef, len(tags))
+			return nil
+		}
+		var conflict *ddbtypes.ConditionalCheckFailedException
+		if !errors.As(err, &conflict) {
+			return fmt.Errorf("failed to update session %s tags: %w", sessionRef, err)
+		}
+	}
+	return fmt.Errorf("failed to update session %s tags after %d concurrent writes", sessionRef, maxAttempts)
 }
 
 // UpdateParentSessionChaining updates an existing parent session in DynamoDB with

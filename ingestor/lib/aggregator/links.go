@@ -1,11 +1,12 @@
-// Correlation links: the in-batch registry tying issued credentials and
-// OAuth grants (AssumeRole chains, aws login, AWS MCP Server) back to the
-// person and session that created them, plus persistence of the same
-// records to trailtool-identity-links for cross-batch resolution.
+// Correlation links tie issued credentials, session-creation metadata, and
+// OAuth grants back to the relevant person and session. The same records are
+// persisted to trailtool-identity-links for cross-batch resolution.
 package aggregator
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -26,10 +27,11 @@ const linkTTLHours = 12
 type linkKind int
 
 const (
-	linkChain linkKind = iota // AssumeRole issued this credential
-	linkLogin                 // aws login (PKCE) vended this credential
-	linkMCP                   // AWS MCP Server OAuth token traffic
-	linkCred                  // cred# continuity: credential → person + anchor (§2.3)
+	linkChain    linkKind = iota // AssumeRole issued this credential
+	linkLogin                    // aws login (PKCE) vended this credential
+	linkMCP                      // AWS MCP Server OAuth token traffic
+	linkCred                     // cred# continuity: credential → person + anchor (§2.3)
+	linkCreation                 // creation# metadata and resolved session targets
 )
 
 // link is the in-batch correlation record: a credential/grant issued by a
@@ -37,21 +39,22 @@ const (
 // trailtool-identity-links; records fetched back from there (stored=true)
 // resolve tier 2 and anchor continuity across batches.
 type link struct {
-	kind             linkKind
-	personKey        string
-	parentSessionRef string // person_key|sk of the issuing/authorizing session
-	parentRoleARN    string
-	assumedRoleARN   string
-	sessionTags      map[string]string
-	sessionPolicy    string
-	hasSessionPolicy bool
-	mcpResource      string
-	roleARN          string   // cred# links: the credential group's role
-	anchor           string   // cred# links: the anchor decided when first resolved
-	eventTime        string   // grant/AssumeRole event time, for the TTL
-	stored           bool     // fetched from trailtool-identity-links; not re-written unless re-observed
-	observed         bool     // re-observed this batch — refresh its TTL even if stored
-	pks              []string // identity-links PKs this link is stored under
+	kind              linkKind
+	personKey         string
+	parentSessionRef  string // person_key|sk of the issuing/authorizing session
+	parentRoleARN     string
+	assumedRoleARN    string
+	sessionTags       map[string]string
+	sessionPolicy     string
+	hasSessionPolicy  bool
+	mcpResource       string
+	roleARN           string   // cred# links: the credential group's role
+	anchor            string   // cred# links: the anchor decided when first resolved
+	targetSessionRefs []string // creation# links: sessions created from this STS response
+	eventTime         string   // grant/AssumeRole event time, for the TTL
+	stored            bool     // fetched from trailtool-identity-links; not re-written unless re-observed
+	observed          bool     // re-observed this batch — refresh its TTL even if stored
+	pks               []string // identity-links PKs this link is stored under
 }
 
 // credLinkPK maps a credential-group key to its cred# continuity link PK
@@ -61,6 +64,48 @@ func credLinkPK(groupKey string) string {
 		return "cred#" + groupKey[3:]
 	}
 	return ""
+}
+
+// creationLinkPKForActivity identifies the STS response that created a
+// downstream role session. AWS repeats the response's full assumedRoleId and
+// eventTime as the activity event's principalId and creationDate.
+func creationLinkPKForActivity(event types.CloudTrailRecord) string {
+	if event.UserIdentity.PrincipalID == "" {
+		return ""
+	}
+	creationDate := session.GetSessionCreationTime(event)
+	if creationDate == "" {
+		return ""
+	}
+	return "creation#" + event.UserIdentity.PrincipalID + "#" + creationDate
+}
+
+// IsAAMAssumeRole reports whether an event is the service-side STS call with
+// which AWS Account Access Management creates a role session. These events are
+// session-creation metadata, not activity by the resulting human session.
+func IsAAMAssumeRole(event types.CloudTrailRecord) bool {
+	return event.EventSource == "sts.amazonaws.com" &&
+		event.EventName == "AssumeRole" &&
+		event.UserIdentity.Type == "AWSService" &&
+		event.UserIdentity.InvokedBy == "account-access.amazonaws.com" &&
+		ExtractFullAssumedRoleID(event) != ""
+}
+
+// creationLinkPKForMetadata identifies the role session created by a metadata
+// event that TrailTool does not count as activity. SAML federation and Account
+// Access Management have different caller shapes but expose the same join key.
+func creationLinkPKForMetadata(event types.CloudTrailRecord) string {
+	if event.EventSource != "sts.amazonaws.com" || event.EventTime == "" {
+		return ""
+	}
+	if event.EventName != "AssumeRoleWithSAML" && !IsAAMAssumeRole(event) {
+		return ""
+	}
+	assumedRoleID := ExtractFullAssumedRoleID(event)
+	if assumedRoleID == "" {
+		return ""
+	}
+	return "creation#" + assumedRoleID + "#" + event.EventTime
 }
 
 // anchorRank orders anchors by cascade strength: a literal sign-in session
@@ -218,11 +263,10 @@ func continuityAnchor(links map[string]*link, g identity.Group, computed string)
 	return best
 }
 
-// candidateLinkKeys returns the identity-link PKs any event in the group could
-// match, in match priority order: chain# (this credential was issued by an
-// AssumeRole), then the group's own cred# continuity key, then mcp# (OAuth
-// token traffic), then login# (aws login vended credentials).
-func candidateLinkKeys(g identity.Group) []string {
+// candidateIdentityLinkKeys returns only links that can resolve a person or
+// session anchor. creation# records are deliberately excluded: they carry
+// metadata and target refs, and may exist without a person.
+func candidateIdentityLinkKeys(g identity.Group) []string {
 	var keys []string
 	seen := make(map[string]bool)
 	add := func(k string) {
@@ -264,28 +308,57 @@ func candidateLinkKeys(g identity.Group) []string {
 	return keys
 }
 
+// candidateCreationLinkKeys returns the generic metadata records a group can
+// produce or consume. Both sides derive the same key without sharing an access
+// key: issuance uses assumedRoleId + eventTime, while activity uses
+// principalId + creationDate.
+func candidateCreationLinkKeys(g identity.Group) []string {
+	var keys []string
+	seen := make(map[string]bool)
+	for _, event := range g.Events {
+		for _, key := range []string{
+			creationLinkPKForMetadata(event),
+			creationLinkPKForActivity(event),
+		} {
+			if key != "" && !seen[key] {
+				seen[key] = true
+				keys = append(keys, key)
+			}
+		}
+	}
+	return keys
+}
+
+func candidateStoredLinkKeys(g identity.Group) []string {
+	keys := candidateIdentityLinkKeys(g)
+	return append(keys, candidateCreationLinkKeys(g)...)
+}
+
 // linkFromRecord rehydrates a stored identity-link record into the in-batch
 // link shape. The kind comes from the PK's keyspace prefix.
 func linkFromRecord(pk string, rec *types.DynamoDBIdentityLink) *link {
 	l := &link{
-		personKey:        rec.PersonKey,
-		parentSessionRef: rec.ParentSessionRef,
-		parentRoleARN:    rec.ParentRoleARN,
-		assumedRoleARN:   rec.AssumedRoleARN,
-		sessionTags:      rec.SessionTags,
-		sessionPolicy:    rec.SessionPolicy,
-		hasSessionPolicy: rec.HasSessionPolicy || rec.SessionPolicy != "",
-		mcpResource:      rec.MCPResource,
-		roleARN:          rec.RoleARN,
-		anchor:           rec.Anchor,
-		stored:           true,
-		pks:              []string{pk},
+		personKey:         rec.PersonKey,
+		parentSessionRef:  rec.ParentSessionRef,
+		parentRoleARN:     rec.ParentRoleARN,
+		assumedRoleARN:    rec.AssumedRoleARN,
+		sessionTags:       rec.SessionTags,
+		sessionPolicy:     rec.SessionPolicy,
+		hasSessionPolicy:  rec.HasSessionPolicy || rec.SessionPolicy != "",
+		mcpResource:       rec.MCPResource,
+		roleARN:           rec.RoleARN,
+		anchor:            rec.Anchor,
+		targetSessionRefs: append([]string(nil), rec.TargetSessionRefs...),
+		stored:            true,
+		pks:               []string{pk},
 	}
 	switch {
 	case strings.HasPrefix(pk, "cred#"):
 		l.kind = linkCred
 	case strings.HasPrefix(pk, "chain#"):
 		l.kind = linkChain
+	case strings.HasPrefix(pk, "creation#"):
+		l.kind = linkCreation
 	case strings.HasPrefix(pk, "login#"):
 		l.kind = linkLogin
 	case strings.HasPrefix(pk, "mcp#"):
@@ -294,20 +367,19 @@ func linkFromRecord(pk string, rec *types.DynamoDBIdentityLink) *link {
 	return l
 }
 
-// fetchStoredLinks batch-reads every identity-link record the batch's groups
-// could match — the groups' own cred# continuity keys plus the
-// chain#/login#/mcp# candidates their events reference. This is what makes
+// fetchStoredLinks batch-reads every correlation record the batch's groups
+// could match: identity links plus generic creation# records. This is what makes
 // tier-2 resolution and anchor continuity work across S3 files: batch A writes
 // the links, batch B (same credentials, different file) reads them here.
 // Returns nil when no client/table is configured.
-func fetchStoredLinks(ctx context.Context, ddbClient *dynamodb.Client, table string, groups []identity.Group) map[string]*link {
+func fetchStoredLinks(ctx context.Context, ddbClient *dynamodb.Client, table string, groups []identity.Group) (map[string]*link, error) {
 	if ddbClient == nil || table == "" {
-		return nil
+		return nil, nil
 	}
 	var pks []string
 	seen := make(map[string]bool)
 	for _, g := range groups {
-		for _, k := range candidateLinkKeys(g) {
+		for _, k := range candidateStoredLinkKeys(g) {
 			if !seen[k] {
 				seen[k] = true
 				pks = append(pks, k)
@@ -315,12 +387,11 @@ func fetchStoredLinks(ctx context.Context, ddbClient *dynamodb.Client, table str
 		}
 	}
 	if len(pks) == 0 {
-		return nil
+		return nil, nil
 	}
 	recs, err := ddblib.BatchGetIdentityLinks(ctx, ddbClient, table, pks)
 	if err != nil {
-		log.Printf("WARNING: batch get identity links failed: %v", err)
-		return nil
+		return nil, err
 	}
 	stored := make(map[string]*link, len(recs))
 	for pk, rec := range recs {
@@ -329,12 +400,12 @@ func fetchStoredLinks(ctx context.Context, ddbClient *dynamodb.Client, table str
 	if len(stored) > 0 {
 		log.Printf("IDENTITY_LINKS_FETCHED: %d of %d candidates", len(stored), len(pks))
 	}
-	return stored
+	return stored, nil
 }
 
 func lookupLink(links map[string]*link, g identity.Group) *link {
-	for _, k := range candidateLinkKeys(g) {
-		if l, ok := links[k]; ok {
+	for _, k := range candidateIdentityLinkKeys(g) {
+		if l, ok := links[k]; ok && l.personKey != "" {
 			return l
 		}
 	}
@@ -342,7 +413,7 @@ func lookupLink(links map[string]*link, g identity.Group) *link {
 }
 
 func lookupLinkKind(links map[string]*link, g identity.Group, kind linkKind) *link {
-	for _, k := range candidateLinkKeys(g) {
+	for _, k := range candidateIdentityLinkKeys(g) {
 		if l, ok := links[k]; ok && l.kind == kind {
 			return l
 		}
@@ -350,9 +421,104 @@ func lookupLinkKind(links map[string]*link, g identity.Group, kind linkKind) *li
 	return nil
 }
 
+// mergeSessionTagMaps combines observed tags without replacing a value already
+// attached to the session. A copy is returned so link records and session
+// records never share a mutable map.
+func mergeSessionTagMaps(existing, incoming map[string]string) map[string]string {
+	if len(existing) == 0 && len(incoming) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(existing)+len(incoming))
+	for key, value := range existing {
+		merged[key] = value
+	}
+	for key, value := range incoming {
+		if _, found := merged[key]; !found {
+			merged[key] = value
+		}
+	}
+	return merged
+}
+
+// sessionCreationTags returns metadata correlated to a group's downstream
+// activity. It is independent of identity resolution.
+func sessionCreationTags(links map[string]*link, g identity.Group) map[string]string {
+	var tags map[string]string
+	for _, key := range candidateCreationLinkKeys(g) {
+		if l, ok := links[key]; ok && l.kind == linkCreation {
+			tags = mergeSessionTagMaps(tags, l.sessionTags)
+		}
+	}
+	return tags
+}
+
+// collectLateSessionTagUpdates applies creation metadata to target sessions in
+// this batch and returns updates for sessions written by an earlier batch.
+func collectLateSessionTagUpdates(links map[string]*link, sessions map[string]*types.DynamoDBSession) map[string]map[string]string {
+	updates := make(map[string]map[string]string)
+	for _, l := range links {
+		if l.kind != linkCreation || len(l.targetSessionRefs) == 0 || len(l.sessionTags) == 0 {
+			continue
+		}
+		for _, targetRef := range l.targetSessionRefs {
+			if sess, ok := sessions[targetRef]; ok {
+				sess.SessionTags = mergeSessionTagMaps(sess.SessionTags, l.sessionTags)
+				continue
+			}
+			updates[targetRef] = mergeSessionTagMaps(updates[targetRef], l.sessionTags)
+		}
+	}
+	return updates
+}
+
+// registerCreationMetadata records SAML or AAM tags without requiring the
+// issuance event to resolve to a person. This is essential for AAM's AWSService
+// caller and for SAML events carrying an opaque NameID.
+func registerCreationMetadata(links map[string]*link, event types.CloudTrailRecord) {
+	pk := creationLinkPKForMetadata(event)
+	tags := ExtractSessionTags(event)
+	if pk == "" || len(tags) == 0 {
+		return
+	}
+	if existing, ok := links[pk]; ok && existing.kind == linkCreation {
+		existing.sessionTags = mergeSessionTagMaps(existing.sessionTags, tags)
+		existing.eventTime = event.EventTime
+		existing.observed = true
+		return
+	}
+	links[pk] = &link{kind: linkCreation, sessionTags: tags, eventTime: event.EventTime, observed: true, pks: []string{pk}}
+	log.Printf("CREATION_METADATA: pk=%s tags=%d", pk, len(tags))
+}
+
+func registerCreationMetadataLinks(links map[string]*link, groups []identity.Group) {
+	for _, group := range groups {
+		for _, event := range group.Events {
+			registerCreationMetadata(links, event)
+		}
+	}
+}
+
+// registerCreationTarget records a resolved session as one consumer of the
+// STS response. The target list is plural because aws login credentials can
+// share principalId + creationDate with their authorizing console session.
+func registerCreationTarget(links map[string]*link, event types.CloudTrailRecord, sessionRef string) {
+	pk := creationLinkPKForActivity(event)
+	if pk == "" || sessionRef == "" {
+		return
+	}
+	l, ok := links[pk]
+	if !ok || l.kind != linkCreation {
+		l = &link{kind: linkCreation, eventTime: session.GetSessionCreationTime(event), pks: []string{pk}}
+		links[pk] = l
+	}
+	appendUnique(&l.targetSessionRefs, sessionRef)
+	l.observed = true
+}
+
 // registerLinks records the correlation links contributed by a resolved group's
 // events: the group's own cred# continuity links, AssumeRole chain links, and
-// CreateOAuth2Token grants (aws login / MCP).
+// CreateOAuth2Token grants (aws login / MCP). Session-creation metadata is
+// registered separately because it does not require person resolution.
 func registerLinks(links map[string]*link, g identity.Group, person identity.Person, anchor string) {
 	// Continuity links for the group's own credential (§2.3, §3.1): map both
 	// the credential itself and its principalId#creationDate to the resolved
@@ -433,7 +599,7 @@ func registerLinks(links map[string]*link, g identity.Group, person identity.Per
 			parentRoleARN = event.UserIdentity.ARN
 		}
 
-		if event.EventName == "AssumeRole" {
+		if event.EventName == "AssumeRole" && !IsAAMAssumeRole(event) {
 			if strings.Contains(event.UserIdentity.PrincipalID, "ConfigResourceCompositionSession") {
 				continue
 			}
@@ -506,10 +672,10 @@ func registerLinks(links map[string]*link, g identity.Group, person identity.Per
 }
 
 // writeIdentityLinks persists this batch's correlation records to
-// trailtool-identity-links: the cred# continuity links and chain/login/mcp
-// links registered during resolution (§2.3 — the C1 mitigation, anchor
+// trailtool-identity-links: identity/continuity links and generic creation#
+// records registered during resolution (§2.3 — the C1 mitigation, anchor
 // continuity, and fan-out attribution for later batches).
-func writeIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, table string, links map[string]*link) {
+func writeIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, table string, links map[string]*link) error {
 	linkTTL := func(eventTime string) int64 {
 		t, err := time.Parse(time.RFC3339, eventTime)
 		if err != nil {
@@ -518,26 +684,35 @@ func writeIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, table s
 		return t.Add(linkTTLHours * time.Hour).Unix()
 	}
 
+	var writeErrors []error
 	for pk, l := range links {
 		if l.stored && !l.observed {
 			continue // fetched but not re-observed this batch — nothing to record
 		}
 		rec := &types.DynamoDBIdentityLink{
-			PK:               pk,
-			PersonKey:        l.personKey,
-			ParentSessionRef: l.parentSessionRef,
-			ParentRoleARN:    l.parentRoleARN,
-			AssumedRoleARN:   l.assumedRoleARN,
-			SessionTags:      l.sessionTags,
-			SessionPolicy:    l.sessionPolicy,
-			HasSessionPolicy: l.hasSessionPolicy,
-			MCPResource:      l.mcpResource,
-			RoleARN:          l.roleARN,
-			Anchor:           l.anchor,
-			TTL:              linkTTL(l.eventTime),
+			PK:                pk,
+			PersonKey:         l.personKey,
+			ParentSessionRef:  l.parentSessionRef,
+			ParentRoleARN:     l.parentRoleARN,
+			AssumedRoleARN:    l.assumedRoleARN,
+			SessionTags:       l.sessionTags,
+			SessionPolicy:     l.sessionPolicy,
+			HasSessionPolicy:  l.hasSessionPolicy,
+			MCPResource:       l.mcpResource,
+			RoleARN:           l.roleARN,
+			Anchor:            l.anchor,
+			TargetSessionRefs: append([]string(nil), l.targetSessionRefs...),
+			TTL:               linkTTL(l.eventTime),
 		}
-		if err := ddblib.WriteIdentityLink(ctx, ddbClient, table, rec); err != nil {
-			log.Printf("WARNING: failed to write identity link %s: %v", pk, err)
+		var err error
+		if l.kind == linkCreation {
+			err = ddblib.WriteCreationLink(ctx, ddbClient, table, rec)
+		} else {
+			err = ddblib.WriteIdentityLink(ctx, ddbClient, table, rec)
+		}
+		if err != nil {
+			writeErrors = append(writeErrors, fmt.Errorf("%s: %w", pk, err))
 		}
 	}
+	return errors.Join(writeErrors...)
 }

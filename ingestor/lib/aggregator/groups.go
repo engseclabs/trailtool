@@ -38,6 +38,9 @@ type resolvedGroup struct {
 func resolveGroups(groups []identity.Group, stored map[string]*link) ([]resolvedGroup, map[string]*link) {
 	links := make(map[string]*link, len(stored))
 	maps.Copy(links, stored)
+	// Creation metadata does not participate in identity resolution. Register it
+	// once up front so downstream groups can consume tags in the same batch.
+	registerCreationMetadataLinks(links, groups)
 	resolved := make([]resolvedGroup, len(groups))
 
 	resolver := func(g identity.Group) (string, bool) {
@@ -148,6 +151,9 @@ func shouldSkipEvent(event types.CloudTrailRecord) bool {
 		return true
 	}
 	if event.EventSource == "sts.amazonaws.com" && event.EventName == "AssumeRoleWithSAML" {
+		return true
+	}
+	if IsAAMAssumeRole(event) {
 		return true
 	}
 	return false

@@ -116,7 +116,10 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	// Cross-batch correlation: fetch the identity links earlier batches
 	// recorded for this batch's credentials and grants.
 	groups := identity.GroupEvents(events)
-	stored := fetchStoredLinks(ctx, ddbClient, cfg.Tables.IdentityLinks, groups)
+	stored, err := fetchStoredLinks(ctx, ddbClient, cfg.Tables.IdentityLinks, groups)
+	if err != nil {
+		return nil, fmt.Errorf("fetch correlation links: %w", err)
+	}
 	return aggregateGroups(ctx, ddbClient, cfg, ns, groups, stored)
 }
 
@@ -156,8 +159,9 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	sessionServices := make(map[string]map[string]bool)
 	sessionResources := make(map[string]map[string]bool)
 
-	// Identity resolution: credential groups → person tiers → session anchors,
-	// with in-batch and stored chain/login/MCP/cred links resolving tier 2.
+	// Identity resolution and session-creation metadata share one persisted
+	// registry but remain separate lookup paths: creation# records never resolve
+	// a person.
 	resolved, links := resolveGroups(groups, stored)
 
 	// Chaining metadata for parent sessions ingested in a prior invocation:
@@ -180,6 +184,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 	for _, rg := range resolved {
 		var chainL, loginL, mcpL *link
+		creationTags := sessionCreationTags(links, rg.group)
 		var winSlots map[int]windowSlot
 		if rg.ok {
 			chainL = lookupLinkKind(links, rg.group, linkChain)
@@ -262,10 +267,11 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 						if chainL != nil {
 							sess.AssumedFromSession = chainL.parentSessionRef
 							sess.AssumedFromRoleARN = chainL.parentRoleARN
-							sess.SessionTags = chainL.sessionTags
+							sess.SessionTags = mergeSessionTagMaps(sess.SessionTags, chainL.sessionTags)
 							sess.SessionPolicy = chainL.sessionPolicy
 							sess.HasSessionPolicy = chainL.hasSessionPolicy
 						}
+						sess.SessionTags = mergeSessionTagMaps(sess.SessionTags, creationTags)
 						if mcpL != nil {
 							sess.MCPResource = mcpL.mcpResource
 							sess.AgentAuthorizedBySession = mcpL.parentSessionRef
@@ -279,6 +285,10 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 						// gap" in TODO.md.
 						sessions[sessRef] = sess
 					}
+					// Multiple credential groups can converge on one deterministic
+					// session, so apply metadata on every path into the map.
+					sess.SessionTags = mergeSessionTagMaps(sess.SessionTags, creationTags)
+					registerCreationTarget(links, event, sessRef)
 					accumulateSessionEvent(sess, event, resourceList)
 					addToSet(sessionServices, sessRef, event.EventSource)
 					if chainL != nil {
@@ -407,6 +417,10 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		}
 	}
 
+	// CloudTrail delivers regional files independently. A completed creation#
+	// record may therefore name sessions written by an earlier invocation.
+	lateSessionTagUpdates := collectLateSessionTagUpdates(links, sessions)
+
 	// Symmetric grant refs: record each aws-login/MCP-attributed session on the
 	// session that authorized its credentials, mirroring role chaining's
 	// parent→child refs so "what did this session authorize?" is answerable
@@ -485,6 +499,15 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		return sessions, nil
 	}
 
+	// Correlation is required for later files to resolve and receive creation
+	// metadata. Persist it before aggregate writes so a link failure cannot be
+	// hidden behind a successful batch.
+	if cfg.Tables.IdentityLinks != "" {
+		if err := writeIdentityLinks(ctx, ddbClient, cfg.Tables.IdentityLinks, links); err != nil {
+			return sessions, fmt.Errorf("write correlation links: %w", err)
+		}
+	}
+
 	// Entity writes run concurrently within each type. Each map is keyed by the
 	// item's natural DynamoDB key, so no two writes in a batch hit the same item;
 	// each write logs its own error and never aborts the batch (unchanged from the
@@ -544,10 +567,12 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 		}
 	})
 
-	// Persist identity links so later batches can resolve tier 2 and keep anchor
-	// continuity (the read side lands with the §5 link-layer port).
-	if cfg.Tables.IdentityLinks != "" {
-		writeIdentityLinks(ctx, ddbClient, cfg.Tables.IdentityLinks, links)
+	if cfg.Tables.Sessions != "" {
+		for sessionRef, tags := range lateSessionTagUpdates {
+			if err := ddblib.UpdateSessionTags(ctx, ddbClient, cfg.Tables.Sessions, ns, sessionRef, tags); err != nil {
+				log.Printf("ERROR: Failed to update session tags from late creation metadata: %v", err)
+			}
+		}
 	}
 
 	// Flush deferred parent chaining updates (parents ingested in prior batches).
