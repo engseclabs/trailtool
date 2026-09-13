@@ -24,8 +24,7 @@ const (
 	RelationKindService  = "service"
 	RelationKindResource = "resource"
 
-	RelationSummarySK  = "_summary"
-	relationMaxRetries = 3
+	RelationSummarySK = "_summary"
 )
 
 var relationKinds = []string{
@@ -126,7 +125,12 @@ func writeRelation(ctx context.Context, store RelationStore, tableName string, r
 	}
 
 	var lastErr error
-	for attempt := 0; attempt <= relationMaxRetries; attempt++ {
+	for attempt := 0; attempt < transactionMaxAttempts; attempt++ {
+		if attempt > 0 {
+			if err := waitForTransactionRetry(ctx, attempt); err != nil {
+				return err
+			}
+		}
 		_, err = store.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
 			TransactItems: []ddbtypes.TransactWriteItem{
 				{Put: &ddbtypes.Put{
@@ -151,7 +155,7 @@ func writeRelation(ctx context.Context, store RelationStore, tableName string, r
 		if err == nil {
 			return nil
 		}
-		if !isTransactionCancellation(err) {
+		if !isTransactionCancellation(err) && !isTransactionConflict(err) {
 			return fmt.Errorf("write relation %s/%s: %w", relation.PK, relation.SK, err)
 		}
 		lastErr = err
@@ -165,8 +169,8 @@ func writeRelation(ctx context.Context, store RelationStore, tableName string, r
 		}
 	}
 
-	return fmt.Errorf("write relation %s/%s did not converge after %d retries: %w",
-		relation.PK, relation.SK, relationMaxRetries, lastErr)
+	return fmt.Errorf("write relation %s/%s did not converge after %d attempts: %w",
+		relation.PK, relation.SK, transactionMaxAttempts, lastErr)
 }
 
 func validateRelation(relation types.DynamoDBRelation) error {
@@ -210,10 +214,13 @@ func ensureRelationSummary(ctx context.Context, store RelationStore, tableName s
 		return fmt.Errorf("marshal relation summary: %w", err)
 	}
 
-	_, err = store.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName:           aws.String(tableName),
-		Item:                item,
-		ConditionExpression: aws.String("attribute_not_exists(pk) AND attribute_not_exists(sk)"),
+	err = retryTransactionConflict(ctx, func() error {
+		_, err := store.PutItem(ctx, &dynamodb.PutItemInput{
+			TableName:           aws.String(tableName),
+			Item:                item,
+			ConditionExpression: aws.String("attribute_not_exists(pk) AND attribute_not_exists(sk)"),
+		})
+		return err
 	})
 	if err != nil && !isConditionalCheckFailure(err) {
 		return fmt.Errorf("create relation summary %s: %w", relation.PK, err)
@@ -258,19 +265,22 @@ func updateRelationBounds(ctx context.Context, store RelationStore, tableName st
 }
 
 func updateRelationBoundary(ctx context.Context, store RelationStore, tableName string, relation types.DynamoDBRelation, name, value, comparison string) error {
-	_, err := store.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName:        aws.String(tableName),
-		Key:              relationKey(relation.PK, relation.SK),
-		UpdateExpression: aws.String("SET #boundary = :value"),
-		ConditionExpression: aws.String(
-			"attribute_not_exists(#boundary) OR #boundary " + comparison + " :value",
-		),
-		ExpressionAttributeNames: map[string]string{
-			"#boundary": name,
-		},
-		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-			":value": &ddbtypes.AttributeValueMemberS{Value: value},
-		},
+	err := retryTransactionConflict(ctx, func() error {
+		_, err := store.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+			TableName:        aws.String(tableName),
+			Key:              relationKey(relation.PK, relation.SK),
+			UpdateExpression: aws.String("SET #boundary = :value"),
+			ConditionExpression: aws.String(
+				"attribute_not_exists(#boundary) OR #boundary " + comparison + " :value",
+			),
+			ExpressionAttributeNames: map[string]string{
+				"#boundary": name,
+			},
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+				":value": &ddbtypes.AttributeValueMemberS{Value: value},
+			},
+		})
+		return err
 	})
 	if err != nil && !isConditionalCheckFailure(err) {
 		return fmt.Errorf("update relation %s boundary: %w", name, err)

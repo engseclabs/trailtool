@@ -74,7 +74,7 @@ func windowsMergeable(aStart, aEnd, bStart, bEnd string, idleGap time.Duration) 
 // WriteWindowedSession merges a windowed (win#) session into DynamoDB — the only
 // write path where time guesses and optimistic locking are load-bearing (§3.2):
 // fetch potentially-adjacent windows in one Query (±2×idleGap), extend/fold
-// overlapping runs, write back conditionally on version, retry ≤3 on conflict.
+// overlapping runs, write back conditionally on version, retry on contention.
 // A fold that deletes records runs as one transaction so a concurrent writer can
 // never observe (or double-merge) a partially applied fold.
 func WriteWindowedSession(ctx context.Context, ddbClient SessionStore, tableName string, session *types.DynamoDBSession, idleGap time.Duration) error {
@@ -85,9 +85,13 @@ func WriteWindowedSession(ctx context.Context, ddbClient SessionStore, tableName
 // WriteWindowedSessionResolved writes a windowed session and returns the
 // persisted survivor, whose sticky SK may differ from the incoming batch key.
 func WriteWindowedSessionResolved(ctx context.Context, ddbClient SessionStore, tableName string, session *types.DynamoDBSession, idleGap time.Duration) (*types.DynamoDBSession, error) {
-	const maxRetries = 3
 	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt < transactionMaxAttempts; attempt++ {
+		if attempt > 0 {
+			if err := waitForTransactionRetry(ctx, attempt); err != nil {
+				return nil, err
+			}
+		}
 		existing, err := queryAdjacentWindows(ctx, ddbClient, tableName, session, idleGap)
 		if err != nil {
 			return nil, fmt.Errorf("query adjacent windows: %w", err)
@@ -102,12 +106,12 @@ func WriteWindowedSessionResolved(ctx context.Context, ddbClient SessionStore, t
 		if err == nil {
 			return merged, nil
 		}
-		if !isVersionConflict(err) {
+		if !isVersionConflict(err) && !isTransactionConflict(err) {
 			return nil, err
 		}
-		lastErr = err // concurrent writer got there first — re-read and converge
+		lastErr = err // another writer won or is still in flight; re-read and converge
 	}
-	return nil, fmt.Errorf("windowed session write did not converge after %d retries: %w", maxRetries, lastErr)
+	return nil, fmt.Errorf("windowed session write did not converge after %d attempts: %w", transactionMaxAttempts, lastErr)
 }
 
 // transactFoldWindows applies a fold atomically: the merged survivor is written
