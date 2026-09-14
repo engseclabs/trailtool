@@ -150,8 +150,8 @@ func TestConsoleSessionOneWebSession(t *testing.T) {
 		// Only one event carries onBehalfOf (C1) — the group resolves tier 1.
 		if i == 3 {
 			e.UserIdentity.OnBehalfOf = &types.OnBehalfOf{
-				UserID:           "94482488-3041-7098-e2a1-4d3c9c7e0b21",
-				IdentityStoreARN: "arn:aws:identitystore::278835131762:identitystore/d-9967750e0f",
+				UserID:           "00000000-0000-4000-8000-000000000002",
+				IdentityStoreARN: "arn:aws:identitystore::000000000000:identitystore/d-0000000001",
 			}
 		}
 		events = append(events, e)
@@ -166,8 +166,8 @@ func TestConsoleSessionOneWebSession(t *testing.T) {
 		t.Fatalf("got %d sessions, want 1 (per-request keys must not split a console session); keys: %v", len(sessions), sessionKeys(sessions))
 	}
 	personKey := identity.IdentityCenterPersonKey(
-		"arn:aws:identitystore::278835131762:identitystore/d-9967750e0f",
-		"94482488-3041-7098-e2a1-4d3c9c7e0b21")
+		"arn:aws:identitystore::000000000000:identitystore/d-0000000001",
+		"00000000-0000-4000-8000-000000000002")
 	sess := sessions[ref(personKey, "web#"+roleID+"#"+creationDate, roleID)]
 	if sess == nil {
 		t.Fatalf("expected web# session under the tier-1 person; keys: %v", sessionKeys(sessions))
@@ -296,15 +296,15 @@ func TestInvokedByServiceDriven(t *testing.T) {
 // shatter into one key# session per request key.
 func TestServiceFanOutJoinsOriginatingSession(t *testing.T) {
 	const (
-		email        = "alex@engseclabs.com"
-		roleID       = "AROAUB266OVZCWROZTVQR"
-		roleARN      = "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_AdministratorAccess_78658cb1063311db"
-		humanKey     = "ASIAUB266OVZCKEQQ6MH"
+		email        = "test-user@example.invalid"
+		roleID       = "AROAEXAMPLE0000000000"
+		roleARN      = "arn:aws:iam::000000000000:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_TestAccess_0000000000000000"
+		humanKey     = "ASIAEXAMPLE000000003"
 		creationDate = "2026-07-17T20:43:51Z"
-		accountID    = "278835131762"
+		accountID    = "000000000000"
 	)
 	principal := roleID + ":" + email
-	stsARN := "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_AdministratorAccess_78658cb1063311db/" + email
+	stsARN := "arn:aws:sts::000000000000:assumed-role/AWSReservedSSO_TestAccess_0000000000000000/" + email
 
 	humanEvent := types.CloudTrailRecord{
 		EventTime:   "2026-07-17T20:43:52Z",
@@ -319,8 +319,8 @@ func TestServiceFanOutJoinsOriginatingSession(t *testing.T) {
 			AccessKeyID:    humanKey,
 			SessionContext: makeSessionContext(creationDate, roleARN),
 			OnBehalfOf: &types.OnBehalfOf{
-				UserID:           "94482488-3041-7098-e2a1-4d3c9c7e0b21",
-				IdentityStoreARN: "arn:aws:identitystore::278835131762:identitystore/d-9967750e0f",
+				UserID:           "00000000-0000-4000-8000-000000000002",
+				IdentityStoreARN: "arn:aws:identitystore::000000000000:identitystore/d-0000000001",
 			},
 		},
 	}
@@ -341,8 +341,8 @@ func TestServiceFanOutJoinsOriginatingSession(t *testing.T) {
 				InvokedBy:      "cloudformation.amazonaws.com",
 				SessionContext: makeSessionContext(creationDate, roleARN),
 				OnBehalfOf: &types.OnBehalfOf{
-					UserID:           "94482488-3041-7098-e2a1-4d3c9c7e0b21",
-					IdentityStoreARN: "arn:aws:identitystore::278835131762:identitystore/d-9967750e0f",
+					UserID:           "00000000-0000-4000-8000-000000000002",
+					IdentityStoreARN: "arn:aws:identitystore::000000000000:identitystore/d-0000000001",
 				},
 			},
 		}
@@ -365,8 +365,8 @@ func TestServiceFanOutJoinsOriginatingSession(t *testing.T) {
 			len(sessions), sessionKeys(sessions))
 	}
 	personKey := identity.IdentityCenterPersonKey(
-		"arn:aws:identitystore::278835131762:identitystore/d-9967750e0f",
-		"94482488-3041-7098-e2a1-4d3c9c7e0b21")
+		"arn:aws:identitystore::000000000000:identitystore/d-0000000001",
+		"00000000-0000-4000-8000-000000000002")
 	sess := sessions[ref(personKey, "key#"+humanKey, roleID)]
 	if sess == nil {
 		t.Fatalf("expected the human's key# session; keys: %v", sessionKeys(sessions))
@@ -390,15 +390,15 @@ func TestServiceFanOutJoinsOriginatingSession(t *testing.T) {
 // link must never hijack the console session into a CLI-typed one.
 func TestConsoleBootstrapJoinsWebSession(t *testing.T) {
 	const (
-		email        = "alex@engseclabs.com"
-		roleID       = "AROAUB266OVZNNBCMBRFT"
-		roleARN      = "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_SandboxPowerUser_50d858085657c5c1"
+		email        = "test-user@example.invalid"
+		roleID       = "AROAEXAMPLE0000000001"
+		roleARN      = "arn:aws:iam::000000000000:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_TestPowerUser_0000000000000001"
 		creationDate = "2026-07-19T03:02:31Z"
-		bootstrapKey = "ASIAUB266OVZHFKSLYSX"
+		bootstrapKey = "ASIAEXAMPLE000000004"
 		browserUA    = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15"
 	)
 	principal := roleID + ":" + email
-	stsARN := "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_SandboxPowerUser_50d858085657c5c1/" + email
+	stsARN := "arn:aws:sts::000000000000:assumed-role/AWSReservedSSO_TestPowerUser_0000000000000001/" + email
 
 	newEvent := func(eventTime, name, source, accessKey, flag string) types.CloudTrailRecord {
 		e := types.CloudTrailRecord{
@@ -410,7 +410,7 @@ func TestConsoleBootstrapJoinsWebSession(t *testing.T) {
 				Type:           "AssumedRole",
 				PrincipalID:    principal,
 				ARN:            stsARN,
-				AccountID:      "278835131762",
+				AccountID:      "000000000000",
 				AccessKeyID:    accessKey,
 				SessionContext: makeSessionContext(creationDate, roleARN),
 			},
@@ -435,7 +435,7 @@ func TestConsoleBootstrapJoinsWebSession(t *testing.T) {
 			Type:        "AssumedRole",
 			PrincipalID: principal,
 			ARN:         stsARN,
-			AccountID:   "278835131762",
+			AccountID:   "000000000000",
 		},
 	}
 
@@ -476,9 +476,9 @@ func TestConsoleBootstrapJoinsWebSession(t *testing.T) {
 // batch) must not re-anchor the flagged console traffic.
 func TestPoisonedCredLinkCannotHijackConsole(t *testing.T) {
 	const (
-		email        = "alex@engseclabs.com"
-		roleID       = "AROAUB266OVZNNBCMBRFT"
-		roleARN      = "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_SandboxPowerUser_50d858085657c5c1"
+		email        = "test-user@example.invalid"
+		roleID       = "AROAEXAMPLE0000000001"
+		roleARN      = "arn:aws:iam::000000000000:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_TestPowerUser_0000000000000001"
 		creationDate = "2026-07-19T03:02:31Z"
 	)
 	principal := roleID + ":" + email
@@ -487,7 +487,7 @@ func TestPoisonedCredLinkCannotHijackConsole(t *testing.T) {
 		"cred#" + principal + "#" + creationDate: {
 			kind:      linkCred,
 			personKey: "email#" + email,
-			anchor:    "key#ASIAUB266OVZHFKSLYSX",
+			anchor:    "key#ASIAEXAMPLE000000004",
 			stored:    true,
 			pks:       []string{"cred#" + principal + "#" + creationDate},
 		},
@@ -501,8 +501,8 @@ func TestPoisonedCredLinkCannotHijackConsole(t *testing.T) {
 		UserIdentity: types.UserIdentity{
 			Type:           "AssumedRole",
 			PrincipalID:    principal,
-			ARN:            "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_SandboxPowerUser_50d858085657c5c1/" + email,
-			AccountID:      "278835131762",
+			ARN:            "arn:aws:sts::000000000000:assumed-role/AWSReservedSSO_TestPowerUser_0000000000000001/" + email,
+			AccountID:      "000000000000",
 			AccessKeyID:    "ASIAPERREQ000000009",
 			SessionContext: makeSessionContext(creationDate, roleARN),
 		},
@@ -537,11 +537,11 @@ func TestSAMLFederationPingsSkipped(t *testing.T) {
 			UserAgent:   "aws-sdk-java/2.46.18",
 			UserIdentity: types.UserIdentity{
 				Type:        "SAMLUser",
-				PrincipalID: "4xZXicN6TGyAaMwC5tBBs8KGuSg=:alex@engseclabs.com",
-				UserName:    "alex@engseclabs.com",
+				PrincipalID: "EXAMPLEOPAQUENAMEID=:test-user@example.invalid",
+				UserName:    "test-user@example.invalid",
 			},
 			RequestParameters: map[string]interface{}{
-				"roleArn": "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_AdministratorAccess_78658cb1063311db",
+				"roleArn": "arn:aws:iam::000000000000:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_TestAccess_0000000000000000",
 			},
 		}
 	}

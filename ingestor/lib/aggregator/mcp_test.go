@@ -314,17 +314,17 @@ func TestMCPAgentFixture(t *testing.T) {
 	if agentSess.MCPResource != "https://aws-mcp.us-east-1.api.aws/mcp" {
 		t.Errorf("MCPResource = %q, want the real us-east-1 MCP server resource", agentSess.MCPResource)
 	}
-	const wantArn = "arn:aws:signin:us-east-1:278835131762:session/a90e1d90-b08a-4ecf-ac06-e45576d13b98"
+	const wantArn = "arn:aws:signin:us-east-1:000000000000:session/00000000-0000-4000-8000-000000000010"
 	if agentSess.SignInSessionArn != wantArn {
 		t.Errorf("SignInSessionArn = %q, want the real captured arn", agentSess.SignInSessionArn)
 	}
 	if agentSess.Anchor != "sis#"+wantArn {
 		t.Errorf("Anchor = %q, want sis#%s", agentSess.Anchor, wantArn)
 	}
-	if agentSess.PersonKey != "email#alex@engseclabs.com" {
-		t.Errorf("PersonKey = %q, want email#alex@engseclabs.com", agentSess.PersonKey)
+	if agentSess.PersonKey != "email#test-user@example.invalid" {
+		t.Errorf("PersonKey = %q, want email#test-user@example.invalid", agentSess.PersonKey)
 	}
-	if !strings.HasPrefix(agentSess.AgentAuthorizedBySession, "email#alex@engseclabs.com|") {
+	if !strings.HasPrefix(agentSess.AgentAuthorizedBySession, "email#test-user@example.invalid|") {
 		t.Errorf("AgentAuthorizedBySession = %q, want a ref under the authorizing person", agentSess.AgentAuthorizedBySession)
 	}
 	// Both agent events (CallReadWriteTool + ListUsers) aggregate here; the
@@ -345,19 +345,19 @@ func TestMCPAgentFixture(t *testing.T) {
 // agent points back at the human, and the human lists both as granted.
 func TestTwoAgentsUnderOneConsoleSession(t *testing.T) {
 	const (
-		email        = "alex@engseclabs.com"
-		roleID       = "AROAUB266OVZCWROZTVQR"
-		roleARN      = "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_AdministratorAccess_78658cb1063311db"
-		accountID    = "278835131762"
+		email        = "test-user@example.invalid"
+		roleID       = "AROAEXAMPLE0000000000"
+		roleARN      = "arn:aws:iam::000000000000:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_TestAccess_0000000000000000"
+		accountID    = "000000000000"
 		creationDate = "2026-07-20T20:02:06Z" // shared by console + both agents
 		mcpResource  = "https://aws-mcp.us-east-1.api.aws/mcp"
-		arnA         = "arn:aws:signin:us-east-1:278835131762:session/758bfa40-dfc0-4094-8c2d-6a3a6bd78222"
-		arnB         = "arn:aws:signin:us-east-1:278835131762:session/7aa5faf9-bfc1-4518-8cdf-bb090ef4a2a2"
-		storeARN     = "arn:aws:identitystore::843363563907:identitystore/d-9a675246c6"
-		userID       = "11fb6570-3051-707e-a14f-d5a0d1f455fe"
+		arnA         = "arn:aws:signin:us-east-1:000000000000:session/00000000-0000-4000-8000-000000000011"
+		arnB         = "arn:aws:signin:us-east-1:000000000000:session/00000000-0000-4000-8000-000000000012"
+		storeARN     = "arn:aws:identitystore::000000000001:identitystore/d-0000000000"
+		userID       = "00000000-0000-4000-8000-000000000001"
 	)
 	principal := roleID + ":" + email
-	stsARN := "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_AdministratorAccess_78658cb1063311db/" + email
+	stsARN := "arn:aws:sts::000000000000:assumed-role/AWSReservedSSO_TestAccess_0000000000000000/" + email
 	obo := &types.OnBehalfOf{UserID: userID, IdentityStoreARN: storeARN}
 
 	// A browser console event (flagged), establishing the web# session.

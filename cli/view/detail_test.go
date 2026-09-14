@@ -143,7 +143,7 @@ func TestSessionOverviewVerboseShowsInternalIdentifiers(t *testing.T) {
 }
 
 func TestSessionOverviewRendersConciseIAMUser(t *testing.T) {
-	const key = "iamuser#arn:aws:iam::278835131762:user/testing-trailtool"
+	const key = "iamuser#arn:aws:iam::000000000000:user/testing-trailtool"
 	sess := &models.Session{
 		PersonKey: key,
 		SK:        "win#role#2026-07-26T00:00:00Z",

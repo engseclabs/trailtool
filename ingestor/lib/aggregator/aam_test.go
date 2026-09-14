@@ -10,26 +10,28 @@ import (
 
 const (
 	aamEventTime     = "2026-08-21T21:05:11Z"
-	aamRoleID        = "AROAUB266OVZC6VMQXKX"
-	aamSessionName   = "11fb6570-3051-707e-a14f-d5a0d1f455fe"
+	aamRoleID        = "AROAEXAMPLE0000000002"
+	aamSessionName   = "00000000-0000-4000-8000-000000000001"
 	aamPrincipalID   = aamRoleID + ":" + aamSessionName
-	aamRoleARN       = "arn:aws:iam::278835131762:role/aam-test-role"
-	aamStoreARN      = "arn:aws:identitystore::843363563907:identitystore/d-9a675246c6"
-	aamUserID        = "11fb6570-3051-707e-a14f-d5a0d1f455fe"
+	aamRoleARN       = "arn:aws:iam::000000000000:role/aam-test-role"
+	aamStoreARN      = "arn:aws:identitystore::000000000001:identitystore/d-0000000000"
+	aamUserID        = "00000000-0000-4000-8000-000000000001"
 	aamDownstreamKey = "ASIAAAMDOWNSTREAM001"
 )
 
+// Identifiers in this file are synthetic; AWS-shaped values use EXAMPLE or
+// zero-filled components so they cannot be mistaken for deployable credentials.
 var aamTags = map[string]string{
-	"email":      "alex@engseclabs.com",
+	"email":      "test-user@example.invalid",
 	"department": "security",
 }
 
-// aamAssumeRoleEvent models the service-side STS event observed for a real
+// aamAssumeRoleEvent models the service-side STS event observed for an
 // Account Access Management login. Its AWSService identity cannot resolve to a
 // human on its own; the response identifies the session that receives tags.
 func aamAssumeRoleEvent() types.CloudTrailRecord {
 	return types.CloudTrailRecord{
-		EventID:     "817f088a-3ad8-3c07-a405-5639719b1532",
+		EventID:     "00000000-0000-4000-8000-000000000201",
 		EventTime:   aamEventTime,
 		EventName:   "AssumeRole",
 		EventSource: "sts.amazonaws.com",
@@ -53,7 +55,7 @@ func aamAssumeRoleEvent() types.CloudTrailRecord {
 			},
 			"assumedRoleUser": map[string]interface{}{
 				"assumedRoleId": aamPrincipalID,
-				"arn":           "arn:aws:sts::278835131762:assumed-role/aam-test-role/" + aamSessionName,
+				"arn":           "arn:aws:sts::000000000000:assumed-role/aam-test-role/" + aamSessionName,
 			},
 		},
 	}
@@ -71,8 +73,8 @@ func aamIdentity(console bool, accessKey string) types.UserIdentity {
 	return types.UserIdentity{
 		Type:           "AssumedRole",
 		PrincipalID:    aamPrincipalID,
-		ARN:            "arn:aws:sts::278835131762:assumed-role/aam-test-role/" + aamSessionName,
-		AccountID:      "278835131762",
+		ARN:            "arn:aws:sts::000000000000:assumed-role/aam-test-role/" + aamSessionName,
+		AccountID:      "000000000000",
 		AccessKeyID:    accessKey,
 		SessionContext: aamSessionContext(console),
 		OnBehalfOf: &types.OnBehalfOf{
@@ -84,7 +86,7 @@ func aamIdentity(console bool, accessKey string) types.UserIdentity {
 
 func aamDownstreamEvent() types.CloudTrailRecord {
 	return types.CloudTrailRecord{
-		EventID:         "21591002-83dc-4d32-b006-426096aa0315",
+		EventID:         "00000000-0000-4000-8000-000000000202",
 		EventTime:       "2026-08-21T21:05:14Z",
 		EventName:       "ListBuckets",
 		EventSource:     "s3.amazonaws.com",
@@ -215,7 +217,7 @@ func TestStoredAAMTagsPropagateToDerivedLoginSession(t *testing.T) {
 
 func aamLoginEvents() (types.CloudTrailRecord, types.CloudTrailRecord) {
 	grant := types.CloudTrailRecord{
-		EventID:      "46e219f2-2b07-4bd1-85ff-7d2c270131c6",
+		EventID:      "00000000-0000-4000-8000-000000000203",
 		EventTime:    "2026-08-21T21:06:00Z",
 		EventName:    "CreateOAuth2Token",
 		EventSource:  "signin.amazonaws.com",
@@ -223,7 +225,7 @@ func aamLoginEvents() (types.CloudTrailRecord, types.CloudTrailRecord) {
 		UserIdentity: aamIdentity(true, ""),
 	}
 	vended := types.CloudTrailRecord{
-		EventID:      "49acec47-a1e8-44cf-aafe-334aaea2e229",
+		EventID:      "00000000-0000-4000-8000-000000000204",
 		EventTime:    "2026-08-21T21:06:10Z",
 		EventName:    "GetCallerIdentity",
 		EventSource:  "sts.amazonaws.com",

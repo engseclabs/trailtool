@@ -20,26 +20,26 @@ func TestCloudTrailRecordIdentityFieldsUnmarshal(t *testing.T) {
 		"eventName": "ListBuckets",
 		"eventSource": "s3.amazonaws.com",
 		"awsRegion": "us-east-1",
-		"recipientAccountId": "278835131762",
+		"recipientAccountId": "000000000000",
 		"userIdentity": {
 			"type": "AssumedRole",
-			"principalId": "AROAUB266OVZCWROZTVQR:alex@engseclabs.com",
-			"arn": "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_AdministratorAccess_78658cb1063311db/alex@engseclabs.com",
-			"accountId": "278835131762",
-			"accessKeyId": "ASIAUB266OVZINNJCXNU",
-			"userName": "alex",
+			"principalId": "AROAEXAMPLE0000000000:test-user@example.invalid",
+			"arn": "arn:aws:sts::000000000000:assumed-role/AWSReservedSSO_TestAccess_0000000000000000/test-user@example.invalid",
+			"accountId": "000000000000",
+			"accessKeyId": "ASIAEXAMPLE000000002",
+			"userName": "test-user",
 			"invokedBy": "cloudformation.amazonaws.com",
 			"credentialId": "EXAMPLEcredentialId1234567890abcdef",
 			"onBehalfOf": {
-				"userId": "94482488-3041-7098-e2a1-4d3c9c7e0b21",
-				"identityStoreArn": "arn:aws:identitystore::278835131762:identitystore/d-9967750e0f"
+				"userId": "00000000-0000-4000-8000-000000000002",
+				"identityStoreArn": "arn:aws:identitystore::000000000000:identitystore/d-0000000001"
 			},
 			"sessionContext": {
 				"attributes": {
 					"creationDate": "2026-07-15T09:58:00Z",
 					"mfaAuthenticated": "false"
 				},
-				"sourceIdentity": "alex@engseclabs.com"
+				"sourceIdentity": "test-user@example.invalid"
 			}
 		}
 	}`)
@@ -55,7 +55,7 @@ func TestCloudTrailRecordIdentityFieldsUnmarshal(t *testing.T) {
 	if got, want := rec.AwsRegion, "us-east-1"; got != want {
 		t.Errorf("AwsRegion = %q, want %q", got, want)
 	}
-	if got, want := rec.RecipientAccountID, "278835131762"; got != want {
+	if got, want := rec.RecipientAccountID, "000000000000"; got != want {
 		t.Errorf("RecipientAccountID = %q, want %q", got, want)
 	}
 
@@ -63,13 +63,13 @@ func TestCloudTrailRecordIdentityFieldsUnmarshal(t *testing.T) {
 	if ui.OnBehalfOf == nil {
 		t.Fatal("OnBehalfOf is nil; onBehalfOf was dropped during unmarshal")
 	}
-	if got, want := ui.OnBehalfOf.UserID, "94482488-3041-7098-e2a1-4d3c9c7e0b21"; got != want {
+	if got, want := ui.OnBehalfOf.UserID, "00000000-0000-4000-8000-000000000002"; got != want {
 		t.Errorf("OnBehalfOf.UserID = %q, want %q", got, want)
 	}
-	if got, want := ui.OnBehalfOf.IdentityStoreARN, "arn:aws:identitystore::278835131762:identitystore/d-9967750e0f"; got != want {
+	if got, want := ui.OnBehalfOf.IdentityStoreARN, "arn:aws:identitystore::000000000000:identitystore/d-0000000001"; got != want {
 		t.Errorf("OnBehalfOf.IdentityStoreARN = %q, want %q", got, want)
 	}
-	if got, want := ui.UserName, "alex"; got != want {
+	if got, want := ui.UserName, "test-user"; got != want {
 		t.Errorf("UserName = %q, want %q", got, want)
 	}
 	if got, want := ui.InvokedBy, "cloudformation.amazonaws.com"; got != want {
@@ -81,7 +81,7 @@ func TestCloudTrailRecordIdentityFieldsUnmarshal(t *testing.T) {
 	if ui.SessionContext == nil {
 		t.Fatal("SessionContext is nil")
 	}
-	if got, want := ui.SessionContext.SourceIdentity, "alex@engseclabs.com"; got != want {
+	if got, want := ui.SessionContext.SourceIdentity, "test-user@example.invalid"; got != want {
 		t.Errorf("SessionContext.SourceIdentity = %q, want %q", got, want)
 	}
 }
@@ -92,8 +92,8 @@ func TestCloudTrailRecordIdentityFieldsUnmarshal(t *testing.T) {
 func TestUserIdentityIdentityFieldsAbsent(t *testing.T) {
 	blob := []byte(`{
 		"type": "AssumedRole",
-		"principalId": "AROAUB266OVZCWROZTVQR:alex@engseclabs.com",
-		"arn": "arn:aws:sts::278835131762:assumed-role/Role/alex@engseclabs.com",
+		"principalId": "AROAEXAMPLE0000000000:test-user@example.invalid",
+		"arn": "arn:aws:sts::000000000000:assumed-role/Role/test-user@example.invalid",
 		"sessionContext": {
 			"attributes": {"creationDate": "2026-07-15T09:58:00Z"}
 		}

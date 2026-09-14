@@ -121,7 +121,7 @@ func ExtractAssumedRoleARN(event types.CloudTrailRecord) string {
 // CloudTrail shapes:
 //
 //	AssumeRole:         requestParameters.tags = [{key: "AgentName", value: "claude-code"}, ...]
-//	AssumeRoleWithSAML: requestParameters.principalTags = {"email": "alex@example.com", ...}
+//	AssumeRoleWithSAML: requestParameters.principalTags = {"email": "test-user@example.invalid", ...}
 //
 // Returns nil for other event types or when no tags were recorded.
 func ExtractSessionTags(event types.CloudTrailRecord) map[string]string {

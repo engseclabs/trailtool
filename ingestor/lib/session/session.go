@@ -14,7 +14,7 @@ import (
 )
 
 // ExtractEmailFromPrincipalID extracts email from principalId
-// Example: "AROAIDPPEZS35WEXAMPLE:me@alexsmolen.com" -> "me@alexsmolen.com"
+// Example: "AROAIDPPEZS35WEXAMPLE:test-user@example.invalid" -> "test-user@example.invalid"
 // Only returns values that contain @ to filter out Lambda functions, UUIDs, etc.
 func ExtractEmailFromPrincipalID(principalID string) string {
 	parts := strings.Split(principalID, ":")
@@ -29,7 +29,7 @@ func ExtractEmailFromPrincipalID(principalID string) string {
 }
 
 // ExtractRoleIDFromPrincipalID extracts role ID from principalId
-// Example: "AROAIDPPEZS35WEXAMPLE:me@alexsmolen.com" -> "AROAIDPPEZS35WEXAMPLE"
+// Example: "AROAIDPPEZS35WEXAMPLE:test-user@example.invalid" -> "AROAIDPPEZS35WEXAMPLE"
 func ExtractRoleIDFromPrincipalID(principalID string) string {
 	parts := strings.Split(principalID, ":")
 	if len(parts) >= 1 {

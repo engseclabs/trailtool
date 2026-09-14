@@ -361,7 +361,7 @@ func TestUpdateSessionTagsPatchesExistingSessionWithoutCreatingActivity(t *testi
 		PersonKey:   personKey,
 		EventsCount: 7,
 		Version:     3,
-		SessionTags: map[string]string{"email": "alex@example.com"},
+		SessionTags: map[string]string{"email": "test-user@example.invalid"},
 	}
 	item, err := attributevalue.MarshalMap(existing)
 	if err != nil {
@@ -385,7 +385,7 @@ func TestUpdateSessionTagsPatchesExistingSessionWithoutCreatingActivity(t *testi
 	if got.Version != existing.Version+1 {
 		t.Errorf("Version = %d, want %d", got.Version, existing.Version+1)
 	}
-	if got.SessionTags["email"] != "alex@example.com" {
+	if got.SessionTags["email"] != "test-user@example.invalid" {
 		t.Errorf("email tag = %q, want first observed value", got.SessionTags["email"])
 	}
 	if got.SessionTags["department"] != "security" {

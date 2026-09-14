@@ -10,27 +10,29 @@ import (
 
 const (
 	samlEventTime     = "2026-08-20T02:56:50Z"
-	samlRoleID        = "AROAUB266OVZCWROZTVQR"
-	samlSessionName   = "alex@engseclabs.com"
+	samlRoleID        = "AROAEXAMPLE0000000000"
+	samlSessionName   = "test-user@example.invalid"
 	samlPrincipalID   = samlRoleID + ":" + samlSessionName
-	samlRoleARN       = "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_AdministratorAccess_78658cb1063311db"
-	samlStoreARN      = "arn:aws:identitystore::843363563907:identitystore/d-9a675246c6"
-	samlUserID        = "11fb6570-3051-707e-a14f-d5a0d1f455fe"
+	samlRoleARN       = "arn:aws:iam::000000000000:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_TestAccess_0000000000000000"
+	samlStoreARN      = "arn:aws:identitystore::000000000001:identitystore/d-0000000000"
+	samlUserID        = "00000000-0000-4000-8000-000000000001"
 	samlIssuedKey     = "ASIAISSUEDKEY000001"
 	samlDownstreamKey = "ASIADOWNSTREAM00001"
 )
 
+// Identifiers in this file are synthetic; AWS-shaped values use EXAMPLE or
+// zero-filled components so they cannot be mistaken for deployable credentials.
 var samlTags = map[string]string{
-	"email":      "alex@engseclabs.com",
+	"email":      "test-user@example.invalid",
 	"department": "security",
 }
 
-// samlFederationEvent models the relevant fields from a real Identity Center
+// samlFederationEvent models the relevant fields from an Identity Center
 // AssumeRoleWithSAML CloudTrail event. The response key deliberately differs
 // from the key on samlDownstreamEvent, matching the observed AWS behavior.
 func samlFederationEvent() types.CloudTrailRecord {
 	return types.CloudTrailRecord{
-		EventID:     "b5a89fbd-edec-474c-b75d-36bd3c823380",
+		EventID:     "00000000-0000-4000-8000-000000000101",
 		EventTime:   samlEventTime,
 		EventName:   "AssumeRoleWithSAML",
 		EventSource: "sts.amazonaws.com",
@@ -38,7 +40,7 @@ func samlFederationEvent() types.CloudTrailRecord {
 		UserAgent:   "aws-sdk-java/2.46.18",
 		UserIdentity: types.UserIdentity{
 			Type:        "SAMLUser",
-			PrincipalID: "4xZXicN6TGyAaMwC5tBBs8KGuSg=:" + samlSessionName,
+			PrincipalID: "EXAMPLEOPAQUENAMEID=:" + samlSessionName,
 			UserName:    samlSessionName,
 		},
 		RequestParameters: map[string]interface{}{
@@ -55,7 +57,7 @@ func samlFederationEvent() types.CloudTrailRecord {
 			},
 			"assumedRoleUser": map[string]interface{}{
 				"assumedRoleId": samlPrincipalID,
-				"arn":           "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_AdministratorAccess_78658cb1063311db/" + samlSessionName,
+				"arn":           "arn:aws:sts::000000000000:assumed-role/AWSReservedSSO_TestAccess_0000000000000000/" + samlSessionName,
 			},
 		},
 	}
@@ -65,7 +67,7 @@ func samlDownstreamEvent() types.CloudTrailRecord {
 	sc := makeSessionContext(samlEventTime, samlRoleARN)
 	sc.Attributes.SessionCredentialFromConsole = "true"
 	return types.CloudTrailRecord{
-		EventID:     "b5d7aa77-9644-4dac-ac52-a894c1028f10",
+		EventID:     "00000000-0000-4000-8000-000000000102",
 		EventTime:   "2026-08-20T02:56:51Z",
 		EventName:   "AttachRolePolicy",
 		EventSource: "iam.amazonaws.com",
@@ -74,8 +76,8 @@ func samlDownstreamEvent() types.CloudTrailRecord {
 		UserIdentity: types.UserIdentity{
 			Type:           "AssumedRole",
 			PrincipalID:    samlPrincipalID,
-			ARN:            "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_AdministratorAccess_78658cb1063311db/" + samlSessionName,
-			AccountID:      "278835131762",
+			ARN:            "arn:aws:sts::000000000000:assumed-role/AWSReservedSSO_TestAccess_0000000000000000/" + samlSessionName,
+			AccountID:      "000000000000",
 			AccessKeyID:    samlDownstreamKey,
 			SessionContext: sc,
 			OnBehalfOf: &types.OnBehalfOf{
@@ -131,7 +133,7 @@ func TestSAMLPrincipalTagsCorrelateInBatchRegardlessOfEventOrder(t *testing.T) {
 
 func TestSAMLPrincipalTagsDoNotRequireFederationEventIdentityResolution(t *testing.T) {
 	federation := samlFederationEvent()
-	federation.UserIdentity.PrincipalID = "4xZXicN6TGyAaMwC5tBBs8KGuSg=:opaque-name-id"
+	federation.UserIdentity.PrincipalID = "EXAMPLEOPAQUENAMEID=:opaque-name-id"
 	federation.UserIdentity.UserName = "opaque-name-id"
 
 	sessions, err := processForTest([]types.CloudTrailRecord{federation, samlDownstreamEvent()})

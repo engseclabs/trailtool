@@ -19,11 +19,11 @@ func aggregateForTest(events []types.CloudTrailRecord, stored map[string]*link) 
 }
 
 const (
-	xbStoreARN  = "arn:aws:identitystore::278835131762:identitystore/d-9967750e0f"
-	xbUserID    = "94482488-3041-7098-e2a1-4d3c9c7e0b21"
-	xbRoleID    = "AROAUB266OVZCWROZTVQR"
-	xbRoleARN   = "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_AdministratorAccess_78658cb1063311db"
-	xbAccountID = "278835131762"
+	xbStoreARN  = "arn:aws:identitystore::000000000000:identitystore/d-0000000001"
+	xbUserID    = "00000000-0000-4000-8000-000000000002"
+	xbRoleID    = "AROAEXAMPLE0000000000"
+	xbRoleARN   = "arn:aws:iam::000000000000:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_TestAccess_0000000000000000"
+	xbAccountID = "000000000000"
 )
 
 // xbCLIEvent builds a bare CLI event with no onBehalfOf and no email in the
@@ -37,7 +37,7 @@ func xbCLIEvent(eventTime, name, accessKey, creationDate string) types.CloudTrai
 		UserIdentity: types.UserIdentity{
 			Type:           "AssumedRole",
 			PrincipalID:    xbRoleID + ":awsuser",
-			ARN:            "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_AdministratorAccess_78658cb1063311db/awsuser",
+			ARN:            "arn:aws:sts::000000000000:assumed-role/AWSReservedSSO_TestAccess_0000000000000000/awsuser",
 			AccountID:      xbAccountID,
 			AccessKeyID:    accessKey,
 			SessionContext: makeSessionContext(creationDate, xbRoleARN),
@@ -51,7 +51,7 @@ func xbCLIEvent(eventTime, name, accessKey, creationDate string) types.CloudTrai
 // session (anchor continuity).
 func TestCrossBatchCredLinkResolvesPersonAndAnchor(t *testing.T) {
 	personKey := identity.IdentityCenterPersonKey(xbStoreARN, xbUserID)
-	const sisAnchor = "sis#arn:aws:signin:us-east-1:278835131762:session/batch-a-session"
+	const sisAnchor = "sis#arn:aws:signin:us-east-1:000000000000:session/batch-a-session"
 
 	stored := map[string]*link{
 		"cred#ASIAXBATCHCRED00001": {
@@ -105,7 +105,7 @@ func TestCrossBatchAnchorContinuityBeatsCascade(t *testing.T) {
 	}
 
 	e := xbCLIEvent("2026-07-15T10:00:00Z", "ListBuckets", key, "2026-07-15T09:55:00Z")
-	e.UserIdentity.SessionContext.SignInSessionArn = "arn:aws:signin:us-east-1:278835131762:session/late-stamped"
+	e.UserIdentity.SessionContext.SignInSessionArn = "arn:aws:signin:us-east-1:000000000000:session/late-stamped"
 
 	sessions, err := aggregateForTest([]types.CloudTrailRecord{e}, stored)
 	if err != nil {
@@ -187,10 +187,10 @@ func TestCrossBatchChainLinkAttributesChild(t *testing.T) {
 // agent's API calls carry only the signInSessionArn.
 func TestCrossBatchMCPLinkTypesAgent(t *testing.T) {
 	const (
-		personKey   = "email#alex@engseclabs.com"
-		sisArn      = "arn:aws:signin:us-east-1:278835131762:session/xbatch-mcp"
+		personKey   = "email#test-user@example.invalid"
+		sisArn      = "arn:aws:signin:us-east-1:000000000000:session/xbatch-mcp"
 		mcpResource = "https://aws-mcp.us-east-1.api.aws/mcp"
-		humanRef    = "email#alex@engseclabs.com|web#" + xbRoleID + "#2026-07-15T09:00:00Z#" + xbRoleID
+		humanRef    = "email#test-user@example.invalid|web#" + xbRoleID + "#2026-07-15T09:00:00Z#" + xbRoleID
 	)
 
 	stored := map[string]*link{
@@ -275,9 +275,9 @@ func TestCrossBatchFanOutJoinsOriginViaCredLink(t *testing.T) {
 // credential's events match by roleID + creationDate.
 func TestCrossBatchLoginLinkTypesLogin(t *testing.T) {
 	const (
-		personKey = "email#alex@engseclabs.com"
+		personKey = "email#test-user@example.invalid"
 		grantCD   = "2026-07-15T09:55:00Z"
-		parentRef = "email#alex@engseclabs.com|web#" + xbRoleID + "#" + grantCD + "#" + xbRoleID
+		parentRef = "email#test-user@example.invalid|web#" + xbRoleID + "#" + grantCD + "#" + xbRoleID
 	)
 
 	stored := map[string]*link{

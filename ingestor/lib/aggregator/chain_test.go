@@ -153,14 +153,14 @@ func TestExtractSessionTags(t *testing.T) {
 					"tags": []interface{}{
 						map[string]interface{}{"key": "AgentName", "value": "claude-code"},
 						map[string]interface{}{"key": "Task", "value": "deploy-lambda"},
-						map[string]interface{}{"key": "HumanSession", "value": "alex@example.com"},
+						map[string]interface{}{"key": "HumanSession", "value": "test-user@example.invalid"},
 					},
 				},
 			},
 			want: map[string]string{
 				"AgentName":    "claude-code",
 				"Task":         "deploy-lambda",
-				"HumanSession": "alex@example.com",
+				"HumanSession": "test-user@example.invalid",
 			},
 		},
 		{
@@ -180,13 +180,13 @@ func TestExtractSessionTags(t *testing.T) {
 				EventName: "AssumeRoleWithSAML",
 				RequestParameters: map[string]interface{}{
 					"principalTags": map[string]interface{}{
-						"email":      "alex@engseclabs.com",
+						"email":      "test-user@example.invalid",
 						"department": "security",
 					},
 				},
 			},
 			want: map[string]string{
-				"email":      "alex@engseclabs.com",
+				"email":      "test-user@example.invalid",
 				"department": "security",
 			},
 		},
@@ -251,11 +251,11 @@ func TestExtractFullAssumedRoleID(t *testing.T) {
 				"accessKeyId": "ASIAISSUEDKEY000001",
 			},
 			"assumedRoleUser": map[string]interface{}{
-				"assumedRoleId": "AROAUB266OVZCWROZTVQR:alex@engseclabs.com",
+				"assumedRoleId": "AROAEXAMPLE0000000000:test-user@example.invalid",
 			},
 		},
 	}
-	if got, want := ExtractFullAssumedRoleID(event), "AROAUB266OVZCWROZTVQR:alex@engseclabs.com"; got != want {
+	if got, want := ExtractFullAssumedRoleID(event), "AROAEXAMPLE0000000000:test-user@example.invalid"; got != want {
 		t.Fatalf("ExtractFullAssumedRoleID() = %q, want %q", got, want)
 	}
 

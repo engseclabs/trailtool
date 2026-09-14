@@ -306,12 +306,12 @@ func TestMergeResourceAggregatedIsOrderIndependent(t *testing.T) {
 func TestMergePersonPreservesDeniedActivity(t *testing.T) {
 	got := MergePerson(
 		&types.DynamoDBPerson{
-			PersonKey:           "email#alex@example.com",
+			PersonKey:           "email#test-user@example.invalid",
 			DeniedEventCount:    1,
 			TopDeniedEventNames: map[string]int{"s3.amazonaws.com:GetObject": 1},
 		},
 		&types.DynamoDBPerson{
-			PersonKey:           "email#alex@example.com",
+			PersonKey:           "email#test-user@example.invalid",
 			DeniedEventCount:    2,
 			TopDeniedEventNames: map[string]int{"s3.amazonaws.com:GetObject": 2},
 		},
