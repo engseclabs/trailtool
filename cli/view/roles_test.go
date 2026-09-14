@@ -11,7 +11,7 @@ import (
 // IAM users and root have no role by definition, so the column names them by
 // their own identifier rather than going empty.
 func TestSessionRoleLabel(t *testing.T) {
-	const ssoRole = "aws-reserved/sso.amazonaws.com/AWSReservedSSO_Admin_f584bc517c7eb66f"
+	const ssoRole = "aws-reserved/sso.amazonaws.com/AWSReservedSSO_TestAccess_0000000000000000"
 	tests := []struct {
 		name string
 		sess models.Session
@@ -20,13 +20,13 @@ func TestSessionRoleLabel(t *testing.T) {
 	}{
 		{
 			name: "sso role shortens (region-scoped path)",
-			sess: models.Session{RoleName: "aws-reserved/sso.amazonaws.com/us-east-1/AWSReservedSSO_Admin_f584bc517c7eb66f"},
-			want: "Admin",
+			sess: models.Session{RoleName: "aws-reserved/sso.amazonaws.com/us-east-1/AWSReservedSSO_TestAccess_0000000000000000"},
+			want: "TestAccess",
 		},
 		{
 			name: "sso role shortens (no region segment)",
 			sess: models.Session{RoleName: ssoRole},
-			want: "Admin",
+			want: "TestAccess",
 		},
 		{
 			name: "sso role in full when long",
