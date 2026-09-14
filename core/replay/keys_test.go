@@ -75,11 +75,59 @@ func TestParseDate(t *testing.T) {
 }
 
 func TestCloudTrailBaseRequiresAccountAndRegion(t *testing.T) {
-	if _, err := CloudTrailBase("", "us-east-1"); err == nil {
+	if _, err := CloudTrailBase("", "", "", "us-east-1"); err == nil {
 		t.Error("expected error when account missing")
 	}
-	base, err := CloudTrailBase("123", "us-east-1")
-	if err != nil || base != "AWSLogs/123/CloudTrail/us-east-1/" {
-		t.Fatalf("base = %q err %v", base, err)
+	if _, err := CloudTrailBase("", "", "123", ""); err == nil {
+		t.Error("expected error when region missing")
+	}
+}
+
+// The org and key-prefix segments are what an organization trail behind a
+// Control Tower log archive actually uses; getting them wrong lists a prefix
+// that exists but holds nothing, so each shape is pinned here.
+func TestCloudTrailBaseLayouts(t *testing.T) {
+	tests := []struct {
+		name             string
+		keyPrefix, orgID string
+		want             string
+	}{
+		{
+			name: "standard single account",
+			want: "AWSLogs/123/CloudTrail/us-east-1/",
+		},
+		{
+			name:  "organization trail",
+			orgID: "o-abc123",
+			want:  "AWSLogs/o-abc123/123/CloudTrail/us-east-1/",
+		},
+		{
+			name:      "key prefix only",
+			keyPrefix: "trail-logs",
+			want:      "trail-logs/AWSLogs/123/CloudTrail/us-east-1/",
+		},
+		{
+			name:      "control tower: key prefix and org id",
+			keyPrefix: "o-abc123",
+			orgID:     "o-abc123",
+			want:      "o-abc123/AWSLogs/o-abc123/123/CloudTrail/us-east-1/",
+		},
+		{
+			name:      "surrounding slashes are normalized away",
+			keyPrefix: "/o-abc123/",
+			orgID:     "/o-abc123/",
+			want:      "o-abc123/AWSLogs/o-abc123/123/CloudTrail/us-east-1/",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := CloudTrailBase(tt.keyPrefix, tt.orgID, "123", "us-east-1")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("CloudTrailBase() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
