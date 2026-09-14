@@ -18,6 +18,8 @@ type fakeRelationStore struct {
 	summaries           map[string]types.DynamoDBRelationSummary
 	transactionCalls    int
 	transactionFailures int
+	putConflicts        int
+	updateConflicts     int
 }
 
 func newFakeRelationStore() *fakeRelationStore {
@@ -52,6 +54,10 @@ func (s *fakeRelationStore) GetItem(_ context.Context, input *dynamodb.GetItemIn
 }
 
 func (s *fakeRelationStore) PutItem(_ context.Context, input *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	if s.putConflicts > 0 {
+		s.putConflicts--
+		return nil, &ddbtypes.TransactionConflictException{}
+	}
 	sk := input.Item["sk"].(*ddbtypes.AttributeValueMemberS).Value
 	if sk == RelationSummarySK {
 		var summary types.DynamoDBRelationSummary
@@ -74,6 +80,10 @@ func (s *fakeRelationStore) PutItem(_ context.Context, input *dynamodb.PutItemIn
 }
 
 func (s *fakeRelationStore) UpdateItem(_ context.Context, input *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	if s.updateConflicts > 0 {
+		s.updateConflicts--
+		return nil, &ddbtypes.TransactionConflictException{}
+	}
 	key := relationInputKey(input.Key)
 	edge, ok := s.edges[key]
 	if !ok {
@@ -103,7 +113,11 @@ func (s *fakeRelationStore) TransactWriteItems(_ context.Context, input *dynamod
 	s.transactionCalls++
 	if s.transactionFailures > 0 {
 		s.transactionFailures--
-		return nil, &ddbtypes.TransactionCanceledException{Message: stringPointer("retry")}
+		code := "TransactionConflict"
+		return nil, &ddbtypes.TransactionCanceledException{
+			Message:             stringPointer("retry"),
+			CancellationReasons: []ddbtypes.CancellationReason{{Code: &code}},
+		}
 	}
 
 	put := input.TransactItems[0].Put
@@ -213,6 +227,32 @@ func TestWriteRelationRetriesMissingEdgeAfterTransactionConflict(t *testing.T) {
 	}
 	if store.summaries[edge.PK].Counts["roles"] != 1 {
 		t.Fatalf("role count = %d, want 1", store.summaries[edge.PK].Counts["roles"])
+	}
+}
+
+func TestWriteRelationRetriesSummaryAndBoundaryTransactionConflicts(t *testing.T) {
+	store := newFakeRelationStore()
+	store.putConflicts = 2
+	edge := NewRelation(
+		"test",
+		RelationKindAccount,
+		"111111111111",
+		RelationKindService,
+		"s3.amazonaws.com",
+		"2026-07-24T10:00:00Z",
+	)
+	if err := WriteRelation(context.Background(), store, "relations", edge); err != nil {
+		t.Fatalf("create relation through summary conflicts: %v", err)
+	}
+
+	store.updateConflicts = 2
+	replayed := edge
+	replayed.FirstSeen = "2026-07-23T09:00:00Z"
+	if err := WriteRelation(context.Background(), store, "relations", replayed); err != nil {
+		t.Fatalf("update relation through boundary conflicts: %v", err)
+	}
+	if got := store.edges[edge.PK+"\x00"+edge.SK].FirstSeen; got != replayed.FirstSeen {
+		t.Fatalf("FirstSeen = %q, want %q", got, replayed.FirstSeen)
 	}
 }
 
