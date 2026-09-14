@@ -237,11 +237,12 @@ Acceptance scenarios:
 7. Tier 3: SAML role session (`AROA…:alice@example.com`, no `onBehalfOf`) → `email#` person; its issued key is one `key#` session.
 8. Tiers 4/5: IAMUser (`AKIA…`) and Root events → persons under `iamuser#`/`root#`; two bouts 1h apart on one AKIA key → 2 `win#` sessions.
 9. No tier matches (service-internal) → no session; role/service/resource aggregates still written.
-10. Agent credentials rotating under one `signInSessionArn` → 1 `sis#` session; typed `agent` only with an `mcp#` link, else not.
-11. Concurrent web + CLI + agent for one person and role → 3 sessions, correctly typed (channel separation by construction).
-12. `invokedBy` events → included, counted in `service_driven_event_count`, excluded from ClickOps.
-13. Console switch-role: parent web session + `AssumeRole` + child console events → child is one `web#` session with `assumed_from_session` pointing at the parent.
-14. CLI pointed at a pre-1.0 stack → redeploy message, not a raw AWS error.
+10. Identity Center authentication bootstrap events and `GetSigninToken` → no session.
+11. Agent credentials rotating under one `signInSessionArn` → 1 `sis#` session; typed `agent` only with an `mcp#` link, else not.
+12. Concurrent web + CLI + agent for one person and role → 3 sessions, correctly typed (channel separation by construction).
+13. `invokedBy` events → included, counted in `service_driven_event_count`, excluded from ClickOps.
+14. Console switch-role: parent web session + `AssumeRole` + child console events → child is one `web#` session with `assumed_from_session` pointing at the parent.
+15. CLI pointed at a pre-1.0 stack → redeploy message, not a raw AWS error.
 
 ### 9.2 Unit — windowed fallback & idempotency
 

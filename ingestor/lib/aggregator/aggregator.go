@@ -245,7 +245,15 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 				if rg.anchor != "" {
 					sk = identity.SessionSK(rg.anchor, roleID)
 					sessionType = anchoredSessionType(rg.anchor, mcpL, loginL)
-				} else if slot, found := winSlots[i]; found {
+				} else if slot, found := winSlots[i]; found && roleARN != "" {
+					// A session is the lifetime of a credential held by a role, so
+					// it always has one. The anchored paths above get theirs from
+					// the anchor's own credential; the windowed fallback has no
+					// such guarantee, and an event with no role at all would
+					// otherwise resolve to a roleless win# session — which is not a
+					// session, just authentication traffic that has nowhere to go.
+					// shouldSkipEvent names the events known to do this; this is
+					// the invariant that holds regardless of event name.
 					sk = slot.sk
 					sessionType = slot.channel
 					if mcpL != nil {

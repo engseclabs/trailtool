@@ -123,9 +123,9 @@ func CredentialGroupKey(event types.CloudTrailRecord) string {
 // session credentials: CloudTrail's own flag (record-level or session-context
 // attribute), or — the §10 sanctioned fallback — a browser user agent. The
 // fallback exists because the flag is not stamped on every console-session
-// event: sign-in bootstrap events (ConsoleLogin, GetSigninToken) and some
-// console framework calls carry a browser UA and the session's creationDate
-// but no flag, and must not shatter into per-key sessions.
+// event: ConsoleLogin and some console framework calls carry a browser UA and
+// the session's creationDate but no flag, and must not shatter into per-key
+// sessions.
 func isConsoleSessionCredential(event types.CloudTrailRecord) bool {
 	if event.SessionCredentialFromConsole == "true" {
 		return true

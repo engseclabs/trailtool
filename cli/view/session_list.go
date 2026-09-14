@@ -13,7 +13,9 @@ import (
 // Essential columns (SID WHEN USER ROLE EVENTS) are never dropped. Wide output
 // adds account, client, role-session, tag, policy, type, duration, and lineage
 // context. Role names shorten to their SSO permission-set name unless long is
-// set (existing --long semantics preserved).
+// set (existing --long semantics preserved); principals that hold credentials
+// directly and so have no role — IAM users and root — are named by their own
+// identifier, so the column never renders blank (see SessionRoleLabel).
 //
 // sidWidth is the shortest unambiguous SID prefix for this list (from
 // SidDisplayWidth); label resolves a person key to a display label. Context
@@ -61,10 +63,7 @@ func SessionList(ctx render.Context, sessions []models.Session, sidWidth int, lo
 	t := render.NewTable(cols...)
 	for i := range sessions {
 		sess := &sessions[i]
-		displayRole := sess.RoleName
-		if !long {
-			displayRole = ShortRoleName(sess.RoleName)
-		}
+		displayRole := SessionRoleLabel(sess, long)
 		row := []string{
 			ident(ctx, ShortSid(sess, sidWidth)),
 			ctx.Style(render.Time, ctx.Relative(sess.StartTime)),

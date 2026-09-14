@@ -229,6 +229,7 @@ func IsValidUserAgent(userAgent string) bool {
 		"cloudformation.amazonaws.com", // Internal CloudFormation service calls
 		"organizations.amazonaws.com",
 		"aws-internal",
+		"aws internal",
 		"jersey/",           // Jersey HTTP client (AWS internal services)
 		"httpurlconnection", // Generic Java HTTP client (often AWS service-to-service)
 	}
