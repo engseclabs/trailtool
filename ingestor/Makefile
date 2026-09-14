@@ -1,18 +1,19 @@
-.PHONY: build clean deploy deploy-org deploy-forwarder deploy-org-all test test-v test-cover
+.PHONY: build clean deploy check-org-config deploy-org deploy-forwarder deploy-org-all test test-v test-cover
 
 # ---------------------------------------------------------------------------
 # Cross-account (organization trail) deployment
 #
 # Two accounts: the ingestor runs in INGESTOR_PROFILE's account, the CloudTrail
 # bucket is owned by BUCKET_PROFILE's account (a Control Tower log archive).
-# Override any of these on the command line, e.g.
-#   make deploy-org-all INGESTOR_PROFILE=security BUCKET_PROFILE=logs
+# Supply the bucket details on the command line, e.g.
+#   make deploy-org-all INGESTOR_PROFILE=security BUCKET_PROFILE=logs \
+#     TRAIL_BUCKET=example-cloudtrail-bucket BUCKET_ACCOUNT=000000000000
 # ---------------------------------------------------------------------------
 INGESTOR_PROFILE ?= audit
 BUCKET_PROFILE   ?= log-archive
 REGION           ?= us-east-1
-TRAIL_BUCKET     ?= aws-controltower-logs-284971021687-us-east-1
-BUCKET_ACCOUNT   ?= 284971021687
+TRAIL_BUCKET     ?=
+BUCKET_ACCOUNT   ?=
 STACK            ?= trailtool-ingestor
 
 # Run tests
@@ -77,12 +78,17 @@ deploy-sandbox: build
 		--parameter-overrides TrailName=trailtool-trail
 	@echo "Sandbox deploy complete!"
 
+# Refuse to deploy when environment-specific values have not been supplied.
+check-org-config:
+	@test -n "$(TRAIL_BUCKET)" || { echo "ERROR: set TRAIL_BUCKET to the CloudTrail bucket name."; exit 1; }
+	@test -n "$(BUCKET_ACCOUNT)" || { echo "ERROR: set BUCKET_ACCOUNT to the bucket owner's AWS account ID."; exit 1; }
+
 # Deploy the ingestor against an organization trail whose bucket lives in
 # another account. ManageBucketNotification=false because this account cannot
 # touch the bucket's notification config; EventSourceAccount lets the bucket's
 # account forward events onto this account's default bus.
 # Same pre-1.0 caveat as `deploy`: old *-aggregated tables and data are deleted.
-deploy-org: build
+deploy-org: check-org-config build
 	@echo "Deploying ingestor to $(INGESTOR_PROFILE) for bucket $(TRAIL_BUCKET) ($(BUCKET_ACCOUNT))..."
 	@sam deploy \
 		--template-file template.yaml \
@@ -102,7 +108,7 @@ deploy-org: build
 # Deploy the forwarding rule into the bucket-owning account. Verifies the bucket
 # has EventBridge notifications enabled first: without them S3 emits nothing and
 # the rule is inert.
-deploy-forwarder:
+deploy-forwarder: check-org-config
 	@echo "Checking EventBridge notifications on $(TRAIL_BUCKET)..."
 	@aws s3api get-bucket-notification-configuration \
 		--bucket $(TRAIL_BUCKET) --profile $(BUCKET_PROFILE) --region $(REGION) \
