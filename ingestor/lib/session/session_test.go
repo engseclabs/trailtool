@@ -14,8 +14,8 @@ func TestExtractEmailFromPrincipalID(t *testing.T) {
 	}{
 		{
 			name:        "standard SSO format",
-			principalID: "AROAIDPPEZS35WEXAMPLE:me@alexsmolen.com",
-			want:        "me@alexsmolen.com",
+			principalID: "AROAIDPPEZS35WEXAMPLE:test-user@example.invalid",
+			want:        "test-user@example.invalid",
 		},
 		{
 			name:        "complex email",
@@ -67,7 +67,7 @@ func TestExtractRoleIDFromPrincipalID(t *testing.T) {
 	}{
 		{
 			name:        "standard SSO format",
-			principalID: "AROAIDPPEZS35WEXAMPLE:me@alexsmolen.com",
+			principalID: "AROAIDPPEZS35WEXAMPLE:test-user@example.invalid",
 			want:        "AROAIDPPEZS35WEXAMPLE",
 		},
 		{
@@ -154,7 +154,7 @@ func TestExtractRoleNameFromARN(t *testing.T) {
 		},
 		{
 			name: "sts assumed-role ARN (direct-SAML / lone ConsoleLogin)",
-			arn:  "arn:aws:sts::123456789012:assumed-role/SandboxAdminDirect/alex@example.com",
+			arn:  "arn:aws:sts::123456789012:assumed-role/SandboxAdminDirect/test-user@example.invalid",
 			want: "SandboxAdminDirect",
 		},
 		{

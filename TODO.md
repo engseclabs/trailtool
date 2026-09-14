@@ -71,11 +71,11 @@ precedence, identity-link TTL refresh).
      console/chained session is written as two rows under two people. This is
      more visible than a drop (a phantom duplicate) and `MergePerson`
      (`ingestor/lib/dynamodb/people.go`) never heals it — it reconciles records
-     sharing one person key, never `email#` into `idc#`. Observed 2026-07-22 in
-     sandbox: console session on `RoleChaining1` (chained from CLI parent
-     `qk7s7q`, an `idc#…#11fb6570-…` session) split into `3hvmhe` (`idc#`, events
-     with `onBehalfOf`) and `kqbomk` (`email#alex@engseclabs.com`, events
-     without) — identical anchor/SK `web#AROAUB266OVZPC3ZFTYIY#2026-07-22T18:19:51Z`.
+     sharing one person key, never `email#` into `idc#`. In the original
+     regression, a console session on `ExampleChainedRole` split into one `idc#`
+     row (events with `onBehalfOf`) and one `email#test-user@example.invalid` row
+     (events without) despite sharing the synthetic anchor/SK
+     `web#AROAEXAMPLE0000000003#2026-07-22T18:19:51Z`.
 
 - **Decision (2026-07-22):** documented, not fixed. The first
   two are durability/consistency tradeoffs with a known accepted exposure; the

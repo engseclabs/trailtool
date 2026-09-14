@@ -153,14 +153,14 @@ func TestExtractSessionTags(t *testing.T) {
 					"tags": []interface{}{
 						map[string]interface{}{"key": "AgentName", "value": "claude-code"},
 						map[string]interface{}{"key": "Task", "value": "deploy-lambda"},
-						map[string]interface{}{"key": "HumanSession", "value": "alex@example.com"},
+						map[string]interface{}{"key": "HumanSession", "value": "test-user@example.invalid"},
 					},
 				},
 			},
 			want: map[string]string{
 				"AgentName":    "claude-code",
 				"Task":         "deploy-lambda",
-				"HumanSession": "alex@example.com",
+				"HumanSession": "test-user@example.invalid",
 			},
 		},
 		{
@@ -170,6 +170,32 @@ func TestExtractSessionTags(t *testing.T) {
 				RequestParameters: map[string]interface{}{
 					"roleArn":         "arn:aws:iam::123456789012:role/my-role",
 					"roleSessionName": "my-session",
+				},
+			},
+			want: nil,
+		},
+		{
+			name: "Identity Center AssumeRoleWithSAML principal tags",
+			event: types.CloudTrailRecord{
+				EventName: "AssumeRoleWithSAML",
+				RequestParameters: map[string]interface{}{
+					"principalTags": map[string]interface{}{
+						"email":      "test-user@example.invalid",
+						"department": "security",
+					},
+				},
+			},
+			want: map[string]string{
+				"email":      "test-user@example.invalid",
+				"department": "security",
+			},
+		},
+		{
+			name: "AssumeRoleWithSAML without principal tags",
+			event: types.CloudTrailRecord{
+				EventName: "AssumeRoleWithSAML",
+				RequestParameters: map[string]interface{}{
+					"roleArn": "arn:aws:iam::123456789012:role/AWSReservedSSO_Admin_abc",
 				},
 			},
 			want: nil,
@@ -214,6 +240,28 @@ func TestExtractSessionTags(t *testing.T) {
 				t.Errorf("ExtractSessionTags() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExtractFullAssumedRoleID(t *testing.T) {
+	event := types.CloudTrailRecord{
+		EventName: "AssumeRoleWithSAML",
+		ResponseElements: map[string]interface{}{
+			"credentials": map[string]interface{}{
+				"accessKeyId": "ASIAISSUEDKEY000001",
+			},
+			"assumedRoleUser": map[string]interface{}{
+				"assumedRoleId": "AROAEXAMPLE0000000000:test-user@example.invalid",
+			},
+		},
+	}
+	if got, want := ExtractFullAssumedRoleID(event), "AROAEXAMPLE0000000000:test-user@example.invalid"; got != want {
+		t.Fatalf("ExtractFullAssumedRoleID() = %q, want %q", got, want)
+	}
+
+	event.EventName = "GetCallerIdentity"
+	if got := ExtractFullAssumedRoleID(event); got != "" {
+		t.Fatalf("ExtractFullAssumedRoleID(non-creation event) = %q, want empty", got)
 	}
 }
 

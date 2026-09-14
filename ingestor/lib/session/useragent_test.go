@@ -44,7 +44,7 @@ func TestParseUserAgent(t *testing.T) {
 		},
 		{
 			name:         "aws-cli new md metadata format",
-			ua:           "aws-cli/2.34.30 md/awscrt#0.31.2 ua/2.1 os/macos#25.2.0 md/arch#arm64 lang/python#3.14.4 md/pyimpl#CPython m/AC,AD,Z,E,C,b cfg/retry-mode#standard md/installer#exe sid/0ce22194f7b7 md/prompt#off md/command#iam.list-users",
+			ua:           "aws-cli/2.34.30 md/awscrt#0.31.2 ua/2.1 os/macos#25.2.0 md/arch#arm64 lang/python#3.14.4 md/pyimpl#CPython m/AC,AD,Z,E,C,b cfg/retry-mode#standard md/installer#exe sid/test-session md/prompt#off md/command#iam.list-users",
 			wantCategory: ClientCategoryCLI,
 			wantName:     "aws-cli",
 			wantVersion:  "2.34.30",
@@ -57,7 +57,7 @@ func TestParseUserAgent(t *testing.T) {
 		},
 		{
 			name:         "aws-cli new md format bracketed (sso testdata)",
-			ua:           "[aws-cli/2.34.30 md/awscrt#0.31.2 ua/2.1 os/macos#25.2.0 md/arch#arm64 lang/python#3.14.4 md/pyimpl#CPython m/u,Z,E,C,t,b cfg/retry-mode#standard md/installer#exe sid/e15370b661ab md/prompt#off md/command#s3.ls]",
+			ua:           "[aws-cli/2.34.30 md/awscrt#0.31.2 ua/2.1 os/macos#25.2.0 md/arch#arm64 lang/python#3.14.4 md/pyimpl#CPython m/u,Z,E,C,t,b cfg/retry-mode#standard md/installer#exe sid/test-session md/prompt#off md/command#s3.ls]",
 			wantCategory: ClientCategoryCLI,
 			wantName:     "aws-cli",
 			wantVersion:  "2.34.30",

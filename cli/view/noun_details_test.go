@@ -108,11 +108,11 @@ func TestGoldenPersonDetail(t *testing.T) {
 func TestPersonDetailDoesNotRepeatEmailIdentity(t *testing.T) {
 	detail := samplePersonDetail()
 	detail.Person.DisplayName = ""
-	detail.Person.Email = "alex@engseclabs.com"
-	detail.Person.EmailsSeen = []string{"alex@engseclabs.com", "ALEX@engseclabs.com"}
+	detail.Person.Email = "test-user@example.invalid"
+	detail.Person.EmailsSeen = []string{"test-user@example.invalid", "TEST-USER@EXAMPLE.INVALID"}
 
 	output := PersonDetail(ctxFor(100, false, true), detail, false)
-	if count := strings.Count(strings.ToLower(output), "alex@engseclabs.com"); count != 1 {
+	if count := strings.Count(strings.ToLower(output), "test-user@example.invalid"); count != 1 {
 		t.Fatalf("primary email appears %d times:\n%s", count, output)
 	}
 	if strings.Contains(output, "Primary Email:") || strings.Contains(output, "Email Aliases:") {

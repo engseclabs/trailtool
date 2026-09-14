@@ -201,7 +201,7 @@ Resources:
         AttributeName: ttl
         Enabled: true
       AttributeDefinitions:
-        - AttributeName: pk # cred#… | chain#… | login#… | mcp#…
+        - AttributeName: pk # cred#… | chain#… | creation#… | login#… | mcp#…
           AttributeType: S
       KeySchema:
         - AttributeName: pk

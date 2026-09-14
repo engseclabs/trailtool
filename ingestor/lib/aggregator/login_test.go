@@ -14,15 +14,15 @@ import (
 // web session itself stays typed "web".
 func TestAwsLoginSessionDetection(t *testing.T) {
 	const (
-		parentEmail    = "alex@engseclabs.com"
-		roleID         = "AROAUB266OVZCWROZTVQR"
-		roleARN        = "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_AdministratorAccess_78658cb1063311db"
+		parentEmail    = "test-user@example.invalid"
+		roleID         = "AROAEXAMPLE0000000000"
+		roleARN        = "arn:aws:iam::000000000000:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_TestAccess_0000000000000000"
 		sourceIP       = "192.0.2.1"
-		accountID      = "278835131762"
+		accountID      = "000000000000"
 		parentCreation = "2026-04-16T17:43:08Z"
-		vendedKey      = "ASIAUB266OVZDVEW755K"
+		vendedKey      = "ASIAEXAMPLE000000000"
 	)
-	stsARN := "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_AdministratorAccess_78658cb1063311db/" + parentEmail
+	stsARN := "arn:aws:sts::000000000000:assumed-role/AWSReservedSSO_TestAccess_0000000000000000/" + parentEmail
 
 	authorizeEvent := types.CloudTrailRecord{
 		EventTime:       "2026-04-16T17:43:25Z",
@@ -114,14 +114,14 @@ func TestAwsLoginSessionDetection(t *testing.T) {
 // does NOT tag a session whose creationDate differs (exact-match key, no fuzz).
 func TestAwsLoginDifferentCreationDateNotTagged(t *testing.T) {
 	const (
-		parentEmail    = "alex@engseclabs.com"
-		roleID         = "AROAUB266OVZCWROZTVQR"
-		roleARN        = "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_AdministratorAccess_78658cb1063311db"
-		accountID      = "278835131762"
+		parentEmail    = "test-user@example.invalid"
+		roleID         = "AROAEXAMPLE0000000000"
+		roleARN        = "arn:aws:iam::000000000000:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_TestAccess_0000000000000000"
+		accountID      = "000000000000"
 		parentCreation = "2026-04-16T17:43:08Z"
 		otherCreation  = "2026-04-16T17:48:30Z"
 	)
-	stsARN := "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_AdministratorAccess_78658cb1063311db/" + parentEmail
+	stsARN := "arn:aws:sts::000000000000:assumed-role/AWSReservedSSO_TestAccess_0000000000000000/" + parentEmail
 
 	createTokenEvent := types.CloudTrailRecord{
 		EventTime:   "2026-04-16T17:43:26Z",
@@ -147,7 +147,7 @@ func TestAwsLoginDifferentCreationDateNotTagged(t *testing.T) {
 			PrincipalID:    roleID + ":" + parentEmail,
 			ARN:            stsARN,
 			AccountID:      accountID,
-			AccessKeyID:    "ASIAUB266OVZDVEW755K",
+			AccessKeyID:    "ASIAEXAMPLE000000000",
 			SessionContext: makeSessionContext(otherCreation, roleARN),
 		},
 	}
@@ -157,7 +157,7 @@ func TestAwsLoginDifferentCreationDateNotTagged(t *testing.T) {
 		t.Fatalf("processForTest() error: %v", err)
 	}
 
-	sessRef := ref("email#"+parentEmail, "key#ASIAUB266OVZDVEW755K", roleID)
+	sessRef := ref("email#"+parentEmail, "key#ASIAEXAMPLE000000000", roleID)
 	sess, ok := sessions[sessRef]
 	if !ok {
 		t.Fatalf("session %q not found; keys: %v", sessRef, sessionKeys(sessions))
@@ -174,10 +174,10 @@ func TestAwsLoginDifferentCreationDateNotTagged(t *testing.T) {
 // (GetRoleCredentials, not CreateOAuth2Token) is NOT tagged as "login".
 func TestSsoLoginGetRoleCredentialsNotTagged(t *testing.T) {
 	const (
-		userEmail    = "alex@engseclabs.com"
-		userRoleID   = "AROAUB266OVZNNBCMBRFT"
-		userRoleARN  = "arn:aws:iam::278835131762:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_SandboxPowerUser_50d858085657c5c1"
-		accountID    = "278835131762"
+		userEmail    = "test-user@example.invalid"
+		userRoleID   = "AROAEXAMPLE0000000001"
+		userRoleARN  = "arn:aws:iam::000000000000:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_TestPowerUser_0000000000000001"
+		accountID    = "000000000000"
 		creationDate = "2026-04-16T17:39:11Z"
 	)
 
@@ -188,7 +188,7 @@ func TestSsoLoginGetRoleCredentialsNotTagged(t *testing.T) {
 		UserAgent:   "aws-cli/2.34.30 md/command#sts.get-caller-identity",
 		UserIdentity: types.UserIdentity{
 			Type:      "IdentityCenterUser",
-			AccountID: "843363563907",
+			AccountID: "000000000001",
 		},
 	}
 
@@ -200,9 +200,9 @@ func TestSsoLoginGetRoleCredentialsNotTagged(t *testing.T) {
 		UserIdentity: types.UserIdentity{
 			Type:           "AssumedRole",
 			PrincipalID:    userRoleID + ":" + userEmail,
-			ARN:            "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_SandboxPowerUser_50d858085657c5c1/" + userEmail,
+			ARN:            "arn:aws:sts::000000000000:assumed-role/AWSReservedSSO_TestPowerUser_0000000000000001/" + userEmail,
 			AccountID:      accountID,
-			AccessKeyID:    "ASIAUB266OVZEKHQQZXJ",
+			AccessKeyID:    "ASIAEXAMPLE000000001",
 			SessionContext: makeSessionContext(creationDate, userRoleARN),
 		},
 	}
@@ -212,7 +212,7 @@ func TestSsoLoginGetRoleCredentialsNotTagged(t *testing.T) {
 		t.Fatalf("processForTest() error: %v", err)
 	}
 
-	sessRef := ref("email#"+userEmail, "key#ASIAUB266OVZEKHQQZXJ", userRoleID)
+	sessRef := ref("email#"+userEmail, "key#ASIAEXAMPLE000000001", userRoleID)
 	sess, ok := sessions[sessRef]
 	if !ok {
 		t.Fatalf("session %q not found; keys: %v", sessRef, sessionKeys(sessions))

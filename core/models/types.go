@@ -161,8 +161,9 @@ type Session struct {
 	MCPResource              string `json:"mcp_resource,omitempty" dynamodbav:"mcp_resource"`
 	AgentAuthorizedBySession string `json:"agent_authorized_by_session,omitempty" dynamodbav:"agent_authorized_by_session"`
 
-	// SessionTags holds the session tags from the AssumeRole requestParameters.tags
-	// that created this child session. Non-nil only on chained sessions.
+	// SessionTags holds observed tags from the STS request that created this
+	// session: AssumeRole requestParameters.tags or AssumeRoleWithSAML
+	// requestParameters.principalTags.
 	SessionTags map[string]string `json:"session_tags,omitempty" dynamodbav:"session_tags,omitempty"`
 
 	// SessionPolicy is the raw inline IAM policy from requestParameters.policy in the

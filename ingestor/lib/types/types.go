@@ -406,8 +406,10 @@ type DynamoDBSession struct {
 	// so "what did this session authorize?" is answerable from the parent.
 	GrantedSessionRefs []string `dynamodbav:"granted_session_refs,omitempty"`
 
-	// SessionTags/SessionPolicy come from the AssumeRole requestParameters that
-	// created this child session.
+	// SessionTags holds observed tags from the STS request that created this
+	// session: AssumeRole requestParameters.tags (including AAM) or
+	// AssumeRoleWithSAML requestParameters.principalTags. SessionPolicy comes
+	// from AssumeRole.
 	SessionTags      map[string]string `dynamodbav:"session_tags,omitempty"`
 	SessionPolicy    string            `dynamodbav:"session_policy,omitempty"`
 	HasSessionPolicy bool              `dynamodbav:"has_session_policy"`
@@ -429,6 +431,7 @@ type DynamoDBSession struct {
 //	cred#<principalId>#<creationDate>  same, for console credential groups
 //	chain#<issuedAccessKeyId>          AssumeRole child → person + parent session
 //	chain#<assumedRoleID>#<eventTime>  same, console switch-role variant
+//	creation#<assumedRoleId>#<time>     STS creation tags ↔ resolved session refs
 //	login#<roleID>#<creationDate>      aws login (PKCE) grant → authorizing person
 //	mcp#<signInSessionArn>             AWS MCP Server OAuth grant → authorizing person
 type DynamoDBIdentityLink struct {
@@ -448,12 +451,17 @@ type DynamoDBIdentityLink struct {
 	ParentSessionRef string `dynamodbav:"parent_session_ref,omitempty"`
 	ParentRoleARN    string `dynamodbav:"parent_role_arn,omitempty"`
 
-	// AssumedRoleARN and the session attributes are set on chain# links from
-	// the AssumeRole request, and propagate to the child session record.
+	// AssumedRoleARN and session policy fields are set on chain# links from the
+	// AssumeRole request. SessionTags is set on chain# links or creation# records.
 	AssumedRoleARN   string            `dynamodbav:"assumed_role_arn,omitempty"`
 	SessionTags      map[string]string `dynamodbav:"session_tags,omitempty"`
 	SessionPolicy    string            `dynamodbav:"session_policy,omitempty"`
 	HasSessionPolicy bool              `dynamodbav:"has_session_policy"`
+
+	// TargetSessionRefs is the activity side of a creation# record. It is a
+	// string set because one creation identity can name both an authorizing
+	// console session and an aws-login session derived from it.
+	TargetSessionRefs []string `dynamodbav:"target_session_refs,stringset,omitempty"`
 
 	// MCPResource is the AWS MCP Server resource from the grant's
 	// requestParameters.resource. Set only on mcp# links.

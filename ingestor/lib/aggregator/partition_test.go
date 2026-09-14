@@ -279,8 +279,8 @@ func TestCrossBatchTypeAttributionGap(t *testing.T) {
 		anchor   string // anchor of the grantee session under test
 		wantType string // type when grant is co-batch/earlier
 	}{
-		{"aws_login_session", "key#ASIAUB266OVZDVEW755K", "login"},
-		{"aws_mcp_agent_session", "sis#arn:aws:signin:us-east-1:278835131762:session/a90e1d90-b08a-4ecf-ac06-e45576d13b98", "agent"},
+		{"aws_login_session", "key#ASIAEXAMPLE000000000", "login"},
+		{"aws_mcp_agent_session", "sis#arn:aws:signin:us-east-1:000000000000:session/00000000-0000-4000-8000-000000000010", "agent"},
 	}
 
 	// typeOf returns the session type of the anchored session with the given

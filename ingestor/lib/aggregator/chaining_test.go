@@ -225,7 +225,7 @@ func TestConsoleRoleSwitchChaining(t *testing.T) {
 	}
 }
 
-// TestConsoleRoleSwitchBackendUA reproduces the real sandbox mis-attribution: the
+// TestConsoleRoleSwitchBackendUA reproduces the backend-UA mis-attribution: the
 // console's Switch-Role AssumeRole is emitted by AWS's Switch-Role backend with
 // userAgent "AWS Signin, aws-internal/…" and NO sessionCredentialFromConsole
 // flag — so isConsoleSessionCredential is false and, unlike
@@ -238,7 +238,7 @@ func TestConsoleRoleSwitchChaining(t *testing.T) {
 // session and the child is parented to it.
 func TestConsoleRoleSwitchBackendUA(t *testing.T) {
 	const (
-		email          = "alex@engseclabs.com"
+		email          = "test-user@example.invalid"
 		parentRoleID   = "AROAPARENTCONSOLE001"
 		parentRoleARN  = "arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_Admin_abc123"
 		assumedRoleARN = "arn:aws:iam::111111111111:role/RoleChaining1"

@@ -10,14 +10,16 @@
 # This avoids long blind polling when the ingestor simply hasn't fired yet.
 #
 # Usage:
-#   AWS_PROFILE=sandbox-admin AWS_REGION=us-east-1 ./scripts/integration_test_session_tags.sh
+#   AWS_PROFILE=test-admin AWS_REGION=us-east-1 \
+#     ROLE_ARN=arn:aws:iam::000000000000:role/TrailtoolIntegrationTest \
+#     ./scripts/integration_test_session_tags.sh
 #
 # Requirements: aws CLI, trailtool binary (or go run), jq
 
 set -euo pipefail
 
 TRAILTOOL="${TRAILTOOL:-go run ./cmd/trailtool/}"
-ROLE_ARN="${ROLE_ARN:-arn:aws:iam::278835131762:role/RoleChaining1}"
+: "${ROLE_ARN:?Set ROLE_ARN to a disposable role used for integration testing}"
 
 # Phase 1: wait for the AssumeRole event to appear in CloudTrail LookupEvents
 CT_POLL_INTERVAL=15   # seconds between CloudTrail checks

@@ -41,7 +41,7 @@ func TestProcessServiceEventTracksResources(t *testing.T) {
 func TestProcessPersonAndAccountEventsTrackMissingAggregates(t *testing.T) {
 	people := make(map[string]*types.DynamoDBPerson)
 	accounts := make(map[string]*types.DynamoDBAccount)
-	person := identity.Person{Key: "email#alex@example.com", Tier: identity.TierEmail}
+	person := identity.Person{Key: "email#test-user@example.invalid", Tier: identity.TierEmail}
 	success := types.CloudTrailRecord{
 		EventSource: "s3.amazonaws.com",
 		EventName:   "CreateBucket",
@@ -133,7 +133,7 @@ func TestDetailedAccessesKeepResourceAccountsDistinct(t *testing.T) {
 		t.Fatalf("role resource accesses = %d, want 2", got)
 	}
 
-	sess := newSession("test", "email#alex@example.com", "key#ASIAEXAMPLE", "key#ASIAEXAMPLE", SessionTypeCLI, "", "", "111111111111")
+	sess := newSession("test", "email#test-user@example.invalid", "key#ASIAEXAMPLE", "key#ASIAEXAMPLE", SessionTypeCLI, "", "", "111111111111")
 	accumulateSessionEvent(sess, event, resourceList)
 	if got := len(sess.ResourceAccesses); got != 2 {
 		t.Fatalf("session resource accesses = %d, want 2", got)
@@ -147,7 +147,7 @@ func TestNounAggregatesKeepFullTimestampBounds(t *testing.T) {
 	)
 	earlyEvent := types.CloudTrailRecord{EventSource: "lambda.amazonaws.com", EventName: "GetFunction"}
 	lateEvent := types.CloudTrailRecord{EventSource: "lambda.amazonaws.com", EventName: "Invoke"}
-	person := identity.Person{Key: "iam#111111111111#alex", Tier: identity.TierIAMUser}
+	person := identity.Person{Key: "iam#111111111111#test-user", Tier: identity.TierIAMUser}
 	roleARN := "arn:aws:iam::111111111111:role/operator"
 	resourceIdentity := types.ResourceIdentity{
 		Identifier: "lambda:function:worker",

@@ -9,7 +9,7 @@ func TestPIDForPersonKeyGolden(t *testing.T) {
 }
 
 func TestDisplayPersonKey(t *testing.T) {
-	const key = "iamuser#arn:aws:iam::278835131762:user/testing-trailtool"
+	const key = "iamuser#arn:aws:iam::000000000000:user/testing-trailtool"
 	if got, want := DisplayPersonKey(key), "iamuser:testing-trailtool"; got != want {
 		t.Fatalf("DisplayPersonKey() = %q, want %q", got, want)
 	}

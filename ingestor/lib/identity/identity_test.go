@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	storeARN      = "arn:aws:identitystore::278835131762:identitystore/d-9967750e0f"
+	storeARN      = "arn:aws:identitystore::000000000000:identitystore/d-0000000001"
 	otherStoreARN = "arn:aws:identitystore::999988887777:identitystore/d-1234567890"
-	aliceUserID   = "94482488-3041-7098-e2a1-4d3c9c7e0b21"
+	aliceUserID   = "00000000-0000-4000-8000-000000000002"
 )
 
 // ssoEvent builds an AssumedRole event for an Identity Center role session.
@@ -22,9 +22,9 @@ func ssoEvent(accessKeyID, sessionName string, withOBO bool) types.CloudTrailRec
 		EventTime: "2026-07-15T10:00:00Z",
 		UserIdentity: types.UserIdentity{
 			Type:        "AssumedRole",
-			PrincipalID: "AROAUB266OVZCWROZTVQR:" + sessionName,
-			ARN:         "arn:aws:sts::278835131762:assumed-role/AWSReservedSSO_AdministratorAccess_78658cb1063311db/" + sessionName,
-			AccountID:   "278835131762",
+			PrincipalID: "AROAEXAMPLE0000000000:" + sessionName,
+			ARN:         "arn:aws:sts::000000000000:assumed-role/AWSReservedSSO_TestAccess_0000000000000000/" + sessionName,
+			AccountID:   "000000000000",
 			AccessKeyID: accessKeyID,
 		},
 	}
@@ -54,7 +54,7 @@ func TestCredentialGroupKey(t *testing.T) {
 				e.UserIdentity.SessionContext.Attributes.SessionCredentialFromConsole = "true"
 				return e
 			}(),
-			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
+			want: "rc#AROAEXAMPLE0000000000:alice@example.com#2026-07-15T09:58:00Z",
 		},
 		{
 			name: "record-level console flag works too",
@@ -65,7 +65,7 @@ func TestCredentialGroupKey(t *testing.T) {
 				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:58:00Z"
 				return e
 			}(),
-			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
+			want: "rc#AROAEXAMPLE0000000000:alice@example.com#2026-07-15T09:58:00Z",
 		},
 		{
 			name: "no access key falls back to principalId + creationDate",
@@ -75,7 +75,7 @@ func TestCredentialGroupKey(t *testing.T) {
 				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:58:00Z"
 				return e
 			}(),
-			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
+			want: "rc#AROAEXAMPLE0000000000:alice@example.com#2026-07-15T09:58:00Z",
 		},
 		{
 			name: "creationDate normalized to RFC3339",
@@ -85,7 +85,7 @@ func TestCredentialGroupKey(t *testing.T) {
 				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15 09:58:00.000"
 				return e
 			}(),
-			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
+			want: "rc#AROAEXAMPLE0000000000:alice@example.com#2026-07-15T09:58:00Z",
 		},
 		{
 			name: "forward-access fan-out (invokedBy) groups by creationDate, not its per-request key",
@@ -96,7 +96,7 @@ func TestCredentialGroupKey(t *testing.T) {
 				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:58:00Z"
 				return e
 			}(),
-			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
+			want: "rc#AROAEXAMPLE0000000000:alice@example.com#2026-07-15T09:58:00Z",
 		},
 		{
 			name: "signInSessionArn wins over the shared console creationDate (agent traffic)",
@@ -119,7 +119,7 @@ func TestCredentialGroupKey(t *testing.T) {
 				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:58:00Z"
 				return e
 			}(),
-			want: "rc#AROAUB266OVZCWROZTVQR:alice@example.com#2026-07-15T09:58:00Z",
+			want: "rc#AROAEXAMPLE0000000000:alice@example.com#2026-07-15T09:58:00Z",
 		},
 		{
 			name: "no credential falls back to eventID",
@@ -301,7 +301,7 @@ func TestResolveGroupTier3SAMLEmail(t *testing.T) {
 		UserIdentity: types.UserIdentity{
 			Type:        "AssumedRole",
 			PrincipalID: "AROAEXAMPLESAML:Alice@Example.COM",
-			ARN:         "arn:aws:sts::278835131762:assumed-role/OktaAdmin/Alice@Example.COM",
+			ARN:         "arn:aws:sts::000000000000:assumed-role/OktaAdmin/Alice@Example.COM",
 			AccessKeyID: "ASIASAML",
 		},
 	}
@@ -324,8 +324,8 @@ func TestResolveGroupTier4IAMUser(t *testing.T) {
 		UserIdentity: types.UserIdentity{
 			Type:        "IAMUser",
 			PrincipalID: "AIDAEXAMPLE",
-			ARN:         "arn:aws:iam::278835131762:user/deploy-bot",
-			AccountID:   "278835131762",
+			ARN:         "arn:aws:iam::000000000000:user/deploy-bot",
+			AccountID:   "000000000000",
 			AccessKeyID: "AKIAEXAMPLE",
 			UserName:    "deploy-bot",
 		},
@@ -337,7 +337,7 @@ func TestResolveGroupTier4IAMUser(t *testing.T) {
 	if person.Tier != TierIAMUser {
 		t.Errorf("Tier = %d, want %d (tier 4)", person.Tier, TierIAMUser)
 	}
-	if want := "iamuser#arn:aws:iam::278835131762:user/deploy-bot"; person.Key != want {
+	if want := "iamuser#arn:aws:iam::000000000000:user/deploy-bot"; person.Key != want {
 		t.Errorf("Key = %q, want %q", person.Key, want)
 	}
 }
@@ -347,9 +347,9 @@ func TestResolveGroupTier5Root(t *testing.T) {
 		EventID: "evt-root",
 		UserIdentity: types.UserIdentity{
 			Type:        "Root",
-			PrincipalID: "278835131762",
-			ARN:         "arn:aws:iam::278835131762:root",
-			AccountID:   "278835131762",
+			PrincipalID: "000000000000",
+			ARN:         "arn:aws:iam::000000000000:root",
+			AccountID:   "000000000000",
 		},
 	}
 	person, ok := ResolveGroup(GroupEvents([]types.CloudTrailRecord{e})[0], nil)
@@ -359,7 +359,7 @@ func TestResolveGroupTier5Root(t *testing.T) {
 	if person.Tier != TierRoot {
 		t.Errorf("Tier = %d, want %d (tier 5)", person.Tier, TierRoot)
 	}
-	if want := "root#278835131762"; person.Key != want {
+	if want := "root#000000000000"; person.Key != want {
 		t.Errorf("Key = %q, want %q", person.Key, want)
 	}
 }
@@ -399,7 +399,7 @@ func consoleEvent(accessKeyID, sessionName, creationDate string) types.CloudTrai
 }
 
 func TestAnchorCascade(t *testing.T) {
-	const signInArn = "arn:aws:signin:us-east-1:278835131762:session/a90e1d90-b08a-4ecf-ac06-e45576d13b98"
+	const signInArn = "arn:aws:signin:us-east-1:000000000000:session/00000000-0000-4000-8000-000000000010"
 
 	sisEvent := ssoEvent("ASIAAGENT1", "alice@example.com", false)
 	sisEvent.UserIdentity.SessionContext = &types.SessionContext{SignInSessionArn: signInArn}
@@ -433,7 +433,7 @@ func TestAnchorCascade(t *testing.T) {
 		{
 			name:   "console session anchors on creationDate despite per-request keys",
 			events: []types.CloudTrailRecord{consoleEvent("ASIAREQ1", "alice@example.com", "2026-07-15T09:00:00Z")},
-			want:   "web#AROAUB266OVZCWROZTVQR#2026-07-15T09:00:00Z",
+			want:   "web#AROAEXAMPLE0000000000#2026-07-15T09:00:00Z",
 		},
 		{
 			name: "keyless event with creationDate anchors web too",
@@ -443,7 +443,7 @@ func TestAnchorCascade(t *testing.T) {
 				e.UserIdentity.SessionContext.Attributes.CreationDate = "2026-07-15T09:00:00Z"
 				return []types.CloudTrailRecord{e}
 			}(),
-			want: "web#AROAUB266OVZCWROZTVQR#2026-07-15T09:00:00Z",
+			want: "web#AROAEXAMPLE0000000000#2026-07-15T09:00:00Z",
 		},
 		{
 			name:   "temporary credential anchors on its access key",
@@ -457,7 +457,7 @@ func TestAnchorCascade(t *testing.T) {
 				UserIdentity: types.UserIdentity{
 					Type:        "IAMUser",
 					PrincipalID: "AIDAEXAMPLE",
-					ARN:         "arn:aws:iam::278835131762:user/deploy-bot",
+					ARN:         "arn:aws:iam::000000000000:user/deploy-bot",
 					AccessKeyID: "AKIAEXAMPLE",
 				},
 			}},
@@ -467,7 +467,7 @@ func TestAnchorCascade(t *testing.T) {
 			name: "root without session context falls back to windowing",
 			events: []types.CloudTrailRecord{{
 				EventID:      "evt-root",
-				UserIdentity: types.UserIdentity{Type: "Root", PrincipalID: "278835131762", ARN: "arn:aws:iam::278835131762:root"},
+				UserIdentity: types.UserIdentity{Type: "Root", PrincipalID: "000000000000", ARN: "arn:aws:iam::000000000000:root"},
 			}},
 			want: "",
 		},
@@ -477,7 +477,7 @@ func TestAnchorCascade(t *testing.T) {
 				grantEvent,
 				consoleEvent("ASIAREQ9", "alice@example.com", "2026-07-15T09:00:00Z"),
 			},
-			want: "web#AROAUB266OVZCWROZTVQR#2026-07-15T09:00:00Z",
+			want: "web#AROAEXAMPLE0000000000#2026-07-15T09:00:00Z",
 		},
 	}
 	for _, tt := range tests {
@@ -513,7 +513,7 @@ func TestRefreshMintsNewAnchorSamePerson(t *testing.T) {
 // Channels can't merge by construction: concurrent console + CLI + agent activity
 // for one person and role lands in three disjoint anchor keyspaces.
 func TestChannelSeparationByConstruction(t *testing.T) {
-	const signInArn = "arn:aws:signin:us-east-1:278835131762:session/agent-1"
+	const signInArn = "arn:aws:signin:us-east-1:000000000000:session/agent-1"
 	agent := ssoEvent("ASIAAGENTKEY", "alice@example.com", true)
 	agent.UserIdentity.SessionContext = &types.SessionContext{SignInSessionArn: signInArn}
 
@@ -544,8 +544,8 @@ func TestPersonKeyPrefixesDisjoint(t *testing.T) {
 	keys := []string{
 		IdentityCenterPersonKey(storeARN, aliceUserID),
 		EmailPersonKey("alice@example.com"),
-		IAMUserPersonKey("arn:aws:iam::278835131762:user/alice"),
-		RootPersonKey("278835131762"),
+		IAMUserPersonKey("arn:aws:iam::000000000000:user/alice"),
+		RootPersonKey("000000000000"),
 	}
 	prefixes := map[string]bool{}
 	for _, k := range keys {

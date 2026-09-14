@@ -114,11 +114,18 @@ func ExtractAssumedRoleARN(event types.CloudTrailRecord) string {
 	return roleArn
 }
 
-// ExtractSessionTags extracts the session tags map from an AssumeRole requestParameters.
-// Returns nil if the event is not an AssumeRole or has no tags.
-// CloudTrail shape: requestParameters.tags = [{key: "AgentName", value: "claude-code"}, ...]
+// ExtractSessionTags extracts observed session tags from the STS request that
+// created a role session. AssumeRole records the request's tags array, while
+// AssumeRoleWithSAML records SAML principal tags as a map.
+//
+// CloudTrail shapes:
+//
+//	AssumeRole:         requestParameters.tags = [{key: "AgentName", value: "claude-code"}, ...]
+//	AssumeRoleWithSAML: requestParameters.principalTags = {"email": "test-user@example.invalid", ...}
+//
+// Returns nil for other event types or when no tags were recorded.
 func ExtractSessionTags(event types.CloudTrailRecord) map[string]string {
-	if event.EventName != "AssumeRole" || event.RequestParameters == nil {
+	if event.RequestParameters == nil {
 		return nil
 	}
 	b, err := json.Marshal(event.RequestParameters)
@@ -130,15 +137,52 @@ func ExtractSessionTags(event types.CloudTrailRecord) map[string]string {
 			Key   string `json:"key"`
 			Value string `json:"value"`
 		} `json:"tags"`
+		PrincipalTags map[string]string `json:"principalTags"`
 	}
-	if err := json.Unmarshal(b, &params); err != nil || len(params.Tags) == 0 {
+	if err := json.Unmarshal(b, &params); err != nil {
 		return nil
 	}
-	result := make(map[string]string, len(params.Tags))
-	for _, t := range params.Tags {
-		result[t.Key] = t.Value
+	switch event.EventName {
+	case "AssumeRole":
+		if len(params.Tags) == 0 {
+			return nil
+		}
+		result := make(map[string]string, len(params.Tags))
+		for _, t := range params.Tags {
+			result[t.Key] = t.Value
+		}
+		return result
+	case "AssumeRoleWithSAML":
+		if len(params.PrincipalTags) == 0 {
+			return nil
+		}
+		return params.PrincipalTags
+	default:
+		return nil
 	}
-	return result
+}
+
+// ExtractFullAssumedRoleID extracts the full assumed-role principal ID from a
+// successful STS role-session response. The full value includes the session
+// name ("AROA...:name") and, together with eventTime, uniquely identifies the
+// session whose downstream events carry the same principalId and creationDate.
+func ExtractFullAssumedRoleID(event types.CloudTrailRecord) string {
+	if (event.EventName != "AssumeRole" && event.EventName != "AssumeRoleWithSAML") || event.ResponseElements == nil {
+		return ""
+	}
+	b, err := json.Marshal(event.ResponseElements)
+	if err != nil {
+		return ""
+	}
+	var resp struct {
+		AssumedRoleUser struct {
+			AssumedRoleID string `json:"assumedRoleId"`
+		} `json:"assumedRoleUser"`
+	}
+	if err := json.Unmarshal(b, &resp); err != nil {
+		return ""
+	}
+	return resp.AssumedRoleUser.AssumedRoleID
 }
 
 // ExtractSessionPolicy extracts the inline session policy from an AssumeRole requestParameters.policy.
