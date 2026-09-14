@@ -151,29 +151,8 @@ the fix:
    - Resolved: `ExtractRoleNameFromARN` handles `sts:assumed-role` ARNs, and a
      sign-in with no role no longer becomes a session at all.
 
-2. **`GetSigninToken` → misclassified as CLI (`key#` anchor).**
-   Unlike `ConsoleLogin`, `GetSigninToken` carries a temporary access key and no
-   browser UA (it's AWS's federation endpoint, from an AWS-internal source IP).
-   So `CredentialGroupKey` → `ak#<key>`, `Anchor` → `key#<key>` → typed **CLI**,
-   even though it's part of a console (web) sign-in. Example: session `hfdosx`,
-   role `SandboxPowerUser`, single event `signin.amazonaws.com:GetSigninToken`,
-   typed CLI though the user never used the CLI with that role.
-
-**Chosen direction (not yet implemented):** extend `isConsoleSignInEvent` in
-`ingestor/lib/identity/identity.go` to also match
-`signin.amazonaws.com:GetSigninToken`, so `foldConsoleSignIn` folds it into the
-matching console session by principalId — the same mechanism used for
-`ConsoleLogin`.
-
-**Open questions to resolve before implementing (needs raw CloudTrail JSON):**
-- Does `GetSigninToken`'s principalId (`roleID:sessionName`) match the console
-  activity's principalId exactly? The fold matches on the full principalId, and
-  the sign-in's session name may differ from the console activity's.
-- The fold only fires on singleton groups (`len==1`) and matches
-  `consoleByPrincipal`, which is populated only for `rc#` groups passing
-  `isConsoleSessionCredential`. Confirm the console web session is `rc#`-keyed
-  and that the sign-in token's access key appears on no other event.
-- Whether the same fix (or a separate one) also resolves symptom 1.
-
-These are ingestor behaviors observed during 1.0 sandbox verification; they are
-independent of the CLI's SID selector work.
+2. **Lone `GetSigninToken` event became a CLI session.**
+   `GetSigninToken` carries a temporary access key and role, so the old
+   classifier derived a deterministic `key#` session even though the event is a
+   credential-vending call from AWS's federation endpoint. The ingestor now
+   treats it as metadata and excludes it from session activity.

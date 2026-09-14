@@ -517,7 +517,8 @@ func TestIsValidUserAgent(t *testing.T) {
 		{name: "AWS Config", userAgent: "config.amazonaws.com", want: false},
 		{name: "CloudFormation internal", userAgent: "cloudformation.amazonaws.com", want: false},
 		{name: "Organizations", userAgent: "organizations.amazonaws.com", want: false},
-		{name: "AWS Internal", userAgent: "aws-internal/3", want: false},
+		{name: "AWS Internal hyphenated", userAgent: "aws-internal/3", want: false},
+		{name: "AWS Internal spaced", userAgent: "AWS Internal", want: false},
 		{name: "Jersey client", userAgent: "Jersey/2.35 (Apache HttpClient 4.5.13)", want: false},
 		{name: "HttpURLConnection", userAgent: "Java/17.0.1 HttpURLConnection", want: false},
 		// Invalid - empty
