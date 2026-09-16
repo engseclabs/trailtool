@@ -156,6 +156,38 @@ func shouldSkipEvent(event types.CloudTrailRecord) bool {
 	if IsAAMAssumeRole(event) {
 		return true
 	}
+	if isSignInBootstrapEvent(event) {
+		return true
+	}
+	return false
+}
+
+// isSignInBootstrapEvent reports whether an event belongs to authentication or
+// credential vending rather than activity performed through the resulting
+// session. Most of these events precede role assumption and carry no role.
+// GetSigninToken can carry a role and temporary key, but it is still a call by
+// AWS's federation endpoint to obtain credentials.
+//
+// These are session-creation metadata in the same sense as CreateOAuth2Token
+// and AAM's AssumeRole above. Leaving them in creates one-event artifacts from
+// the machinery that obtains credentials.
+//
+// Skipping them loses the sign-in's identity for now; chaining it to the
+// session it authorizes is tracked separately (see TODO.md).
+func isSignInBootstrapEvent(event types.CloudTrailRecord) bool {
+	switch event.EventSource {
+	case "signin.amazonaws.com":
+		switch event.EventName {
+		case "CredentialChallenge", "CredentialVerification", "UserAuthentication", "GetSigninToken":
+			return true
+		}
+	case "sso.amazonaws.com":
+		switch event.EventName {
+		case "Authenticate", "Federate", "ListApplications",
+			"ListProfilesForApplication", "CreateToken", "GetRoleCredentials":
+			return true
+		}
+	}
 	return false
 }
 

@@ -382,12 +382,10 @@ func TestServiceFanOutJoinsOriginatingSession(t *testing.T) {
 	}
 }
 
-// TestConsoleBootstrapJoinsWebSession models the second observed sandbox
-// failure: sign-in bootstrap events (ConsoleLogin, GetSigninToken, console
-// framework calls) carry a browser UA, the session's creationDate, and a
-// stable access key — but NO sessionCredentialFromConsole flag. They must
-// join the flagged console traffic's web# session, and their key# credential
-// link must never hijack the console session into a CLI-typed one.
+// TestConsoleBootstrapJoinsWebSession models console sign-in traffic that lacks
+// the sessionCredentialFromConsole flag. ConsoleLogin and console framework
+// calls must join flagged console traffic, while GetSigninToken remains
+// credential-vending metadata and does not count as session activity.
 func TestConsoleBootstrapJoinsWebSession(t *testing.T) {
 	const (
 		email        = "test-user@example.invalid"
@@ -419,12 +417,10 @@ func TestConsoleBootstrapJoinsWebSession(t *testing.T) {
 		return e
 	}
 
-	// The real ConsoleLogin event AWS delivers: a bare userIdentity — no
-	// sessionContext, so no creationDate, access key, or console flag (verified
-	// against a real direct-SAML sign-in). It must still fold into the console
+	// The modeled ConsoleLogin event has a bare userIdentity with no
+	// sessionContext, creationDate, access key, or console flag. It must fold into the console
 	// session it opens rather than splitting off into a windowed one-event
-	// session; GetSigninToken carries the session context and joins via the
-	// unflagged-bootstrap path.
+	// session.
 	consoleLogin := types.CloudTrailRecord{
 		EventTime:   "2026-07-19T03:02:31Z",
 		EventName:   "ConsoleLogin",
@@ -439,10 +435,14 @@ func TestConsoleBootstrapJoinsWebSession(t *testing.T) {
 		},
 	}
 
-	// Bootstrap first, as delivered: unflagged, stable key.
+	getSigninToken := newEvent("2026-07-19T03:02:33Z", "GetSigninToken", "signin.amazonaws.com", bootstrapKey, "")
+	getSigninToken.UserAgent = "AWS Internal"
+
+	// Bootstrap first. GetSigninToken is filtered as metadata; the remaining
+	// browser events form the web session.
 	events := []types.CloudTrailRecord{
 		consoleLogin,
-		newEvent("2026-07-19T03:02:33Z", "GetSigninToken", "signin.amazonaws.com", bootstrapKey, ""),
+		getSigninToken,
 		// Flagged console activity: fresh key per request.
 		newEvent("2026-07-19T03:03:01Z", "DescribeRegions", "ec2.amazonaws.com", "ASIAPERREQ000000001", "true"),
 		newEvent("2026-07-19T03:03:05Z", "GetRole", "iam.amazonaws.com", "ASIAPERREQ000000002", "true"),
@@ -465,8 +465,8 @@ func TestConsoleBootstrapJoinsWebSession(t *testing.T) {
 	if sess.SessionType != SessionTypeWeb {
 		t.Errorf("SessionType = %q, want %q", sess.SessionType, SessionTypeWeb)
 	}
-	if sess.EventsCount != 5 {
-		t.Errorf("EventsCount = %d, want 5 (2 bootstrap + 3 flagged)", sess.EventsCount)
+	if sess.EventsCount != 4 {
+		t.Errorf("EventsCount = %d, want 4 (1 sign-in + 3 flagged; GetSigninToken is metadata)", sess.EventsCount)
 	}
 }
 
@@ -598,5 +598,102 @@ func TestEventIDDedupe(t *testing.T) {
 	}
 	if sess.EventsCount != 1 {
 		t.Errorf("EventsCount = %d, want 1 (duplicate eventID must count once)", sess.EventsCount)
+	}
+}
+
+// TestSignInBootstrapProducesNoSession verifies the rule that a session always
+// has a role: the Identity Center and console authentication exchange happens
+// before any role is assumed, so it is session-creation metadata, not a session.
+// These events previously fell to the windowed fallback and surfaced as a
+// scatter of roleless one-event sessions.
+func TestSignInBootstrapProducesNoSession(t *testing.T) {
+	newEvent := func(eventTime, source, name string) types.CloudTrailRecord {
+		return types.CloudTrailRecord{
+			EventTime:   eventTime,
+			EventName:   name,
+			EventSource: source,
+			UserIdentity: types.UserIdentity{
+				Type:        "Unknown",
+				PrincipalID: "AROASIGNIN1234567890:alice@example.com",
+				AccountID:   "111111111111",
+			},
+		}
+	}
+
+	sessions, err := processForTest([]types.CloudTrailRecord{
+		newEvent("2026-07-15T10:00:00Z", "signin.amazonaws.com", "CredentialChallenge"),
+		newEvent("2026-07-15T10:00:01Z", "signin.amazonaws.com", "CredentialVerification"),
+		newEvent("2026-07-15T10:00:02Z", "signin.amazonaws.com", "UserAuthentication"),
+		newEvent("2026-07-15T10:00:03Z", "sso.amazonaws.com", "Authenticate"),
+		newEvent("2026-07-15T10:00:04Z", "sso.amazonaws.com", "Federate"),
+		newEvent("2026-07-15T10:00:05Z", "sso.amazonaws.com", "ListApplications"),
+		newEvent("2026-07-15T10:00:06Z", "sso.amazonaws.com", "ListProfilesForApplication"),
+		newEvent("2026-07-15T10:00:07Z", "sso.amazonaws.com", "CreateToken"),
+		newEvent("2026-07-15T10:00:08Z", "sso.amazonaws.com", "GetRoleCredentials"),
+	})
+	if err != nil {
+		t.Fatalf("processForTest() error: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("got %d sessions, want 0; keys: %v", len(sessions), sessionKeys(sessions))
+	}
+}
+
+// TestNoRolelessWindowedSession is the invariant behind the skip list above: an
+// anchor-less event carrying no role at all never resolves to a win# session,
+// whatever its event name. The skip list names the events known to do this;
+// this guards the ones AWS has not shipped yet.
+func TestNoRolelessWindowedSession(t *testing.T) {
+	sessions, err := processForTest([]types.CloudTrailRecord{{
+		EventTime:   "2026-07-15T10:00:00Z",
+		EventName:   "SomeFutureSignInEvent",
+		EventSource: "signin.amazonaws.com",
+		UserIdentity: types.UserIdentity{
+			Type:        "Unknown",
+			PrincipalID: "AROAFUTURE1234567890:alice@example.com",
+			AccountID:   "111111111111",
+		},
+	}})
+	if err != nil {
+		t.Fatalf("processForTest() error: %v", err)
+	}
+	for ref, sess := range sessions {
+		if sess.RoleName == "" || sess.RoleARN == "" {
+			t.Errorf("roleless session %q created: role_arn=%q role_name=%q",
+				ref, sess.RoleARN, sess.RoleName)
+		}
+	}
+}
+
+func TestGetSigninTokenProducesNoSession(t *testing.T) {
+	const (
+		email        = "test-user@example.invalid"
+		roleID       = "AROAEXAMPLE0000000004"
+		roleARN      = "arn:aws:iam::000000000000:role/TestAccess"
+		creationDate = "2026-09-14T03:26:36Z"
+	)
+	event := types.CloudTrailRecord{
+		EventTime:   creationDate,
+		EventName:   "GetSigninToken",
+		EventSource: "signin.amazonaws.com",
+		UserAgent:   "AWS Internal",
+		UserIdentity: types.UserIdentity{
+			Type:           "AssumedRole",
+			PrincipalID:    roleID + ":" + email,
+			ARN:            "arn:aws:sts::000000000000:assumed-role/TestAccess/" + email,
+			AccountID:      "000000000000",
+			AccessKeyID:    "ASIAEXAMPLE000000005",
+			SessionContext: makeSessionContext(creationDate, roleARN),
+		},
+	}
+	if !shouldSkipEvent(event) {
+		t.Fatal("GetSigninToken must be classified as session-creation metadata")
+	}
+	sessions, err := processForTest([]types.CloudTrailRecord{event})
+	if err != nil {
+		t.Fatalf("processForTest() error: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("got %d sessions, want 0; GetSigninToken is credential-vending metadata", len(sessions))
 	}
 }

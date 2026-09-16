@@ -9,7 +9,11 @@ import (
 	"github.com/engseclabs/trailtool/internal/render"
 )
 
-var ssoRoleRe = regexp.MustCompile(`^aws-reserved/sso\.amazonaws\.com/[^/]+/AWSReservedSSO_([^_]+)_[0-9a-f]+$`)
+// The path segment between the directory and the permission set is the region
+// for region-scoped instances and absent otherwise; both forms occur in one
+// organization, so it is optional. Requiring it meant no real role ever
+// matched and the ROLE column always rendered the full reserved path.
+var ssoRoleRe = regexp.MustCompile(`^aws-reserved/sso\.amazonaws\.com/(?:[^/]+/)?AWSReservedSSO_([^_]+)_[0-9a-f]+$`)
 
 // ShortRoleName returns a shortened display name for SSO-managed roles.
 // For aws-reserved/sso.amazonaws.com/.../AWSReservedSSO_<Name>_<hash>, it returns <Name>.
@@ -62,4 +66,50 @@ func ChainedMarks(ctx render.Context, sess *models.Session) string {
 	}
 
 	return strings.Join(marks, "  ")
+}
+
+// SessionRoleLabel renders the ROLE column. A session is the lifetime of a
+// credential, and the column names the identity that held it — normally a role,
+// but an IAM user and root hold their credentials directly and have no role at
+// all. They are named by their own identifier instead ("user:deploy-bot",
+// "root"), so the column identifies every session rather than going blank on
+// the principals that happen not to be roles.
+//
+// The empty role_name stays in the data: inventing one would make an IAM user
+// indistinguishable from a role of the same name. This is a rendering choice.
+func SessionRoleLabel(sess *models.Session, long bool) string {
+	if sess.RoleName != "" {
+		if long {
+			return sess.RoleName
+		}
+		return ShortRoleName(sess.RoleName)
+	}
+	if strings.HasPrefix(sess.PersonKey, "root#") {
+		return "root"
+	}
+	if name := iamUserName(sess.RoleARN); name != "" {
+		return "user:" + name
+	}
+	if arn, ok := strings.CutPrefix(sess.PersonKey, "iamuser#"); ok {
+		if name := iamUserName(arn); name != "" {
+			return "user:" + name
+		}
+	}
+	return ""
+}
+
+// iamUserName pulls the user name out of an IAM user ARN
+// ("arn:aws:iam::123:user/path/deploy-bot" -> "deploy-bot"), tolerating the
+// optional path AWS allows between "user/" and the name.
+func iamUserName(arn string) string {
+	const marker = ":user/"
+	idx := strings.Index(arn, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := arn[idx+len(marker):]
+	if slash := strings.LastIndex(rest, "/"); slash >= 0 {
+		rest = rest[slash+1:]
+	}
+	return rest
 }
