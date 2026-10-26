@@ -150,14 +150,10 @@ logs-sandbox:
 # ---------------------------------------------------------------------------
 # AWS Serverless Application Repository
 #
-# `make publish-sar VERSION=1.2.0` does by hand what .github/workflows/release.yaml
-# does on a tag push: package template.yaml (uploading the Lambda zip, the
-# README and the LICENSE referenced by the SAR metadata) and create the
-# application version. SAR versions are immutable, so republishing a version
-# that already exists fails — bump VERSION instead.
-#
-# SAR_BUCKET must be an S3 bucket in SAR_REGION that serverlessrepo.amazonaws.com
-# can read; `make sar-bucket-policy` prints the policy that grants it.
+# `make publish-sar VERSION=1.2.0 SAR_BUCKET=…` does by hand what the release
+# workflow does on a tag. SAR versions are immutable, so republishing an
+# existing VERSION fails. SAR_BUCKET must be readable by
+# serverlessrepo.amazonaws.com — `make sar-bucket-policy` prints the statement.
 # ---------------------------------------------------------------------------
 SAR_BUCKET ?=
 SAR_REGION ?= us-east-1
@@ -183,9 +179,8 @@ publish-sar: check-sar-config build
 		--semantic-version $(VERSION) \
 		--region $(SAR_REGION)
 
-# Prints the bucket policy SAR needs in order to read the packaged artifacts.
 # Not applied automatically: put-bucket-policy REPLACES the bucket's whole
-# policy, so merge this statement into the existing one by hand.
+# policy, so merge this statement into the existing one.
 sar-bucket-policy:
 	@test -n "$(SAR_BUCKET)" || { echo "ERROR: set SAR_BUCKET to the bucket holding the packaged artifacts."; exit 1; }
 	@echo 'Add this statement to the bucket policy of $(SAR_BUCKET)'

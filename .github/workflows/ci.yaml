@@ -49,9 +49,8 @@ jobs:
       - name: Test
         run: go test ./...
 
-  # The ingestor template is published to the Serverless Application Repository
-  # on release, where a broken template or a malformed SAR metadata block would
-  # only surface after the tag. cfn-lint runs offline, so no credentials.
+  # The ingestor template is published to SAR on release, where a broken template
+  # or metadata block would only surface after the tag. cfn-lint runs offline.
   templates:
     runs-on: ubuntu-latest
     defaults:

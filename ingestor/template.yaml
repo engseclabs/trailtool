@@ -2,10 +2,8 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: TrailTool Ingestor - Processes CloudTrail logs from S3 and writes to DynamoDB (single-tenant)
 
-# Serverless Application Repository listing. `sam publish` reads this block;
-# the release workflow supplies SemanticVersion from the git tag, so it is
-# deliberately absent here (a stale version in the template would publish the
-# wrong number, and SAR versions are immutable once created).
+# SAR listing, read by `sam publish`. SemanticVersion is absent on purpose: the
+# release workflow passes the git tag, and SAR versions are immutable.
 Metadata:
   AWS::ServerlessRepo::Application:
     Name: trailtool-ingestor
