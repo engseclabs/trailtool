@@ -19,7 +19,36 @@ TrailTool is composed of:
 
 ## Quick Start
 
-*Requires [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)*
+*Deploying from source requires [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)*
+
+### Deploy the Ingestor from the Serverless Application Repository
+
+No clone needed — nest the published application in your own CloudFormation
+stack and point it at your trail's bucket:
+
+```yaml
+Transform: AWS::Serverless-2016-10-31
+
+Resources:
+  TrailToolIngestor:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location:
+        ApplicationId: arn:aws:serverlessrepo:us-east-1:<PUBLISHER_ACCOUNT_ID>:applications/trailtool-ingestor
+        SemanticVersion: 1.0.0
+      Parameters:
+        CloudTrailBucketName: your-bucket
+```
+
+```bash
+aws cloudformation deploy --template-file parent.yaml --stack-name trailtool \
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+                 CAPABILITY_AUTO_EXPAND CAPABILITY_RESOURCE_POLICY
+```
+
+The stack creates named IAM resources and an event bus policy, hence the
+capabilities. Parameters and outputs are listed in
+[`ingestor/README.md`](ingestor/README.md).
 
 ### Deploy the Ingestor with a new CloudTrail
 

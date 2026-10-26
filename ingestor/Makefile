@@ -1,4 +1,4 @@
-.PHONY: build clean deploy check-org-config deploy-org deploy-forwarder deploy-org-all test test-v test-cover
+.PHONY: build clean deploy check-org-config deploy-org deploy-forwarder deploy-org-all check-sar-config publish-sar sar-bucket-policy test test-v test-cover
 
 # ---------------------------------------------------------------------------
 # Cross-account (organization trail) deployment
@@ -146,3 +146,59 @@ logs:
 logs-sandbox:
 	@echo "Tailing logs for sandbox CloudTrail ingestor..."
 	@sam logs --stack-name trailtool-ingestor --region us-east-1 --tail
+
+# ---------------------------------------------------------------------------
+# AWS Serverless Application Repository
+#
+# `make publish-sar VERSION=1.2.0` does by hand what .github/workflows/release.yaml
+# does on a tag push: package template.yaml (uploading the Lambda zip, the
+# README and the LICENSE referenced by the SAR metadata) and create the
+# application version. SAR versions are immutable, so republishing a version
+# that already exists fails — bump VERSION instead.
+#
+# SAR_BUCKET must be an S3 bucket in SAR_REGION that serverlessrepo.amazonaws.com
+# can read; `make sar-bucket-policy` prints the policy that grants it.
+# ---------------------------------------------------------------------------
+SAR_BUCKET ?=
+SAR_REGION ?= us-east-1
+SAR_APP    ?= trailtool-ingestor
+VERSION    ?=
+
+# Refuse to publish when the version or the staging bucket has not been supplied.
+check-sar-config:
+	@test -n "$(VERSION)" || { echo "ERROR: set VERSION to the semantic version to publish, e.g. VERSION=1.2.0"; exit 1; }
+	@test -n "$(SAR_BUCKET)" || { echo "ERROR: set SAR_BUCKET to an S3 bucket readable by serverlessrepo.amazonaws.com (see 'make sar-bucket-policy')."; exit 1; }
+
+publish-sar: check-sar-config build
+	@echo "Packaging $(SAR_APP) $(VERSION) via s3://$(SAR_BUCKET)..."
+	@sam package \
+		--template-file template.yaml \
+		--s3-bucket $(SAR_BUCKET) \
+		--s3-prefix $(SAR_APP)/$(VERSION) \
+		--region $(SAR_REGION) \
+		--output-template-file bin/packaged.yaml
+	@echo "Publishing $(SAR_APP) $(VERSION) to the Serverless Application Repository..."
+	@sam publish \
+		--template bin/packaged.yaml \
+		--semantic-version $(VERSION) \
+		--region $(SAR_REGION)
+
+# Prints the bucket policy SAR needs in order to read the packaged artifacts.
+# Not applied automatically: put-bucket-policy REPLACES the bucket's whole
+# policy, so merge this statement into the existing one by hand.
+sar-bucket-policy:
+	@test -n "$(SAR_BUCKET)" || { echo "ERROR: set SAR_BUCKET to the bucket holding the packaged artifacts."; exit 1; }
+	@echo 'Add this statement to the bucket policy of $(SAR_BUCKET)'
+	@echo '(ACCOUNT_ID is the account that publishes the application):'
+	@echo ''
+	@echo '{'
+	@echo '  "Version": "2012-10-17",'
+	@echo '  "Statement": [{'
+	@echo '    "Sid": "ServerlessRepositoryRead",'
+	@echo '    "Effect": "Allow",'
+	@echo '    "Principal": {"Service": "serverlessrepo.amazonaws.com"},'
+	@echo '    "Action": "s3:GetObject",'
+	@echo '    "Resource": "arn:aws:s3:::$(SAR_BUCKET)/*",'
+	@echo '    "Condition": {"StringEquals": {"aws:SourceAccount": "ACCOUNT_ID"}}'
+	@echo '  }]'
+	@echo '}'
