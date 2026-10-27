@@ -23,7 +23,7 @@ This will:
 1. Build linux/darwin binaries (amd64 + arm64)
 2. Create a GitHub release with archives
 3. Update the Homebrew tap (`engseclabs/homebrew-tap`)
-4. Publish the ingestor to the Serverless Application Repository (see below)
+4. Publish the ingestor and forwarder to the Serverless Application Repository (see below)
 
 Users install/upgrade via `brew install engseclabs/tap/trailtool`.
 
@@ -31,13 +31,21 @@ Config: `.goreleaser.yaml`, `.github/workflows/release.yaml`.
 
 ### Serverless Application Repository
 
-The same tag publishes `ingestor/template.yaml` to the AWS Serverless Application
-Repository as `trailtool-ingestor`, so consumers can nest it with
-`AWS::Serverless::Application` instead of copying the template. The SAR listing
-lives in the template's `Metadata: AWS::ServerlessRepo::Application` block; the
-version is taken from the tag with the `v` stripped (`v1.2.0` → `1.2.0`) because
-SAR versions are immutable, and the job also sets the application policy to
-`Principals='*'`, which is what makes the application publicly listed.
+The same tag publishes two apps to the AWS Serverless Application Repository, so
+consumers can nest them with `AWS::Serverless::Application` instead of copying
+templates:
+
+- `ingestor/template.yaml` as `trailtool-ingestor`
+- `ingestor/template-forwarder.yaml` as `trailtool-cloudtrail-forwarder` (the
+  cross-account hop; a no-op when `IngestorAccountId` is empty or the stack's own
+  account)
+
+Each SAR listing lives in its template's `Metadata: AWS::ServerlessRepo::Application`
+block. Both get the tag's version with the `v` stripped (`v1.2.0` → `1.2.0`), so
+their versions always match; SAR versions are immutable. The job also sets each
+application policy to `Principals='*'`, which is what makes it publicly listed.
+Every resource type in a published template must be on SAR's supported-resources
+list.
 
 The `serverless-app-repo` job is skipped unless these repository variables are
 set (Settings → Secrets and variables → Actions → Variables), so tags keep
@@ -56,7 +64,7 @@ make -C ingestor publish-sar VERSION=1.2.0 SAR_BUCKET=your-bucket
 ```
 
 After the first publish, replace `<PUBLISHER_ACCOUNT_ID>` in `README.md` and
-`ingestor/README.md` with the publishing account ID so the `ApplicationId` in
+`ingestor/README.md` (and bump the `SemanticVersion` examples there) with the publishing account ID so the `ApplicationId` in
 the docs is copy-pasteable.
 
 ## Project Structure

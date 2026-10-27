@@ -1,4 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
 Description: >-
   TrailTool CloudTrail forwarder - deploy in the account that OWNS the CloudTrail
   bucket (e.g. a Control Tower log archive account) to forward the bucket's S3
@@ -9,14 +10,37 @@ Description: >-
 # therefore never sees them, no matter how its rule is written. This stack adds
 # the missing hop, bus to bus.
 #
-# Prerequisites, both outside this stack because the bucket is usually managed by
-# Control Tower and not by CloudFormation:
-#   1. EventBridge notifications enabled on the bucket
-#      (aws s3api put-bucket-notification-configuration --bucket <b> \
-#         --notification-configuration '{"EventBridgeConfiguration":{}}')
-#   2. The bucket policy grants the ingestor account s3:GetObject (and
-#      s3:ListBucket for `trailtool replay`).
+# Safe to deploy in either setup: when IngestorAccountId is empty or names this
+# account, the ingestor's own rule already sees the events, so the stack creates
+# only an inert placeholder (CloudFormation rejects a stack with no resources).
+#
+# Prerequisites, both outside this stack because the bucket is usually managed
+# elsewhere (Control Tower, Terraform):
+#   1. EventBridge notifications enabled on the bucket.
+#   2. The bucket policy grants the ingestor role s3:GetObject.
 # `make deploy-forwarder` checks (1) before deploying.
+
+# SAR listing, read by `sam publish`. SemanticVersion is absent on purpose: the
+# release workflow passes the git tag, so it always matches trailtool-ingestor.
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: trailtool-cloudtrail-forwarder
+    Description: >-
+      Forwards CloudTrail log deliveries from the account that owns the bucket
+      to the account running trailtool-ingestor, for organization trails whose
+      bucket lives in another account.
+    Author: EngSec Labs
+    SpdxLicenseId: Apache-2.0
+    LicenseUrl: ../LICENSE
+    ReadmeUrl: README-forwarder.md
+    Labels:
+      - cloudtrail
+      - security
+      - audit
+      - eventbridge
+      - organizations
+    HomePageUrl: https://github.com/engseclabs/trailtool
+    SourceCodeUrl: https://github.com/engseclabs/trailtool
 
 Parameters:
   CloudTrailBucketName:
@@ -25,16 +49,34 @@ Parameters:
 
   IngestorAccountId:
     Type: String
-    Description: Account ID running the TrailTool ingestor stack
+    Default: ''
+    AllowedPattern: '^(\d{12})?$'
+    Description: >-
+      Account ID running the TrailTool ingestor stack. Leave empty (or set to
+      this account) when the ingestor runs alongside the bucket: nothing is
+      forwarded then.
 
   IngestorRegion:
     Type: String
-    Default: us-east-1
-    Description: Region of the ingestor's default event bus
+    Default: ''
+    Description: >-
+      Region of the ingestor's default event bus. Empty means this stack's
+      region.
+
+Conditions:
+  Forward: !And
+    - !Not [!Equals [!Ref IngestorAccountId, '']]
+    - !Not [!Equals [!Ref IngestorAccountId, !Ref AWS::AccountId]]
+  DefaultRegion: !Equals [!Ref IngestorRegion, '']
 
 Resources:
+  # Inert, and the only resource when nothing is forwarded.
+  Placeholder:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
   ForwarderRole:
     Type: AWS::IAM::Role
+    Condition: Forward
     Properties:
       RoleName: trailtool-cloudtrail-forwarder-role
       AssumeRolePolicyDocument:
@@ -51,7 +93,9 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: events:PutEvents
-                Resource: !Sub 'arn:aws:events:${IngestorRegion}:${IngestorAccountId}:event-bus/default'
+                Resource: !Sub
+                  - 'arn:aws:events:${Region}:${IngestorAccountId}:event-bus/default'
+                  - Region: !If [DefaultRegion, !Ref AWS::Region, !Ref IngestorRegion]
 
   # Only real event logs are forwarded. Digest and Insight sidecars are also
   # .json.gz but live under /CloudTrail-Digest/ and /CloudTrail-Insight/, and the
@@ -59,6 +103,7 @@ Resources:
   # */CloudTrail/*.json.gz keeps them off the cross-account path entirely.
   ForwardingRule:
     Type: AWS::Events::Rule
+    Condition: Forward
     Properties:
       Name: trailtool-cloudtrail-forwarding-to-ingestor
       Description: Forwards CloudTrail log deliveries to the TrailTool ingestor account
@@ -75,15 +120,23 @@ Resources:
             key:
               - wildcard: '*/CloudTrail/*.json.gz'
       Targets:
-        - Arn: !Sub 'arn:aws:events:${IngestorRegion}:${IngestorAccountId}:event-bus/default'
+        - Arn: !Sub
+            - 'arn:aws:events:${Region}:${IngestorAccountId}:event-bus/default'
+            - Region: !If [DefaultRegion, !Ref AWS::Region, !Ref IngestorRegion]
           Id: TrailToolIngestorBus
           RoleArn: !GetAtt ForwarderRole.Arn
 
 Outputs:
+  Forwarding:
+    Description: Whether this stack forwards events (false when the ingestor runs in this account)
+    Value: !If [Forward, 'true', 'false']
+
   ForwardingRuleName:
+    Condition: Forward
     Description: Name of the forwarding rule
     Value: !Ref ForwardingRule
 
   ForwarderRoleArn:
+    Condition: Forward
     Description: Role EventBridge assumes to put events on the ingestor's bus
     Value: !GetAtt ForwarderRole.Arn

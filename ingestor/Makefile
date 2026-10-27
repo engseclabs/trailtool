@@ -107,16 +107,19 @@ deploy-org: check-org-config build
 
 # Deploy the forwarding rule into the bucket-owning account. Verifies the bucket
 # has EventBridge notifications enabled first: without them S3 emits nothing and
-# the rule is inert.
+# the rule is inert. IngestorAccountId is looked up from INGESTOR_PROFILE; if it
+# resolves to the bucket's own account the stack forwards nothing. REGION must
+# be the bucket's region (S3 emits events there); IngestorRegion is passed
+# explicitly although it defaults to the stack's region.
 deploy-forwarder: check-org-config
 	@echo "Checking EventBridge notifications on $(TRAIL_BUCKET)..."
 	@aws s3api get-bucket-notification-configuration \
 		--bucket $(TRAIL_BUCKET) --profile $(BUCKET_PROFILE) --region $(REGION) \
 		--output json | grep -q EventBridgeConfiguration || { \
 		echo "ERROR: EventBridge notifications are not enabled on $(TRAIL_BUCKET)."; \
-		echo "Enable them with:"; \
-		echo "  aws s3api put-bucket-notification-configuration --bucket $(TRAIL_BUCKET) \\"; \
-		echo "    --notification-configuration '{\"EventBridgeConfiguration\":{}}' --profile $(BUCKET_PROFILE)"; \
+		echo "Add \"EventBridgeConfiguration\": {} to the bucket's notification config. put-bucket-notification-configuration"; \
+		echo "REPLACES the whole config, so fetch it with get-bucket-notification-configuration and merge first"; \
+		echo "(see ingestor/README.md)."; \
 		exit 1; }
 	@echo "Deploying forwarder to $(BUCKET_PROFILE)..."
 	@aws cloudformation deploy \
@@ -124,7 +127,7 @@ deploy-forwarder: check-org-config
 		--stack-name trailtool-cloudtrail-forwarder \
 		--region $(REGION) \
 		--profile $(BUCKET_PROFILE) \
-		--capabilities CAPABILITY_NAMED_IAM \
+		--capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
 		--no-fail-on-empty-changeset \
 		--parameter-overrides \
 			CloudTrailBucketName=$(TRAIL_BUCKET) \
@@ -133,7 +136,9 @@ deploy-forwarder: check-org-config
 	@echo "Forwarder deploy complete!"
 
 # Full cross-account setup. Ingestor first: it creates the event bus policy the
-# forwarder's rule needs before that rule can deliver anything.
+# forwarder's rule needs before that rule can deliver anything. Either order
+# works, though — events forwarded before the policy exists fail delivery, and
+# `trailtool replay` backfills them.
 deploy-org-all: deploy-org deploy-forwarder
 	@echo "Cross-account deploy complete. Backfill history with 'trailtool replay'."
 
@@ -151,13 +156,15 @@ logs-sandbox:
 # AWS Serverless Application Repository
 #
 # `make publish-sar VERSION=1.2.0 SAR_BUCKET=…` does by hand what the release
-# workflow does on a tag. SAR versions are immutable, so republishing an
-# existing VERSION fails. SAR_BUCKET must be readable by
-# serverlessrepo.amazonaws.com — `make sar-bucket-policy` prints the statement.
+# workflow does on a tag: it publishes trailtool-ingestor (template.yaml) and
+# trailtool-cloudtrail-forwarder (template-forwarder.yaml) at the same VERSION.
+# SAR versions are immutable, so republishing an existing VERSION fails.
+# SAR_BUCKET must be readable by serverlessrepo.amazonaws.com — `make
+# sar-bucket-policy` prints the statement.
 # ---------------------------------------------------------------------------
 SAR_BUCKET ?=
 SAR_REGION ?= us-east-1
-SAR_APP    ?= trailtool-ingestor
+SAR_APPS   := template.yaml:trailtool-ingestor template-forwarder.yaml:trailtool-cloudtrail-forwarder
 VERSION    ?=
 
 # Refuse to publish when the version or the staging bucket has not been supplied.
@@ -166,18 +173,21 @@ check-sar-config:
 	@test -n "$(SAR_BUCKET)" || { echo "ERROR: set SAR_BUCKET to an S3 bucket readable by serverlessrepo.amazonaws.com (see 'make sar-bucket-policy')."; exit 1; }
 
 publish-sar: check-sar-config build
-	@echo "Packaging $(SAR_APP) $(VERSION) via s3://$(SAR_BUCKET)..."
-	@sam package \
-		--template-file template.yaml \
-		--s3-bucket $(SAR_BUCKET) \
-		--s3-prefix $(SAR_APP)/$(VERSION) \
-		--region $(SAR_REGION) \
-		--output-template-file bin/packaged.yaml
-	@echo "Publishing $(SAR_APP) $(VERSION) to the Serverless Application Repository..."
-	@sam publish \
-		--template bin/packaged.yaml \
-		--semantic-version $(VERSION) \
-		--region $(SAR_REGION)
+	@set -e; for entry in $(SAR_APPS); do \
+		template=$${entry%%:*}; app=$${entry#*:}; \
+		echo "Packaging $$app $(VERSION) via s3://$(SAR_BUCKET)..."; \
+		sam package \
+			--template-file $$template \
+			--s3-bucket $(SAR_BUCKET) \
+			--s3-prefix $$app/$(VERSION) \
+			--region $(SAR_REGION) \
+			--output-template-file bin/packaged-$$app.yaml; \
+		echo "Publishing $$app $(VERSION) to the Serverless Application Repository..."; \
+		sam publish \
+			--template bin/packaged-$$app.yaml \
+			--semantic-version $(VERSION) \
+			--region $(SAR_REGION); \
+	done
 
 # Not applied automatically: put-bucket-policy REPLACES the bucket's whole
 # policy, so merge this statement into the existing one.
