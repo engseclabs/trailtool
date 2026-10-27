@@ -17,230 +17,55 @@ TrailTool is composed of:
 - DynamoDB tables for persisting queryable entities: People, Sessions, Roles, Services, Resources
 - `trailtool` CLI for accessing DynamoDB data and supporting common use cases
 
-## Deploy
+## Quick Start
 
-The ingestor is published to the AWS Serverless Application Repository (SAR), so
-you don't need to clone this repo. Two applications are published, always at the
-same version:
-
-- **`trailtool-ingestor`** runs where you want the TrailTool data.
-- **`trailtool-cloudtrail-forwarder`** is only for the cross-account setup.
+The ingestor is published to the Serverless Application Repository as
+`trailtool-ingestor`, with `trailtool-cloudtrail-forwarder` for buckets in
+another account. [`ingestor/README.md`](ingestor/README.md) has CloudFormation
+and Terraform examples for each step, and how to verify the setup.
 
 S3 publishes EventBridge notifications only to the bucket owner's account, so
-which setup you need depends on where the CloudTrail bucket lives:
-
-- **Same account:** the bucket and the ingestor are in one account. Nothing is
-  forwarded.
-- **Cross account:** for example, an organization trail bucket in a log archive
-  account. The bucket owner's account forwards the events to the ingestor
-  account.
-
-No published template touches the bucket itself. The bucket owner turns on
-notifications and grants read access, because the bucket is often managed
-elsewhere (Control Tower, Terraform). Within each setup, the steps are
-independent and can run in any order. [`ingestor/README.md`](ingestor/README.md)
-has the full reference: parameters, outputs, troubleshooting and the Terraform
-version of every step.
+the setup depends on where the CloudTrail bucket lives. In both, the steps can
+run in any order.
 
 ### Same account
 
-Deploy in the bucket's region.
-
-1. **Bucket: enable EventBridge notifications.** This is a prerequisite, done by
-   whoever manages the bucket. See
-   [Enabling EventBridge notifications](#enabling-eventbridge-notifications).
-   Alternatively, deploy the ingestor with `ManageBucketNotification=true` and
-   let it do this.
-
-2. **Ingestor: deploy `trailtool-ingestor`** with `CloudTrailBucketName`.
-
-   ```yaml
-   # ingestor.yaml
-   Transform: AWS::Serverless-2016-10-31
-   Resources:
-     TrailToolIngestor:
-       Type: AWS::Serverless::Application
-       Properties:
-         Location:
-           ApplicationId: arn:aws:serverlessrepo:us-east-1:<PUBLISHER_ACCOUNT_ID>:applications/trailtool-ingestor
-           SemanticVersion: 1.2.0
-         Parameters:
-           CloudTrailBucketName: my-cloudtrail-bucket
-           ManageBucketNotification: 'false' # step 1 handles it
-   Outputs:
-     CloudTrailBucketName: # lets `trailtool replay` find the bucket
-       Value: !GetAtt TrailToolIngestor.Outputs.CloudTrailBucketName
-   ```
-
-   ```bash
-   aws cloudformation deploy --template-file ingestor.yaml --stack-name trailtool-ingestor \
-     --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-                    CAPABILITY_AUTO_EXPAND CAPABILITY_RESOURCE_POLICY
-   ```
-
-   Or with Terraform:
-
-   ```hcl
-   resource "aws_serverlessapplicationrepository_cloudformation_stack" "trailtool_ingestor" {
-     name             = "trailtool-ingestor"
-     application_id   = "arn:aws:serverlessrepo:us-east-1:<PUBLISHER_ACCOUNT_ID>:applications/trailtool-ingestor"
-     semantic_version = "1.2.0"
-     capabilities     = ["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND", "CAPABILITY_RESOURCE_POLICY"]
-     parameters = {
-       CloudTrailBucketName     = "my-cloudtrail-bucket"
-       ManageBucketNotification = "false"
-     }
-   }
-   ```
+1. **Bucket:** enable EventBridge notifications (see the warning below), or
+   deploy the ingestor with `ManageBucketNotification=true` and it does this.
+2. **Ingestor:** deploy `trailtool-ingestor` with `CloudTrailBucketName`.
 
 ### Cross account
 
-`BUCKET_ACCOUNT` owns the bucket, and `INGESTOR_ACCOUNT` runs TrailTool.
+For example, an organization trail whose bucket is in a log archive account.
 
-1. **Bucket owner: enable EventBridge notifications.** This is a prerequisite
-   that no published template does. See
-   [Enabling EventBridge notifications](#enabling-eventbridge-notifications).
+1. **Bucket owner:** enable EventBridge notifications.
+2. **Bucket owner:** grant `trailtool-ingestor-role` `s3:GetObject` in the bucket
+   policy. Grant the ingestor account root with an `aws:PrincipalArn`
+   condition, because S3 rejects a policy naming a role that doesn't exist yet.
+3. **Ingestor account:** deploy `trailtool-ingestor` with
+   `ManageBucketNotification=false` and `EventSourceAccount=<bucket owner account>`.
+4. **Bucket owner account:** deploy `trailtool-cloudtrail-forwarder` with
+   `CloudTrailBucketName` and `IngestorAccountId`.
 
-2. **Bucket owner: grant the ingestor role `s3:GetObject` in the bucket policy.**
-   This is also a prerequisite. Grant the ingestor account's root principal and
-   narrow access to `trailtool-ingestor-role` with an `aws:PrincipalArn`
-   condition. S3 rejects a policy that names a role that doesn't exist yet, and
-   the account form avoids that.
-
-   ```json
-   {
-     "Sid": "TrailToolIngestorRead",
-     "Effect": "Allow",
-     "Principal": { "AWS": "arn:aws:iam::INGESTOR_ACCOUNT:root" },
-     "Action": "s3:GetObject",
-     "Resource": "arn:aws:s3:::my-cloudtrail-bucket/*",
-     "Condition": {
-       "ArnEquals": { "aws:PrincipalArn": "arn:aws:iam::INGESTOR_ACCOUNT:role/trailtool-ingestor-role" }
-     }
-   }
-   ```
-
-   ```bash
-   aws s3api get-bucket-policy --bucket my-cloudtrail-bucket --query Policy --output text > policy.json
-   # put-bucket-policy replaces the whole policy, so add the statement to policy.json first.
-   aws s3api put-bucket-policy --bucket my-cloudtrail-bucket --policy file://policy.json
-   ```
-
-3. **Ingestor account: deploy `trailtool-ingestor`** with
-   `ManageBucketNotification=false` and `EventSourceAccount=BUCKET_ACCOUNT`.
-
-   ```yaml
-   # ingestor.yaml — same as the same-account template, with these parameters
-         Parameters:
-           CloudTrailBucketName: my-cloudtrail-bucket
-           ManageBucketNotification: 'false'
-           EventSourceAccount: 'BUCKET_ACCOUNT'
-   ```
-
-   ```bash
-   aws cloudformation deploy --template-file ingestor.yaml --stack-name trailtool-ingestor \
-     --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-                    CAPABILITY_AUTO_EXPAND CAPABILITY_RESOURCE_POLICY \
-     --profile ingestor
-   ```
-
-   In Terraform, add `EventSourceAccount = "BUCKET_ACCOUNT"` to the same-account
-   resource's `parameters`.
-
-4. **Bucket owner account: deploy `trailtool-cloudtrail-forwarder`** with
-   `CloudTrailBucketName` and `IngestorAccountId`, in the bucket's region.
-
-   ```yaml
-   # forwarder.yaml
-   Transform: AWS::Serverless-2016-10-31
-   Resources:
-     TrailToolForwarder:
-       Type: AWS::Serverless::Application
-       Properties:
-         Location:
-           ApplicationId: arn:aws:serverlessrepo:us-east-1:<PUBLISHER_ACCOUNT_ID>:applications/trailtool-cloudtrail-forwarder
-           SemanticVersion: 1.2.0
-         Parameters:
-           CloudTrailBucketName: my-cloudtrail-bucket
-           IngestorAccountId: 'INGESTOR_ACCOUNT'
-   ```
-
-   ```bash
-   aws cloudformation deploy --template-file forwarder.yaml --stack-name trailtool-cloudtrail-forwarder \
-     --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
-     --profile log-archive
-   ```
-
-   Or with Terraform:
-
-   ```hcl
-   resource "aws_serverlessapplicationrepository_cloudformation_stack" "trailtool_forwarder" {
-     provider         = aws.log_archive
-     name             = "trailtool-cloudtrail-forwarder"
-     application_id   = "arn:aws:serverlessrepo:us-east-1:<PUBLISHER_ACCOUNT_ID>:applications/trailtool-cloudtrail-forwarder"
-     semantic_version = "1.2.0"
-     capabilities     = ["CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"]
-     parameters = {
-       CloudTrailBucketName = "my-cloudtrail-bucket"
-       IngestorAccountId    = "INGESTOR_ACCOUNT"
-     }
-   }
-   ```
-
-Steps 3 and 4 can run in either order. If the forwarder goes first, events it
-forwards before the ingestor's event bus policy exists fail delivery. Run
-`trailtool replay` afterwards to backfill them.
-
-### Enabling EventBridge notifications
+Steps 3 and 4 can run in either order. Events forwarded before the ingestor's
+event bus policy exists fail delivery; `trailtool replay` backfills them.
 
 > [!WARNING]
-> `aws s3api put-bucket-notification-configuration` **replaces the bucket's
-> entire notification config**. Fetch the current config with
-> `get-bucket-notification-configuration` and merge `EventBridgeConfiguration`
-> into it. Don't send `{"EventBridgeConfiguration":{}}` on its own.
-
-```bash
-aws s3api get-bucket-notification-configuration --bucket my-cloudtrail-bucket --output json > notification.json
-jq -s '(.[0] // {}) + {EventBridgeConfiguration: {}}' notification.json > merged.json
-aws s3api put-bucket-notification-configuration --bucket my-cloudtrail-bucket \
-  --notification-configuration file://merged.json
-```
-
-In Terraform, `aws_s3_bucket_notification` with `eventbridge = true` owns the
-bucket's **whole** notification config. Declare every other notification for
-the bucket in that same resource. Don't use it if another tool already manages
-the bucket's notifications.
-
-### Capabilities
-
-| Application | Capabilities |
-|-------------|--------------|
-| `trailtool-ingestor` | `CAPABILITY_IAM`, `CAPABILITY_NAMED_IAM`, `CAPABILITY_AUTO_EXPAND`, `CAPABILITY_RESOURCE_POLICY` |
-| `trailtool-cloudtrail-forwarder` | `CAPABILITY_NAMED_IAM`, `CAPABILITY_AUTO_EXPAND` |
-
-### Verify it works
-
-CloudTrail delivers a log file roughly every five minutes. Within about five
-minutes, the ingestor's Lambda logs should show a new file. Run this in the
-ingestor account:
-
-```bash
-aws logs tail /aws/lambda/trailtool-ingestor --since 15m --follow
-```
-
-Then `trailtool status` should pass, and `trailtool people list` should show
-data. Run `trailtool replay` to backfill older logs.
+> `aws s3api put-bucket-notification-configuration` replaces the bucket's whole
+> notification config. Fetch it with `get-bucket-notification-configuration` and
+> merge `EventBridgeConfiguration` in. Terraform's `aws_s3_bucket_notification`
+> with `eventbridge = true` likewise owns the whole config.
 
 ### Deploy from source
 
-*Requires the [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html).*
+*Requires [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)*
 
 ```bash
 cd ingestor
-sam deploy --template-file template-sandbox.yaml                         # new trail + bucket + ingestor
-sam deploy --parameter-overrides CloudTrailBucketName=my-cloudtrail-bucket # existing bucket, same account
-make deploy-org-all INGESTOR_PROFILE=audit BUCKET_PROFILE=log-archive \
-  TRAIL_BUCKET=my-cloudtrail-bucket BUCKET_ACCOUNT=111111111111            # cross account
+sam deploy --template-file template-sandbox.yaml                          # new trail and bucket
+sam deploy --parameter-overrides CloudTrailBucketName=your-bucket         # existing bucket
+make deploy-org-all TRAIL_BUCKET=your-bucket BUCKET_ACCOUNT=111111111111  # cross account
+```
 
 ## Install the CLI
 

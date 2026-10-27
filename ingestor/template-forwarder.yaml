@@ -5,23 +5,14 @@ Description: >-
   bucket (e.g. a Control Tower log archive account) to forward the bucket's S3
   object-created events to the account running the ingestor.
 
-# Why this stack exists: S3 emits its EventBridge notifications onto the default
-# bus of the bucket's own account. An ingestor deployed in a different account
-# therefore never sees them, no matter how its rule is written. This stack adds
-# the missing hop, bus to bus.
+# S3 emits EventBridge notifications only on the bucket owner's default bus, so
+# an ingestor in another account never sees them. This stack adds that hop. It
+# forwards nothing when IngestorAccountId is empty or this account.
 #
-# Safe to deploy in either setup: when IngestorAccountId is empty or names this
-# account, the ingestor's own rule already sees the events, so the stack creates
-# only an inert placeholder (CloudFormation rejects a stack with no resources).
-#
-# Prerequisites, both outside this stack because the bucket is usually managed
-# elsewhere (Control Tower, Terraform):
-#   1. EventBridge notifications enabled on the bucket.
-#   2. The bucket policy grants the ingestor role s3:GetObject.
-# `make deploy-forwarder` checks (1) before deploying.
+# Prerequisites, outside this stack: EventBridge notifications on the bucket,
+# and a bucket policy granting trailtool-ingestor-role s3:GetObject.
 
-# SAR listing, read by `sam publish`. SemanticVersion is absent on purpose: the
-# release workflow passes the git tag, so it always matches trailtool-ingestor.
+# SAR listing, read by `sam publish`. The release workflow passes the version.
 Metadata:
   AWS::ServerlessRepo::Application:
     Name: trailtool-cloudtrail-forwarder
@@ -51,17 +42,12 @@ Parameters:
     Type: String
     Default: ''
     AllowedPattern: '^(\d{12})?$'
-    Description: >-
-      Account ID running the TrailTool ingestor stack. Leave empty (or set to
-      this account) when the ingestor runs alongside the bucket: nothing is
-      forwarded then.
+    Description: Account ID running the ingestor. Empty or this account forwards nothing
 
   IngestorRegion:
     Type: String
     Default: ''
-    Description: >-
-      Region of the ingestor's default event bus. Empty means this stack's
-      region.
+    Description: Region of the ingestor's default event bus (default this stack's region)
 
 Conditions:
   Forward: !And
@@ -70,7 +56,7 @@ Conditions:
   DefaultRegion: !Equals [!Ref IngestorRegion, '']
 
 Resources:
-  # Inert, and the only resource when nothing is forwarded.
+  # CloudFormation rejects a stack with no resources.
   Placeholder:
     Type: AWS::CloudFormation::WaitConditionHandle
 
@@ -86,6 +72,9 @@ Resources:
             Principal:
               Service: events.amazonaws.com
             Action: sts:AssumeRole
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/trailtool-cloudtrail-forwarding-to-ingestor'
       Policies:
         - PolicyName: PutEventsToIngestorBus
           PolicyDocument:

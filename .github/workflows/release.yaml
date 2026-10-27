@@ -28,11 +28,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
-  # Publishes ingestor/template.yaml (trailtool-ingestor) and
-  # ingestor/template-forwarder.yaml (trailtool-cloudtrail-forwarder) to the
-  # Serverless Application Repository at the tag's version, so the two always
-  # match. Skipped unless the SAR_* repository variables are set, so tags release
-  # the CLI without it.
+  # Publishes trailtool-ingestor and trailtool-cloudtrail-forwarder to the
+  # Serverless Application Repository at the tag's version. Skipped unless the
+  # SAR_* repository variables are set, so tags release the CLI without it.
   serverless-app-repo:
     needs: goreleaser
     runs-on: ubuntu-latest
@@ -40,11 +38,6 @@ jobs:
     permissions:
       contents: read
       id-token: write # assumes SAR_PUBLISH_ROLE_ARN
-    env:
-      # <template>:<application name>, one per published app.
-      SAR_APPS: >-
-        template.yaml:trailtool-ingestor
-        template-forwarder.yaml:trailtool-cloudtrail-forwarder
     steps:
       - uses: actions/checkout@v4
 
@@ -62,38 +55,11 @@ jobs:
           role-to-assume: ${{ vars.SAR_PUBLISH_ROLE_ARN }}
           aws-region: ${{ vars.SAR_REGION || 'us-east-1' }}
 
-      - name: Build ingestor Lambda
-        working-directory: ingestor
-        run: make build
-
+      # Skips versions that already exist, so a partly failed run can be re-run.
       - name: Publish application versions
         working-directory: ingestor
-        env:
-          SAR_S3_BUCKET: ${{ vars.SAR_S3_BUCKET }}
-        run: |
-          set -euo pipefail
-          # SAR semantic versions carry no leading 'v'.
-          VERSION="${GITHUB_REF_NAME#v}"
-          for entry in $SAR_APPS; do
-            template="${entry%%:*}"
-            app="${entry#*:}"
-            sam package \
-              --template-file "$template" \
-              --s3-bucket "$SAR_S3_BUCKET" \
-              --s3-prefix "$app/$VERSION" \
-              --output-template-file "bin/packaged-$app.yaml"
-            sam publish --template "bin/packaged-$app.yaml" --semantic-version "$VERSION"
-          done
+        run: make publish-sar VERSION="${GITHUB_REF_NAME#v}" SAR_BUCKET="${{ vars.SAR_S3_BUCKET }}" SAR_REGION="$AWS_REGION"
 
       - name: Grant public deploy access
-        run: |
-          set -euo pipefail
-          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-          for entry in $SAR_APPS; do
-            APP_ID="arn:aws:serverlessrepo:${AWS_REGION}:${ACCOUNT_ID}:applications/${entry#*:}"
-            # Principals='*' is what makes the application publicly listed.
-            aws serverlessrepo put-application-policy \
-              --application-id "$APP_ID" \
-              --statements Principals='*',Actions=Deploy
-            echo "Published $APP_ID"
-          done
+        working-directory: ingestor
+        run: make sar-public SAR_REGION="$AWS_REGION"
