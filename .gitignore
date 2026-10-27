@@ -16,6 +16,13 @@ ingestor/ingestor
 # SAM build artifacts
 .aws-sam/
 
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
+
 # IDE
 .idea/
 .vscode/
