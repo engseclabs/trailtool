@@ -19,54 +19,52 @@ TrailTool is composed of:
 
 ## Quick Start
 
-*Deploying from source requires [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)*
+The ingestor is published to the Serverless Application Repository as
+`trailtool-ingestor`, with `trailtool-cloudtrail-forwarder` for buckets in
+another account. [`ingestor/README.md`](ingestor/README.md) has CloudFormation
+and Terraform examples for each step, and how to verify the setup.
 
-### Deploy the Ingestor from the Serverless Application Repository
+S3 publishes EventBridge notifications only to the bucket owner's account, so
+the setup depends on where the CloudTrail bucket lives. In both, the steps can
+run in any order.
 
-No clone needed — nest the published application in your own CloudFormation
-stack and point it at your trail's bucket:
+### Same account
 
-```yaml
-Transform: AWS::Serverless-2016-10-31
+1. **Bucket:** enable EventBridge notifications (see the warning below), or
+   deploy the ingestor with `ManageBucketNotification=true` and it does this.
+2. **Ingestor:** deploy `trailtool-ingestor` with `CloudTrailBucketName`.
 
-Resources:
-  TrailToolIngestor:
-    Type: AWS::Serverless::Application
-    Properties:
-      Location:
-        ApplicationId: arn:aws:serverlessrepo:us-east-1:<PUBLISHER_ACCOUNT_ID>:applications/trailtool-ingestor
-        SemanticVersion: 1.0.0
-      Parameters:
-        CloudTrailBucketName: your-bucket
-```
+### Cross account
 
-```bash
-aws cloudformation deploy --template-file parent.yaml --stack-name trailtool \
-  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-                 CAPABILITY_AUTO_EXPAND CAPABILITY_RESOURCE_POLICY
-```
+For example, an organization trail whose bucket is in a log archive account.
 
-The stack creates named IAM resources and an event bus policy, hence the
-capabilities. Parameters and outputs are listed in
-[`ingestor/README.md`](ingestor/README.md).
+1. **Bucket owner:** enable EventBridge notifications.
+2. **Bucket owner:** grant `trailtool-ingestor-role` `s3:GetObject` in the bucket
+   policy. Grant the ingestor account root with an `aws:PrincipalArn`
+   condition, because S3 rejects a policy naming a role that doesn't exist yet.
+3. **Ingestor account:** deploy `trailtool-ingestor` with
+   `ManageBucketNotification=false` and `EventSourceAccount=<bucket owner account>`.
+4. **Bucket owner account:** deploy `trailtool-cloudtrail-forwarder` with
+   `CloudTrailBucketName` and `IngestorAccountId`.
 
-### Deploy the Ingestor with a new CloudTrail
+Steps 3 and 4 can run in either order. Events forwarded before the ingestor's
+event bus policy exists fail delivery; `trailtool replay` backfills them.
 
-Creates new CloudTrail trail/S3 bucket in addition to trailtool resources:
+> [!WARNING]
+> `aws s3api put-bucket-notification-configuration` replaces the bucket's whole
+> notification config. Fetch it with `get-bucket-notification-configuration` and
+> merge `EventBridgeConfiguration` in. Terraform's `aws_s3_bucket_notification`
+> with `eventbridge = true` likewise owns the whole config.
 
-```bash
-cd ingestor
-sam deploy --template-file template-sandbox.yaml
-```
+### Deploy from source
 
-### Deploy the Ingestor with an existing CloudTrail
-
-Connects to your existing CloudTrail S3 bucket. A custom CloudFormation resource automatically enables EventBridge notifications on the bucket (required for triggering the ingestor on new log delivery):
+*Requires [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)*
 
 ```bash
 cd ingestor
-sam deploy --parameter-overrides \
-  CloudTrailBucketName=your-bucket
+sam deploy --template-file template-sandbox.yaml                          # new trail and bucket
+sam deploy --parameter-overrides CloudTrailBucketName=your-bucket         # existing bucket
+make deploy-org-all TRAIL_BUCKET=your-bucket BUCKET_ACCOUNT=111111111111  # cross account
 ```
 
 ## Install the CLI

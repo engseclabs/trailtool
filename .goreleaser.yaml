@@ -39,3 +39,5 @@ release:
   github:
     owner: engseclabs
     name: trailtool
+  # Lets a failed release job be re-run without deleting the release.
+  replace_existing_artifacts: true

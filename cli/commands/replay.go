@@ -50,8 +50,9 @@ var openReplayDeps = func(ctx context.Context, bucket, function string) (replayD
 }
 
 // ingestorStackNames are the CloudFormation stack names the CLI probes for the
-// ingestor deployment, matching `trailtool status`.
-var ingestorStackNames = []string{"trailtool-ingestor", "trailtool", "sam-app"}
+// ingestor deployment, matching `trailtool status`. Terraform's SAR resource
+// prefixes its stack name with serverlessrepo-.
+var ingestorStackNames = []string{"trailtool-ingestor", "serverlessrepo-trailtool-ingestor", "trailtool", "sam-app"}
 
 // resolveCloudTrailBucket reads the CloudTrail bucket name from the ingestor
 // stack. It prefers the CloudTrailBucketName output and falls back to the stack

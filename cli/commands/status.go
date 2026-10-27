@@ -85,7 +85,7 @@ func collectStatusChecks(ctx context.Context) []StatusCheck {
 
 		cfnClient := cloudformation.NewFromConfig(cfg)
 		stackName := ""
-		for _, name := range []string{"trailtool-ingestor", "trailtool", "sam-app"} {
+		for _, name := range ingestorStackNames {
 			if _, stackErr := cfnClient.DescribeStacks(ctx, &cloudformation.DescribeStacksInput{
 				StackName: aws.String(name),
 			}); stackErr == nil {
@@ -98,7 +98,7 @@ func collectStatusChecks(ctx context.Context) []StatusCheck {
 				"ingestor_stack",
 				"warn",
 				"No TrailTool CloudFormation stack was found",
-				"Checked trailtool-ingestor, trailtool, and sam-app.",
+				"Checked "+strings.Join(ingestorStackNames, ", ")+".",
 				"Deploy the ingestor: https://github.com/engseclabs/trailtool",
 			))
 		} else {
