@@ -2,6 +2,29 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: TrailTool Ingestor - Processes CloudTrail logs from S3 and writes to DynamoDB (single-tenant)
 
+# SAR listing, read by `sam publish`. SemanticVersion is absent on purpose: the
+# release workflow passes the git tag, and SAR versions are immutable.
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: trailtool-ingestor
+    Description: >-
+      Parses CloudTrail logs from S3 as they are delivered and writes correlated
+      people, sessions, roles, services and resources into DynamoDB for the
+      trailtool CLI to query.
+    Author: EngSec Labs
+    SpdxLicenseId: Apache-2.0
+    LicenseUrl: ../LICENSE
+    ReadmeUrl: README.md
+    Labels:
+      - cloudtrail
+      - security
+      - audit
+      - iam
+      - identity
+      - dynamodb
+    HomePageUrl: https://github.com/engseclabs/trailtool
+    SourceCodeUrl: https://github.com/engseclabs/trailtool
+
 Parameters:
   CloudTrailBucketName:
     Type: String

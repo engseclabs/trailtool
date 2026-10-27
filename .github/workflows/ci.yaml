@@ -48,3 +48,25 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+  # The ingestor template is published to SAR on release, where a broken template
+  # or metadata block would only surface after the tag. cfn-lint runs offline.
+  templates:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ingestor
+    env:
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+
+      - name: Validate templates
+        run: |
+          for t in template.yaml template-sandbox.yaml template-forwarder.yaml; do
+            sam validate --lint --template "$t"
+          done
