@@ -56,7 +56,7 @@ Deploy in the bucket's region. The steps can run in any order.
    resource "aws_serverlessapplicationrepository_cloudformation_stack" "trailtool_ingestor" {
      name             = "trailtool-ingestor"
      application_id   = "arn:aws:serverlessrepo:us-east-1:843363563907:applications/trailtool-ingestor"
-     semantic_version = "1.2.0"
+     semantic_version = "1.3.0"
      capabilities     = ["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND", "CAPABILITY_RESOURCE_POLICY"]
      parameters = {
        CloudTrailBucketName     = "my-cloudtrail-bucket"
@@ -127,7 +127,7 @@ can run in any order.
      provider         = aws.log_archive
      name             = "trailtool-cloudtrail-forwarder"
      application_id   = "arn:aws:serverlessrepo:us-east-1:843363563907:applications/trailtool-cloudtrail-forwarder"
-     semantic_version = "1.2.0"
+     semantic_version = "1.3.0"
      capabilities     = ["CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"]
      parameters = {
        CloudTrailBucketName = "my-cloudtrail-bucket"
