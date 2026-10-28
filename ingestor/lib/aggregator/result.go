@@ -74,10 +74,26 @@ type NewEdge struct {
 	TriggerEventID string
 }
 
+// credentialCalls are STS calls CloudTrail marks read-only that still mint
+// new credentials. An audit trail of a session needs them, so they count as
+// writes.
+var credentialCalls = map[string]bool{
+	"AssumeRole":                true,
+	"AssumeRoleWithSAML":        true,
+	"AssumeRoleWithWebIdentity": true,
+	"AssumeRoot":                true,
+	"GetFederationToken":        true,
+	"GetSessionToken":           true,
+}
+
 // isWriteOrDenied reports whether a record belongs in a session's writes: a
-// mutating call (readOnly false or absent) or any access-denied call.
+// mutating call (readOnly false or absent), a credential-minting STS call, or
+// any access-denied call.
 func isWriteOrDenied(event types.CloudTrailRecord) bool {
 	if event.ReadOnly == nil || !*event.ReadOnly {
+		return true
+	}
+	if event.EventSource == "sts.amazonaws.com" && credentialCalls[event.EventName] {
 		return true
 	}
 	return session.IsAccessDeniedError(event.ErrorCode)

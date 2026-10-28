@@ -85,18 +85,24 @@ func TestIsWriteOrDenied(t *testing.T) {
 	yes, no := true, false
 	cases := []struct {
 		name     string
+		source   string
+		event    string
 		readOnly *bool
 		errCode  string
 		want     bool
 	}{
-		{"read", &yes, "", false},
-		{"write", &no, "", true},
-		{"readOnly absent", nil, "", true},
-		{"denied read", &yes, "AccessDenied", true},
-		{"failed read, not denied", &yes, "NoSuchBucket", false},
+		{"read", "s3.amazonaws.com", "ListBuckets", &yes, "", false},
+		{"write", "s3.amazonaws.com", "PutBucketPolicy", &no, "", true},
+		{"readOnly absent", "s3.amazonaws.com", "PutObject", nil, "", true},
+		{"denied read", "s3.amazonaws.com", "ListBuckets", &yes, "AccessDenied", true},
+		{"failed read, not denied", "s3.amazonaws.com", "GetObject", &yes, "NoSuchBucket", false},
+		{"read-only AssumeRole", "sts.amazonaws.com", "AssumeRole", &yes, "", true},
+		{"read-only GetSessionToken", "sts.amazonaws.com", "GetSessionToken", &yes, "", true},
+		{"GetCallerIdentity", "sts.amazonaws.com", "GetCallerIdentity", &yes, "", false},
+		{"AssumeRole name on another service", "example.amazonaws.com", "AssumeRole", &yes, "", false},
 	}
 	for _, tc := range cases {
-		got := isWriteOrDenied(types.CloudTrailRecord{ReadOnly: tc.readOnly, ErrorCode: tc.errCode})
+		got := isWriteOrDenied(types.CloudTrailRecord{EventSource: tc.source, EventName: tc.event, ReadOnly: tc.readOnly, ErrorCode: tc.errCode})
 		if got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 		}
