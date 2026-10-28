@@ -38,7 +38,7 @@ Deploy in the bucket's region. The steps can run in any order.
        Properties:
          Location:
            ApplicationId: arn:aws:serverlessrepo:us-east-1:843363563907:applications/trailtool-ingestor
-           SemanticVersion: 1.2.0
+           SemanticVersion: 1.3.0
          Parameters:
            CloudTrailBucketName: my-cloudtrail-bucket
            ManageBucketNotification: 'false'
@@ -111,7 +111,7 @@ can run in any order.
        Properties:
          Location:
            ApplicationId: arn:aws:serverlessrepo:us-east-1:843363563907:applications/trailtool-cloudtrail-forwarder
-           SemanticVersion: 1.2.0
+           SemanticVersion: 1.3.0
          Parameters:
            CloudTrailBucketName: my-cloudtrail-bucket
            IngestorAccountId: 'INGESTOR_ACCOUNT'
