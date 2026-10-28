@@ -46,15 +46,35 @@ type LambdaInvoker struct {
 	Function string
 }
 
-func (i LambdaInvoker) Invoke(ctx context.Context, bucket, key string) error {
-	payload, err := json.Marshal(events.S3Event{
-		Records: []events.S3EventRecord{{
-			S3: events.S3Entity{
-				Bucket: events.S3Bucket{Name: bucket},
-				Object: events.S3Object{Key: key},
-			},
-		}},
+// ReplayMarker tags a synthetic event as a replay. The ingestor never
+// publishes change events for one (ingest.invocationMarker reads it): they
+// feed live audit systems, and replayed history is not live activity.
+type ReplayMarker struct {
+	Replay bool `json:"replay"`
+}
+
+type invokePayload struct {
+	events.S3Event
+	TrailTool ReplayMarker `json:"trailtool"`
+}
+
+// InvokePayload builds the synthetic S3 event for one object.
+func InvokePayload(bucket, key string) ([]byte, error) {
+	return json.Marshal(invokePayload{
+		S3Event: events.S3Event{
+			Records: []events.S3EventRecord{{
+				S3: events.S3Entity{
+					Bucket: events.S3Bucket{Name: bucket},
+					Object: events.S3Object{Key: key},
+				},
+			}},
+		},
+		TrailTool: ReplayMarker{Replay: true},
 	})
+}
+
+func (i LambdaInvoker) Invoke(ctx context.Context, bucket, key string) error {
+	payload, err := InvokePayload(bucket, key)
 	if err != nil {
 		return fmt.Errorf("marshal synthetic S3 event: %w", err)
 	}

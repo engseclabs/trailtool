@@ -14,8 +14,12 @@ import (
 // aggregateForTest runs aggregation with injected stored links (as if fetched
 // from trailtool-identity-links) and no DynamoDB client.
 func aggregateForTest(events []types.CloudTrailRecord, stored map[string]*link) (map[string]*types.DynamoDBSession, error) {
-	return aggregateGroups(context.Background(), nil, Config{Namespace: "test"}, "test",
+	res, err := aggregateGroups(context.Background(), nil, Config{Namespace: "test"}, "test",
 		identity.GroupEvents(dedupeByEventID(events)), stored)
+	if res == nil {
+		return nil, err
+	}
+	return res.byRef, err
 }
 
 const (

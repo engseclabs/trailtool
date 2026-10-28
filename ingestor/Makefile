@@ -62,6 +62,7 @@ deploy: build validate
 
 # Build and deploy sandbox stack (all-in-one: CloudTrail + S3 + Lambda + DynamoDB)
 # Unsets any ambient AWS credential env vars so the sandbox-admin profile is used.
+# ACTIVITY_EVENT_BUS_ARN=<bus arn> turns on change events; empty leaves them off.
 # Same pre-1.0 caveat as `deploy`: old *-aggregated tables and data are deleted.
 deploy-sandbox: build
 	@echo "Deploying sandbox ingestor stack..."
@@ -75,7 +76,7 @@ deploy-sandbox: build
 		--no-confirm-changeset \
 		--no-fail-on-empty-changeset \
 		--resolve-s3 \
-		--parameter-overrides TrailName=trailtool-trail
+		--parameter-overrides TrailName=trailtool-trail $(if $(ACTIVITY_EVENT_BUS_ARN),ActivityEventBusArn=$(ACTIVITY_EVENT_BUS_ARN))
 	@echo "Sandbox deploy complete!"
 
 # Refuse to deploy when environment-specific values have not been supplied.

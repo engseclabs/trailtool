@@ -23,7 +23,9 @@ import (
 // writes for the same credential hit the same item and merge additively via
 // read-merge-write. Optimistic locking is not load-bearing here — a concurrent
 // double-merge has the same (accepted) exposure as a redelivered partial batch.
-func WriteSession(ctx context.Context, ddbClient SessionStore, tableName string, session *types.DynamoDBSession) error {
+// It reports true when it created the item and false when it merged into one,
+// or when the read failed and it cannot tell (the write then overwrites).
+func WriteSession(ctx context.Context, ddbClient SessionStore, tableName string, session *types.DynamoDBSession) (bool, error) {
 	getResult, err := ddbClient.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(tableName),
 		Key: map[string]ddbtypes.AttributeValue{
@@ -31,6 +33,7 @@ func WriteSession(ctx context.Context, ddbClient SessionStore, tableName string,
 			"sk": &ddbtypes.AttributeValueMemberS{Value: session.SK},
 		},
 	})
+	readFailed := err != nil
 	if err != nil {
 		log.Printf("WARNING: Failed to get existing session: %v", err)
 		// Continue with normal write if the read fails
@@ -43,17 +46,17 @@ func WriteSession(ctx context.Context, ddbClient SessionStore, tableName string,
 			merged.Version = existing.Version + 1
 			item, err := attributevalue.MarshalMap(merged)
 			if err != nil {
-				return fmt.Errorf("failed to marshal merged session: %w", err)
+				return false, fmt.Errorf("failed to marshal merged session: %w", err)
 			}
 			if _, err := ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
 				TableName: aws.String(tableName),
 				Item:      item,
 			}); err != nil {
-				return fmt.Errorf("failed to write merged session: %w", err)
+				return false, fmt.Errorf("failed to write merged session: %w", err)
 			}
 			log.Printf("SESSION_MERGED: sk=%s events=%d (was %d, +%d)",
 				merged.SK, merged.EventsCount, existing.EventsCount, session.EventsCount)
-			return nil
+			return false, nil
 		}
 	}
 
@@ -61,13 +64,15 @@ func WriteSession(ctx context.Context, ddbClient SessionStore, tableName string,
 		session.SK, session.SessionType, session.EventsCount, session.StartTime)
 	item, err := attributevalue.MarshalMap(session)
 	if err != nil {
-		return fmt.Errorf("failed to marshal session: %w", err)
+		return false, fmt.Errorf("failed to marshal session: %w", err)
 	}
-	_, err = ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
+	if _, err := ddbClient.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(tableName),
 		Item:      item,
-	})
-	return err
+	}); err != nil {
+		return false, err
+	}
+	return !readFailed, nil
 }
 
 // MergeSession merges two session records for the same key, combining their

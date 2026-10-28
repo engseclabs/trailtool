@@ -117,7 +117,9 @@ func ReplayCmd() *cobra.Command {
 			"Replay past (closed) days. Their objects are separate from what live\n" +
 			"delivery writes to today's prefix, so replay and live ingestion can run at\n" +
 			"the same time. Replaying the current, still-growing day is not supported.\n" +
-			"Reset first (trailtool reset) for a clean rebuild from scratch.",
+			"Reset first (trailtool reset) for a clean rebuild from scratch.\n\n" +
+			"Replayed files never publish change events; those come only from live\n" +
+			"ingestion.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validate selection flags before any AWS call, so a bad invocation
 			// fails fast without hitting CloudFormation.

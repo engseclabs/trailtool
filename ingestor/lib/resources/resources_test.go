@@ -640,3 +640,17 @@ func TestResourceKeyQualifiesIdentifierByAccount(t *testing.T) {
 		t.Fatalf("ResourceKey() = %q, want %q", first, want)
 	}
 }
+
+func TestParseResourceKeyRoundTrips(t *testing.T) {
+	key := ResourceKey("111111111111", "logs:log-group:/aws/events/trailtool-activity")
+	account, identifier, ok := ParseResourceKey(key)
+	if !ok || account != "111111111111" || identifier != "logs:log-group:/aws/events/trailtool-activity" {
+		t.Fatalf("ParseResourceKey(%q) = %q, %q, %v", key, account, identifier, ok)
+	}
+	if _, _, ok := ParseResourceKey("no-separator"); ok {
+		t.Fatalf("parsed a key with no account separator")
+	}
+	if _, _, ok := ParseResourceKey("111111111111#not*base64"); ok {
+		t.Fatalf("parsed an identifier that is not base64url")
+	}
+}

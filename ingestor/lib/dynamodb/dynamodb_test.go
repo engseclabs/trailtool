@@ -685,13 +685,16 @@ func TestWriteWindowedSessionResolvedReturnsStickySurvivor(t *testing.T) {
 	gap := 30 * time.Minute
 
 	first := winSession("win#AIDADEPLOYBOT1234567#2026-07-15T10:00:00Z", "2026-07-15T10:00:00Z", "2026-07-15T10:10:00Z", 2, 1)
-	if err := WriteWindowedSession(context.Background(), store, "sessions", first, gap); err != nil {
-		t.Fatalf("seed write: %v", err)
+	if _, created, err := WriteWindowedSessionResolved(context.Background(), store, "sessions", first, gap); err != nil || !created {
+		t.Fatalf("seed write: created=%v err=%v, want a fresh window", created, err)
 	}
 	later := winSession("win#AIDADEPLOYBOT1234567#2026-07-15T10:20:00Z", "2026-07-15T10:20:00Z", "2026-07-15T10:25:00Z", 3, 1)
-	resolved, err := WriteWindowedSessionResolved(context.Background(), store, "sessions", later, gap)
+	resolved, created, err := WriteWindowedSessionResolved(context.Background(), store, "sessions", later, gap)
 	if err != nil {
 		t.Fatalf("resolved write: %v", err)
+	}
+	if created {
+		t.Fatalf("fold into an existing window reported a fresh window")
 	}
 	if resolved.SK != first.SK {
 		t.Fatalf("resolved SK = %q, want sticky SK %q", resolved.SK, first.SK)
@@ -773,5 +776,17 @@ func TestWriteWindowedSessionConflictRetriesAndConverges(t *testing.T) {
 	}
 	if sess.EndTime != "2026-07-15T10:25:00Z" {
 		t.Errorf("EndTime = %s, want 10:25", sess.EndTime)
+	}
+}
+
+func TestWriteSessionReportsCreateThenMerge(t *testing.T) {
+	store := newFakeStore()
+	sess := winSession("key#ASIAEXAMPLE#AROAEXAMPLE", "2026-07-15T10:00:00Z", "2026-07-15T10:10:00Z", 2, 0)
+
+	if created, err := WriteSession(context.Background(), store, "sessions", sess); err != nil || !created {
+		t.Fatalf("first write: created=%v err=%v, want created", created, err)
+	}
+	if created, err := WriteSession(context.Background(), store, "sessions", sess); err != nil || created {
+		t.Fatalf("second write: created=%v err=%v, want merged", created, err)
 	}
 }

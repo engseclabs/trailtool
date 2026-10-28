@@ -32,10 +32,14 @@ func ref(personKey, anchor, roleID string) string {
 // processForTest runs the aggregation and returns the in-memory sessions map
 // (keyed by session ref "person_key|sk"). Empty Tables skip all DynamoDB I/O.
 func processForTest(events []types.CloudTrailRecord) (map[string]*types.DynamoDBSession, error) {
-	return processInternal(context.Background(), nil, Config{
+	res, err := ProcessWithResult(context.Background(), nil, Config{
 		Tables:    Tables{},
 		Namespace: "test",
 	}, events)
+	if res == nil {
+		return nil, err
+	}
+	return res.byRef, err
 }
 
 func sessionKeys(m map[string]*types.DynamoDBSession) []string {
