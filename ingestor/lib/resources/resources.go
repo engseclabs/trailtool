@@ -35,6 +35,19 @@ func ResourceKey(accountID, identifier string) string {
 	return accountID + "#" + base64.RawURLEncoding.EncodeToString([]byte(identifier))
 }
 
+// ParseResourceKey is the inverse of ResourceKey.
+func ParseResourceKey(key string) (accountID, identifier string, ok bool) {
+	accountID, encoded, found := strings.Cut(key, "#")
+	if !found {
+		return "", "", false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", "", false
+	}
+	return accountID, string(raw), true
+}
+
 // ResourceKeys returns canonical account-qualified IDs.
 func ResourceKeys(resources []types.ResourceIdentity) []string {
 	keys := make([]string, 0, len(resources))

@@ -12,7 +12,9 @@
   },
   "related": {
     "kind": "resource",
-    "id": "s3:bucket:logs"
+    "id": "111111111111#czM6YnVja2V0OmxvZ3M",
+    "account_id": "111111111111",
+    "identifier": "s3:bucket:logs"
   },
   "first_seen": "2026-10-01T10:00:00Z",
   "subject_counts": {

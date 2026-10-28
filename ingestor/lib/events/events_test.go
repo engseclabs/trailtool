@@ -18,6 +18,7 @@ import (
 	"github.com/engseclabs/trailtool/ingestor/lib/aggregator"
 	ddblib "github.com/engseclabs/trailtool/ingestor/lib/dynamodb"
 	"github.com/engseclabs/trailtool/ingestor/lib/identity"
+	"github.com/engseclabs/trailtool/ingestor/lib/resources"
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
 
@@ -89,7 +90,7 @@ func testResult() *aggregator.Result {
 			edge(ddblib.RelationKindPerson, testPerson, ddblib.RelationKindService, "s3.amazonaws.com", true),
 			edge(ddblib.RelationKindPerson, testPerson, ddblib.RelationKindSession, childRef, true),
 			edge(ddblib.RelationKindService, "s3.amazonaws.com", ddblib.RelationKindPerson, testPerson, false),
-			edge(ddblib.RelationKindRole, testRole, ddblib.RelationKindResource, "s3:bucket:logs", false),
+			edge(ddblib.RelationKindRole, testRole, ddblib.RelationKindResource, resources.ResourceKey("111111111111", "s3:bucket:logs"), false),
 			edge(ddblib.RelationKindRole, testRole, ddblib.RelationKindService, "s3.amazonaws.com", false),
 		},
 		Records: map[string]types.CloudTrailRecord{"evt-1": putBucketPolicy()},
@@ -197,6 +198,12 @@ func TestGoldenDetails(t *testing.T) {
 	if roleEdge.SubjectCounts["services"] != 2 || roleEdge.SubjectCounts["resources"] != 5 || roleEdge.SubjectCounts["people"] != 4 {
 		t.Fatalf("role counts = %v, want post-write minus this batch's edges", roleEdge.SubjectCounts)
 	}
+	if roleEdge.Related.AccountID != "111111111111" || roleEdge.Related.Identifier != "s3:bucket:logs" {
+		t.Fatalf("related resource = %+v, want the decoded account and identifier", roleEdge.Related)
+	}
+	if roleEdge.Subject.Identifier != "" {
+		t.Fatalf("non-resource subject carries an identifier: %+v", roleEdge.Subject)
+	}
 	assertGolden(t, "relation_created", roleEdge)
 
 	activity := BuildSessionActivity(testEnv, res)
@@ -302,7 +309,7 @@ func (p *fakePublisher) PutEvents(_ context.Context, in *eventbridge.PutEventsIn
 func nounEvents(n int) []Event {
 	evs := make([]Event, n)
 	for i := range evs {
-		evs[i] = Event{DetailType: DetailTypeNounCreated, Detail: &NounCreated{Envelope: testEnv, Kind: "service", ID: "s3.amazonaws.com"}}
+		evs[i] = Event{DetailType: DetailTypeNounCreated, Detail: &NounCreated{Envelope: testEnv, Noun: NewNoun("service", "s3.amazonaws.com")}}
 	}
 	return evs
 }

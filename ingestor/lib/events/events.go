@@ -11,6 +11,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
 
+	ddblib "github.com/engseclabs/trailtool/ingestor/lib/dynamodb"
+	"github.com/engseclabs/trailtool/ingestor/lib/resources"
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
 
@@ -83,17 +85,31 @@ type Resource struct {
 	Type      string `json:"type,omitempty"`
 }
 
-// Noun identifies one noun by kind and id.
+// Noun identifies one noun by kind and id. ID is TrailTool's key for the noun.
+// A resource's key is opaque (account plus encoded identifier), so resources
+// also carry the decoded AccountID and Identifier.
 type Noun struct {
-	Kind string `json:"kind"`
-	ID   string `json:"id"`
+	Kind       string `json:"kind"`
+	ID         string `json:"id"`
+	AccountID  string `json:"account_id,omitempty"`
+	Identifier string `json:"identifier,omitempty"`
+}
+
+// NewNoun builds a Noun, decoding a resource key into its parts.
+func NewNoun(kind, id string) Noun {
+	noun := Noun{Kind: kind, ID: id}
+	if kind == ddblib.RelationKindResource {
+		if accountID, identifier, ok := resources.ParseResourceKey(id); ok {
+			noun.AccountID, noun.Identifier = accountID, identifier
+		}
+	}
+	return noun
 }
 
 // NounCreated is the detail of TrailTool Noun Created.
 type NounCreated struct {
 	Envelope
-	Kind      string  `json:"kind"`
-	ID        string  `json:"id"`
+	Noun
 	FirstSeen string  `json:"first_seen"`
 	Trigger   *Record `json:"trigger,omitempty"`
 }

@@ -66,7 +66,13 @@ Fires the first time a noun of kind `person`, `account`, `role`, `service`, or `
 }
 ```
 
-`id` is the same identifier the CLI and relations table use (person key, account ID, role ARN, event source, resource key). `first_seen` and `trigger` are the batch's earliest event touching the noun.
+`id` is the key the CLI and relations table use: person key, account ID, role ARN, event source, or resource key. A resource key is opaque (`<account>#<base64url identifier>`), so resource nouns also carry the decoded `account_id` and `identifier`:
+
+```json
+{"kind": "resource", "id": "111111111111#czM6YnVja2V0OmxvZ3M", "account_id": "111111111111", "identifier": "s3:bucket:logs"}
+```
+
+The same fields appear on `subject` and `related` in Relation Created. `first_seen` and `trigger` are the batch's earliest event touching the noun.
 
 The source of truth is the noun's relation `_summary` item, created with `attribute_not_exists`. A successful create is a new noun. Concurrent Lambdas race on that conditional put, so exactly one reports it.
 
@@ -85,7 +91,7 @@ Edges involving a session are never reported.
 ```json
 {
   "subject": {"kind": "role", "id": "arn:aws:iam::111111111111:role/admin"},
-  "related": {"kind": "resource", "id": "s3:bucket:logs"},
+  "related": {"kind": "resource", "id": "111111111111#czM6YnVja2V0OmxvZ3M", "account_id": "111111111111", "identifier": "s3:bucket:logs"},
   "first_seen": "2026-10-01T10:00:00Z",
   "subject_counts": {"people": 4, "sessions": 9, "accounts": 1, "roles": 0, "services": 2, "resources": 5},
   "trigger": { "…": "trimmed record" }

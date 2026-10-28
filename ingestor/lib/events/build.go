@@ -50,8 +50,7 @@ func BuildCreated(ctx context.Context, env Envelope, res *aggregator.Result, cou
 		}
 		out = append(out, Event{DetailType: DetailTypeNounCreated, Detail: &NounCreated{
 			Envelope:  env,
-			Kind:      noun.Kind,
-			ID:        noun.ID,
+			Noun:      NewNoun(noun.Kind, noun.ID),
 			FirstSeen: noun.FirstSeen,
 			Trigger:   trigger(res, noun.TriggerEventID),
 		}})
@@ -78,8 +77,8 @@ func BuildCreated(ctx context.Context, env Envelope, res *aggregator.Result, cou
 		}
 		out = append(out, Event{DetailType: DetailTypeRelationCreated, Detail: &RelationCreated{
 			Envelope:      env,
-			Subject:       Noun{Kind: edge.SubjectKind, ID: edge.SubjectID},
-			Related:       Noun{Kind: edge.RelatedKind, ID: edge.RelatedID},
+			Subject:       NewNoun(edge.SubjectKind, edge.SubjectID),
+			Related:       NewNoun(edge.RelatedKind, edge.RelatedID),
 			FirstSeen:     edge.FirstSeen,
 			SubjectCounts: subjectCounts,
 			Trigger:       trigger(res, edge.TriggerEventID),
