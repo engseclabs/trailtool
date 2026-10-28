@@ -138,7 +138,7 @@ The ingestor can publish what it learns to EventBridge, so alerting and triage s
 | `TrailTool Relation Created` | two nouns are linked for the first time (for example, a person reaches a new account) |
 | `TrailTool Session Activity` | a session does anything in a CloudTrail file, with its writes and denied calls |
 
-Delivery is best-effort, and replays publish nothing unless run with `trailtool replay --emit-events`. Schemas and delivery semantics are in [`docs/design/events.md`](docs/design/events.md).
+Events come only from live ingestion; `trailtool replay` never publishes them. Delivery is best-effort. Schemas and delivery semantics are in [`docs/design/events.md`](docs/design/events.md).
 
 ## Using TrailTool with agents
 

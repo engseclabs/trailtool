@@ -12,7 +12,7 @@ After each CloudTrail file, the ingestor can publish EventBridge events describi
 | `TrailTool Relation Created` | Two nouns were linked for the first time | Once per edge |
 | `TrailTool Session Activity` | What one session did in one CloudTrail file | Once per session per file |
 
-The feature is off by default. Setting the ingestor's `ActivityEventBusArn` parameter turns it on; empty means no EventBridge client, no extra DynamoDB reads, and no events. Delivery is best-effort: a failed publish is logged and dropped, and never fails ingestion.
+The feature is off by default. Setting the ingestor's `ActivityEventBusArn` parameter turns it on; empty means no EventBridge client, no extra DynamoDB reads, and no events. Events come only from live ingestion; `trailtool replay` never publishes them. Delivery is best-effort: a failed publish is logged and dropped, and never fails ingestion.
 
 Events carry emails, source IPs, user agents, and CloudTrail request parameters. Treat the target bus as holding the same sensitivity as the CloudTrail logs themselves.
 
@@ -155,7 +155,7 @@ Fires once per session per CloudTrail file, including read-only sessions. Every 
 
 **No ordering.** EventBridge does not order deliveries. A Relation Created can arrive before the Noun Created for its subject, and events from different files interleave.
 
-**Replays are silent by default.** `trailtool replay` marks its synthetic S3 events with `"trailtool": {"replay": true}`, and the ingestor suppresses emission for them. After `trailtool reset`, every noun would otherwise come out new. `trailtool replay --emit-events` opts in.
+**Live ingestion only.** Change events feed live audit systems, so replayed history never publishes them. `trailtool replay` marks its synthetic S3 events with `"trailtool": {"replay": true}`, and the ingestor suppresses emission for every such invocation. There is no opt-in. This also keeps a reset and replay from reporting every noun as new.
 
 ## 8. Turning it on
 

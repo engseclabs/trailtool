@@ -73,7 +73,7 @@ func TestSuppressForReplay(t *testing.T) {
 	cases := map[string]bool{
 		`{"Records":[{"s3":{"object":{"key":"k"}}}]}`:                                                false,
 		`{"Records":[{"s3":{"object":{"key":"k"}}}],"trailtool":{"replay":true}}`:                    true,
-		`{"Records":[{"s3":{"object":{"key":"k"}}}],"trailtool":{"replay":true,"emit_events":true}}`: false,
+		`{"Records":[{"s3":{"object":{"key":"k"}}}],"trailtool":{"replay":true,"emit_events":true}}`: true,
 		`{"source":"aws.s3","detail-type":"Object Created"}`:                                         false,
 	}
 	for raw, want := range cases {

@@ -47,8 +47,8 @@ type Config struct {
 	Publisher           tevents.Publisher
 	ActivityEventBusArn string
 
-	// SuppressEmission turns change events off for one invocation. Replays set
-	// it through their payload marker unless run with --emit-events.
+	// SuppressEmission turns change events off for one invocation. Replays
+	// always set it through their payload marker.
 	SuppressEmission bool
 }
 
@@ -56,19 +56,18 @@ type Config struct {
 // synthetic S3 events (core/replay LambdaInvoker).
 type invocationMarker struct {
 	TrailTool struct {
-		Replay     bool `json:"replay"`
-		EmitEvents bool `json:"emit_events"`
+		Replay bool `json:"replay"`
 	} `json:"trailtool"`
 }
 
-// suppressForReplay reports whether a raw event is a replay that did not opt
-// in to change events. After a reset every noun would otherwise look new.
+// suppressForReplay reports whether a raw event is a replay. Change events feed
+// live audit systems, so replayed history never publishes them.
 func suppressForReplay(rawEvent json.RawMessage) bool {
 	var marker invocationMarker
 	if err := json.Unmarshal(rawEvent, &marker); err != nil {
 		return false
 	}
-	return marker.TrailTool.Replay && !marker.TrailTool.EmitEvents
+	return marker.TrailTool.Replay
 }
 
 // GetEnvOrDefault returns the environment variable value or the default.
