@@ -147,7 +147,9 @@ Fires once per session per CloudTrail file, including read-only sessions. Every 
 
 - `sid` is the persisted session's id, the same one `trailtool sessions` shows. A windowed (`win#`) session can fold into an earlier window during the write; the event carries the survivor's sid, not the pre-write one. Session references in `origin` and `chained_into` are sids too.
 - `new_session` is true when this file's write created the session rather than merging into an existing one.
-- `writes` holds the file's mutating calls (`readOnly` false or absent) and every access-denied call, earliest first. It is capped at 50 records; `writes_truncated` counts the rest and `write_count` is the total before truncation. If an event still exceeds EventBridge's 256 KB entry limit, more writes are dropped (and counted in `writes_truncated`) until it fits.
+- `events_count` counts the file's successful calls and `denied_count` its access-denied calls; a call is in exactly one. `event_counts` and `denied_event_counts` break each down by `eventSource:eventName`.
+- One session's calls can span several CloudTrail files, even within one five-minute window, so a session can get several Session Activity events for the same stretch of time.
+- `writes` holds the file's mutating calls (`readOnly` false or absent) and every access-denied call, earliest first. CloudTrail marks some security-relevant calls read-only, `sts:AssumeRole` among them, so a successful role assumption is not in `writes`; it shows in `event_counts`, and the session it created shows in `chained_into`. It is capped at 50 records; `writes_truncated` counts the rest and `write_count` is the total before truncation. If an event still exceeds EventBridge's 256 KB entry limit, more writes are dropped (and counted in `writes_truncated`) until it fits.
 - `write_count` and `denied_count` are numbers so rules can filter on them, for example `{"activity": {"write_count": [{"numeric": [">", 0]}]}}`.
 - `origin` fields are empty unless the session was created by role chaining, `aws login`, or AWS MCP Server authorization.
 
