@@ -22,6 +22,7 @@ func TestRecordEventRelationsWritesEveryInverseOnce(t *testing.T) {
 		relations,
 		"test",
 		"2026-07-24T11:00:00Z",
+		"evt-late",
 		args.person,
 		args.session,
 		args.account,
@@ -33,6 +34,7 @@ func TestRecordEventRelationsWritesEveryInverseOnce(t *testing.T) {
 		relations,
 		"test",
 		"2026-07-24T10:00:00Z",
+		"evt-early",
 		args.person,
 		args.session,
 		args.account,
@@ -63,6 +65,9 @@ func TestRecordEventRelationsWritesEveryInverseOnce(t *testing.T) {
 		if got.FirstSeen != "2026-07-24T10:00:00Z" || got.LastSeen != "2026-07-24T11:00:00Z" {
 			t.Fatalf("inverse bounds = %s/%s, want both observations", got.FirstSeen, got.LastSeen)
 		}
+		if got.TriggerEventID != "evt-early" {
+			t.Fatalf("trigger = %q, want the earliest observation evt-early", got.TriggerEventID)
+		}
 	}
 }
 
@@ -72,6 +77,7 @@ func TestRecordEventRelationsSkipsMissingIdentitiesAndResourcePairs(t *testing.T
 		relations,
 		"test",
 		"2026-07-24T10:00:00Z",
+		"evt-1",
 		"",
 		"",
 		"111111111111",
@@ -104,6 +110,7 @@ func TestRelationCollectorReplacesWindowedSessionRef(t *testing.T) {
 		relations,
 		"test",
 		"2026-07-24T10:10:00Z",
+		"evt-1",
 		"iamuser#reader",
 		oldRef,
 		"111111111111",
@@ -127,7 +134,11 @@ func TestRelationCollectorReplacesWindowedSessionRef(t *testing.T) {
 		"111111111111",
 		"2026-07-24T10:10:00Z",
 	)
-	if _, ok := relations[want.PK+"\x00"+want.SK]; !ok {
+	got, ok := relations[want.PK+"\x00"+want.SK]
+	if !ok {
 		t.Fatalf("replacement session edge was not created")
+	}
+	if got.TriggerEventID != "evt-1" {
+		t.Fatalf("replacement edge trigger = %q, want evt-1 carried through the rebuild", got.TriggerEventID)
 	}
 }

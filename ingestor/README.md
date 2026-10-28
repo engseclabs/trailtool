@@ -190,6 +190,8 @@ check the forwarder rule's `FailedInvocations` metric in `BUCKET_ACCOUNT`. Run
   permission, and an event bus policy when `EventSourceAccount` is set.
 - **Custom resource** that enables EventBridge notifications on the CloudTrail
   bucket (skipped when `ManageBucketNotification` is `false`).
+- **`events:PutEvents` permission** on `ActivityEventBusArn`, only when it is
+  set.
 
 `trailtool-cloudtrail-forwarder`: an EventBridge rule forwarding
 `*/CloudTrail/*.json.gz` deliveries to the ingestor account's default bus, and
@@ -207,6 +209,7 @@ their data. There is no migration; history rebuilds from CloudTrail with
 | `CloudTrailBucketName` | *(required)* | S3 bucket holding the CloudTrail logs. |
 | `ManageBucketNotification` | `true` | Whether this stack turns on EventBridge notifications for the bucket. Set to `false` when another account owns it. |
 | `EventSourceAccount` | `''` | Bucket owner's account ID, allowed to forward S3 events onto this account's default event bus. Set for cross-account deployments. |
+| `ActivityEventBusArn` | `''` | EventBridge bus that receives TrailTool change events ([schemas](../docs/design/events.md)). Empty turns them off. The stack grants `events:PutEvents` on this ARN only; a bus in another account also needs a resource policy allowing `trailtool-ingestor-role`. |
 
 Forwarder:
 

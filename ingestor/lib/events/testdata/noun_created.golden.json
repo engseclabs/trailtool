@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "customer_id": "default",
+  "file": {
+    "key": "AWSLogs/111111111111/CloudTrail/us-east-1/2026/10/01/111111111111_CloudTrail_us-east-1_20261001T1005Z_abc.json.gz",
+    "account_id": "111111111111",
+    "region": "us-east-1"
+  },
+  "kind": "person",
+  "id": "idc#d-123#user-456",
+  "first_seen": "2026-10-01T10:00:00Z",
+  "trigger": {
+    "event_id": "evt-1",
+    "time": "2026-10-01T10:00:00Z",
+    "event": "s3.amazonaws.com:PutBucketPolicy",
+    "request_parameters": {
+      "bucketName": "logs"
+    },
+    "resources": [
+      {
+        "arn": "arn:aws:s3:::logs",
+        "account_id": "111111111111",
+        "type": "AWS::S3::Bucket"
+      }
+    ],
+    "source_ip": "203.0.113.7",
+    "user_agent": "aws-cli/2.17.0"
+  }
+}

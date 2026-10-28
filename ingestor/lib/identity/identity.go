@@ -310,7 +310,12 @@ const SidDisplayMin = 6
 // Deterministic means merges and re-ingests keep the same sid; lowercase base32
 // avoids shell-quoting and visually ambiguous characters.
 func Sid(personKey, sk string) string {
-	sum := sha256.Sum256([]byte(SessionRef(personKey, sk)))
+	return SidFromRef(SessionRef(personKey, sk))
+}
+
+// SidFromRef is Sid for a session ref already joined by SessionRef.
+func SidFromRef(ref string) string {
+	sum := sha256.Sum256([]byte(ref))
 	enc := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])
 	return strings.ToLower(enc[:SidLength])
 }

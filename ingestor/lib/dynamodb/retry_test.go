@@ -111,13 +111,13 @@ func TestWriteWindowedSessionRecomputesAfterTransactionConflicts(t *testing.T) {
 	base := newFakeStore()
 	gap := 30 * time.Minute
 	first := winSession("win#AIDADEPLOYBOT1234567#2026-07-15T10:00:00Z", "2026-07-15T10:00:00Z", "2026-07-15T10:10:00Z", 2, 1)
-	if _, err := WriteWindowedSessionResolved(context.Background(), base, "sessions", first, gap); err != nil {
+	if _, _, err := WriteWindowedSessionResolved(context.Background(), base, "sessions", first, gap); err != nil {
 		t.Fatalf("seed write: %v", err)
 	}
 
 	store := &transactionConflictStore{fakeStore: base, remaining: 2}
 	later := winSession("win#AIDADEPLOYBOT1234567#2026-07-15T10:25:00Z", "2026-07-15T10:25:00Z", "2026-07-15T10:35:00Z", 3, 1)
-	if _, err := WriteWindowedSessionResolved(context.Background(), store, "sessions", later, gap); err != nil {
+	if _, _, err := WriteWindowedSessionResolved(context.Background(), store, "sessions", later, gap); err != nil {
 		t.Fatalf("extend through conflicts: %v", err)
 	}
 	if store.writes != 3 {

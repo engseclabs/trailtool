@@ -128,6 +128,18 @@ TrailTool stitches events into sessions, gives each resulting session a **sessio
 | `AGENT` | AWS MCP Server traffic |
 | `LOGIN` | Credentials vended to an agent via `aws login` |
 
+## Change events
+
+The ingestor can publish what it learns to EventBridge, so alerting and triage systems can react to TrailTool's identity correlation without reading its tables. Deploy `trailtool-ingestor` with `ActivityEventBusArn` set to a bus ARN; it is off when empty. Consumers filter on `source: "trailtool"` and the `detail-type`:
+
+| `detail-type` | Fires when |
+|---------------|------------|
+| `TrailTool Noun Created` | a person, account, role, service, or resource appears for the first time |
+| `TrailTool Relation Created` | two nouns are linked for the first time (for example, a person reaches a new account) |
+| `TrailTool Session Activity` | a session does anything in a CloudTrail file, with its writes and denied calls |
+
+Delivery is best-effort, and replays publish nothing unless run with `trailtool replay --emit-events`. Schemas and delivery semantics are in [`docs/design/events.md`](docs/design/events.md).
+
 ## Using TrailTool with agents
 
 TrailTool is designed to work well with AI coding agents like Claude Code and Cursor. To teach your agent about TrailTool's capabilities, copy [`docs/agent-instructions.md`](docs/agent-instructions.md) into your project as `CLAUDE.md` (or your agent's equivalent configuration file).

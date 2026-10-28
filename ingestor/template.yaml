@@ -50,9 +50,18 @@ Parameters:
       Account ID allowed to forward S3 events onto this account's default event
       bus. Set to the bucket owner's account ID for a cross-account deployment.
 
+  ActivityEventBusArn:
+    Type: String
+    Default: ''
+    Description: >-
+      EventBridge bus ARN that receives TrailTool change events (Noun Created,
+      Relation Created, Session Activity). Empty disables them. Delivery is
+      best-effort.
+
 Conditions:
   ManageNotification: !Equals [!Ref ManageBucketNotification, 'true']
   CrossAccountEvents: !Not [!Equals [!Ref EventSourceAccount, '']]
+  EmitActivityEvents: !Not [!Equals [!Ref ActivityEventBusArn, '']]
 
 Globals:
   Function:
@@ -316,6 +325,17 @@ Resources:
                 Action:
                   - s3:GetObject
                 Resource: !Sub "arn:aws:s3:::${CloudTrailBucketName}/*"
+        - !If
+          - EmitActivityEvents
+          - PolicyName: ActivityEventsPolicy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - events:PutEvents
+                  Resource: !Ref ActivityEventBusArn
+          - !Ref AWS::NoValue
 
   # Lambda Function
   TrailToolIngestorFunction:
@@ -337,6 +357,7 @@ Resources:
           IDENTITY_LINKS_TABLE: !Ref IdentityLinksTable
           INGESTED_FILES_TABLE: !Ref IngestedFilesTable
           IDLE_GAP: 30m # windowed-fallback sessions only (long-lived keys, root)
+          ACTIVITY_EVENT_BUS_ARN: !If [EmitActivityEvents, !Ref ActivityEventBusArn, !Ref AWS::NoValue]
       Description: Processes CloudTrail logs from S3 and writes aggregated data to DynamoDB
 
   # Custom Resource - Enable EventBridge notifications on S3 bucket

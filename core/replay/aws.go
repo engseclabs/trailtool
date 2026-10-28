@@ -44,17 +44,40 @@ func (l S3Lister) ListKeys(ctx context.Context, prefix string) ([]string, error)
 type LambdaInvoker struct {
 	Client   *lambda.Client
 	Function string
+	// EmitEvents lets replayed files publish change events. Off by default:
+	// after a reset every noun would otherwise be reported as new.
+	EmitEvents bool
+}
+
+// ReplayMarker tags a synthetic event as a replay so the ingestor can
+// suppress change events (ingest.invocationMarker reads it).
+type ReplayMarker struct {
+	Replay     bool `json:"replay"`
+	EmitEvents bool `json:"emit_events"`
+}
+
+type invokePayload struct {
+	events.S3Event
+	TrailTool ReplayMarker `json:"trailtool"`
+}
+
+// InvokePayload builds the synthetic S3 event for one object.
+func InvokePayload(bucket, key string, emitEvents bool) ([]byte, error) {
+	return json.Marshal(invokePayload{
+		S3Event: events.S3Event{
+			Records: []events.S3EventRecord{{
+				S3: events.S3Entity{
+					Bucket: events.S3Bucket{Name: bucket},
+					Object: events.S3Object{Key: key},
+				},
+			}},
+		},
+		TrailTool: ReplayMarker{Replay: true, EmitEvents: emitEvents},
+	})
 }
 
 func (i LambdaInvoker) Invoke(ctx context.Context, bucket, key string) error {
-	payload, err := json.Marshal(events.S3Event{
-		Records: []events.S3EventRecord{{
-			S3: events.S3Entity{
-				Bucket: events.S3Bucket{Name: bucket},
-				Object: events.S3Object{Key: key},
-			},
-		}},
-	})
+	payload, err := InvokePayload(bucket, key, i.EmitEvents)
 	if err != nil {
 		return fmt.Errorf("marshal synthetic S3 event: %w", err)
 	}

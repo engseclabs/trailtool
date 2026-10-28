@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "customer_id": "default",
+  "file": {
+    "key": "AWSLogs/111111111111/CloudTrail/us-east-1/2026/10/01/111111111111_CloudTrail_us-east-1_20261001T1005Z_abc.json.gz",
+    "account_id": "111111111111",
+    "region": "us-east-1"
+  },
+  "session": {
+    "sid": "gfo65rnbteswfydb",
+    "person": {
+      "key": "idc#d-123#user-456",
+      "email": "alice@example.com",
+      "label": "Alice Example"
+    },
+    "type": "cli",
+    "account_id": "111111111111",
+    "role_arn": "arn:aws:iam::111111111111:role/admin",
+    "role_session_name": "alice",
+    "new_session": true,
+    "origin": {
+      "assumed_from_session": "dw2upz6s3khx5zlc",
+      "assumed_from_role_arn": "arn:aws:iam::111111111111:role/base",
+      "session_tags": {
+        "team": "platform"
+      },
+      "has_session_policy": false
+    }
+  },
+  "activity": {
+    "start": "2026-10-01T10:00:00Z",
+    "end": "2026-10-01T10:01:00Z",
+    "events_count": 3,
+    "denied_count": 1,
+    "service_driven_count": 1,
+    "clickops_count": 0,
+    "event_counts": {
+      "s3.amazonaws.com:GetObject": 2,
+      "s3.amazonaws.com:PutBucketPolicy": 1
+    },
+    "denied_event_counts": {
+      "s3.amazonaws.com:GetObject": 1
+    },
+    "source_ips": [
+      "203.0.113.7"
+    ],
+    "clients": [
+      {
+        "key": "cli|aws-cli|2.17.0||||",
+        "category": "cli",
+        "name": "aws-cli",
+        "version": "2.17.0",
+        "total_event_count": 3,
+        "first_seen": "",
+        "last_seen": ""
+      }
+    ],
+    "write_count": 2,
+    "writes": [
+      {
+        "event_id": "evt-1",
+        "time": "2026-10-01T10:00:00Z",
+        "event": "s3.amazonaws.com:PutBucketPolicy",
+        "request_parameters": {
+          "bucketName": "logs"
+        },
+        "resources": [
+          {
+            "arn": "arn:aws:s3:::logs",
+            "account_id": "111111111111",
+            "type": "AWS::S3::Bucket"
+          }
+        ],
+        "source_ip": "203.0.113.7",
+        "user_agent": "aws-cli/2.17.0"
+      },
+      {
+        "event_id": "evt-2",
+        "time": "2026-10-01T10:01:00Z",
+        "event": "s3.amazonaws.com:GetObject",
+        "error_code": "AccessDenied",
+        "error_message": "User is not authorized to perform s3:GetObject",
+        "source_ip": "203.0.113.7",
+        "invoked_by": "cloudformation.amazonaws.com"
+      }
+    ],
+    "writes_truncated": 0
+  }
+}

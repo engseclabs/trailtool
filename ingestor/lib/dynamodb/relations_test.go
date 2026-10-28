@@ -42,6 +42,17 @@ func relationInputKey(key map[string]ddbtypes.AttributeValue) string {
 }
 
 func (s *fakeRelationStore) GetItem(_ context.Context, input *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	if input.Key["sk"].(*ddbtypes.AttributeValueMemberS).Value == RelationSummarySK {
+		summary, ok := s.summaries[input.Key["pk"].(*ddbtypes.AttributeValueMemberS).Value]
+		if !ok {
+			return &dynamodb.GetItemOutput{}, nil
+		}
+		item, err := attributevalue.MarshalMap(summary)
+		if err != nil {
+			return nil, err
+		}
+		return &dynamodb.GetItemOutput{Item: item}, nil
+	}
 	edge, ok := s.edges[relationInputKey(input.Key)]
 	if !ok {
 		return &dynamodb.GetItemOutput{}, nil
@@ -185,14 +196,14 @@ func TestWriteRelationCountsAnEdgeOnceAndExtendsBounds(t *testing.T) {
 		"s3.amazonaws.com",
 		"2026-07-24T10:00:00Z",
 	)
-	if err := WriteRelation(context.Background(), store, "relations", edge); err != nil {
+	if _, err := WriteRelation(context.Background(), store, "relations", edge); err != nil {
 		t.Fatalf("create relation: %v", err)
 	}
 
 	replayed := edge
 	replayed.FirstSeen = "2026-07-23T09:00:00Z"
 	replayed.LastSeen = "2026-07-25T11:00:00Z"
-	if err := WriteRelation(context.Background(), store, "relations", replayed); err != nil {
+	if _, err := WriteRelation(context.Background(), store, "relations", replayed); err != nil {
 		t.Fatalf("replay relation: %v", err)
 	}
 
@@ -219,7 +230,7 @@ func TestWriteRelationRetriesMissingEdgeAfterTransactionConflict(t *testing.T) {
 		"2026-07-24T10:00:00Z",
 	)
 
-	if err := WriteRelation(context.Background(), store, "relations", edge); err != nil {
+	if _, err := WriteRelation(context.Background(), store, "relations", edge); err != nil {
 		t.Fatalf("write relation: %v", err)
 	}
 	if store.transactionCalls != 2 {
@@ -241,14 +252,14 @@ func TestWriteRelationRetriesSummaryAndBoundaryTransactionConflicts(t *testing.T
 		"s3.amazonaws.com",
 		"2026-07-24T10:00:00Z",
 	)
-	if err := WriteRelation(context.Background(), store, "relations", edge); err != nil {
+	if _, err := WriteRelation(context.Background(), store, "relations", edge); err != nil {
 		t.Fatalf("create relation through summary conflicts: %v", err)
 	}
 
 	store.updateConflicts = 2
 	replayed := edge
 	replayed.FirstSeen = "2026-07-23T09:00:00Z"
-	if err := WriteRelation(context.Background(), store, "relations", replayed); err != nil {
+	if _, err := WriteRelation(context.Background(), store, "relations", replayed); err != nil {
 		t.Fatalf("update relation through boundary conflicts: %v", err)
 	}
 	if got := store.edges[edge.PK+"\x00"+edge.SK].FirstSeen; got != replayed.FirstSeen {
@@ -277,7 +288,7 @@ func TestWriteRelationsDeduplicatesAndCountsInverseEdges(t *testing.T) {
 		"2026-07-24T10:00:00Z",
 	)
 
-	if err := WriteRelations(context.Background(), store, "relations", []types.DynamoDBRelation{
+	if _, err := WriteRelations(context.Background(), store, "relations", []types.DynamoDBRelation{
 		forward,
 		duplicate,
 		inverse,
@@ -295,5 +306,44 @@ func TestWriteRelationsDeduplicatesAndCountsInverseEdges(t *testing.T) {
 	}
 	if store.edges[forward.PK+"\x00"+forward.SK].LastSeen != duplicate.LastSeen {
 		t.Fatalf("deduplicated edge did not retain the latest observation")
+	}
+}
+
+func TestWriteRelationsReportsOnlyWhatItCreated(t *testing.T) {
+	store := newFakeRelationStore()
+	person := "idc#d-123#user-456"
+	toAccount := NewRelation("test", RelationKindPerson, person, RelationKindAccount, "111111111111", "2026-07-24T10:00:00Z")
+	toService := NewRelation("test", RelationKindPerson, person, RelationKindService, "s3.amazonaws.com", "2026-07-24T10:00:00Z")
+
+	first, err := WriteRelations(context.Background(), store, "relations", []types.DynamoDBRelation{toAccount})
+	if err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if !first.NewSubjects[toAccount.PK] || len(first.NewEdges) != 1 {
+		t.Fatalf("first write = %+v, want a new subject and one new edge", first)
+	}
+
+	// The existing edge fails its condition and the subject summary already
+	// exists, so only the service edge is reported.
+	second, err := WriteRelations(context.Background(), store, "relations", []types.DynamoDBRelation{toAccount, toService})
+	if err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	if len(second.NewSubjects) != 0 {
+		t.Fatalf("second write NewSubjects = %v, want none", second.NewSubjects)
+	}
+	if len(second.NewEdges) != 1 || second.NewEdges[0].SK != toService.SK {
+		t.Fatalf("second write NewEdges = %+v, want only the service edge", second.NewEdges)
+	}
+
+	counts, err := GetRelationSummaryCounts(context.Background(), store, "relations", toAccount.PK)
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if counts["accounts"] != 1 || counts["services"] != 1 {
+		t.Fatalf("summary counts = %v, want one account and one service", counts)
+	}
+	if missing, err := GetRelationSummaryCounts(context.Background(), store, "relations", "test#person#none"); err != nil || missing != nil {
+		t.Fatalf("missing summary = %v, %v; want nil, nil", missing, err)
 	}
 }

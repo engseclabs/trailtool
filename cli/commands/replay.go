@@ -30,8 +30,9 @@ type replayDeps struct {
 // openReplayDeps builds the driver's AWS clients and resolves the CloudTrail
 // bucket. When bucket is empty it is discovered from the ingestor
 // CloudFormation stack, so the operator does not have to repeat what the
-// deployment already knows. A package var so tests swap in fakes.
-var openReplayDeps = func(ctx context.Context, bucket, function string) (replayDeps, error) {
+// deployment already knows. emitEvents lets replayed files publish change
+// events. A package var so tests swap in fakes.
+var openReplayDeps = func(ctx context.Context, bucket, function string, emitEvents bool) (replayDeps, error) {
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return replayDeps{}, err
@@ -44,7 +45,7 @@ var openReplayDeps = func(ctx context.Context, bucket, function string) (replayD
 	}
 	return replayDeps{
 		lister:  replay.S3Lister{Client: s3.NewFromConfig(cfg), Bucket: bucket},
-		invoker: replay.LambdaInvoker{Client: lambda.NewFromConfig(cfg), Function: function},
+		invoker: replay.LambdaInvoker{Client: lambda.NewFromConfig(cfg), Function: function, EmitEvents: emitEvents},
 		bucket:  bucket,
 	}, nil
 }
@@ -101,6 +102,7 @@ type replayFlags struct {
 	account  string
 	region   string
 	dryRun   bool
+	emit     bool
 }
 
 // ReplayCmd re-ingests historical CloudTrail objects from S3 through the
@@ -117,14 +119,16 @@ func ReplayCmd() *cobra.Command {
 			"Replay past (closed) days. Their objects are separate from what live\n" +
 			"delivery writes to today's prefix, so replay and live ingestion can run at\n" +
 			"the same time. Replaying the current, still-growing day is not supported.\n" +
-			"Reset first (trailtool reset) for a clean rebuild from scratch.",
+			"Reset first (trailtool reset) for a clean rebuild from scratch.\n\n" +
+			"Replayed files publish no change events unless --emit-events is set:\n" +
+			"after a reset every noun would otherwise be reported as new.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validate selection flags before any AWS call, so a bad invocation
 			// fails fast without hitting CloudFormation.
 			if err := validateReplaySelection(&f); err != nil {
 				return fatal("%v", err)
 			}
-			deps, err := openReplayDeps(cmd.Context(), f.bucket, f.function)
+			deps, err := openReplayDeps(cmd.Context(), f.bucket, f.function, f.emit)
 			if err != nil {
 				return fatalAWS("Deploy the ingestor stack, or pass --bucket.", err)
 			}
@@ -146,6 +150,7 @@ func ReplayCmd() *cobra.Command {
 	flags.StringVar(&f.account, "account", "", "Account ID for the standard CloudTrail key layout")
 	flags.StringVar(&f.region, "region", "", "Region for the standard CloudTrail key layout")
 	flags.BoolVar(&f.dryRun, "dry-run", false, "List and count matching objects without invoking the ingestor")
+	flags.BoolVar(&f.emit, "emit-events", false, "Publish change events for replayed files (when the ingestor has ActivityEventBusArn set)")
 	return cmd
 }
 

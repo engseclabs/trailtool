@@ -65,8 +65,20 @@ func encodeRelationID(id string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(id))
 }
 
+// RelationWriteResult reports what one WriteRelations call created. It can be
+// non-empty alongside an error: items written before the failure stay written.
+type RelationWriteResult struct {
+	// NewSubjects holds the subject PKs whose _summary this call created, which
+	// marks the noun's first appearance anywhere.
+	NewSubjects map[string]bool
+	// NewEdges holds the edges this call created, in key order. An edge that
+	// already existed only had its bounds widened and is absent.
+	NewEdges []types.DynamoDBRelation
+}
+
 // WriteRelations deduplicates and writes directed edges in key order.
-func WriteRelations(ctx context.Context, store RelationStore, tableName string, relations []types.DynamoDBRelation) error {
+func WriteRelations(ctx context.Context, store RelationStore, tableName string, relations []types.DynamoDBRelation) (RelationWriteResult, error) {
+	result := RelationWriteResult{NewSubjects: make(map[string]bool)}
 	merged := make(map[string]types.DynamoDBRelation)
 	for _, relation := range relations {
 		if relation.SubjectID == "" || relation.RelatedID == "" {
@@ -91,44 +103,55 @@ func WriteRelations(ctx context.Context, store RelationStore, tableName string, 
 	for _, key := range keys {
 		relation := merged[key]
 		if err := validateRelation(relation); err != nil {
-			return err
+			return result, err
 		}
 		if !summaries[relation.PK] {
-			if err := ensureRelationSummary(ctx, store, tableName, relation); err != nil {
-				return err
+			created, err := ensureRelationSummary(ctx, store, tableName, relation)
+			if err != nil {
+				return result, err
+			}
+			if created {
+				result.NewSubjects[relation.PK] = true
 			}
 			summaries[relation.PK] = true
 		}
-		if err := writeRelation(ctx, store, tableName, relation); err != nil {
-			return err
+		created, err := writeRelation(ctx, store, tableName, relation)
+		if err != nil {
+			return result, err
+		}
+		if created {
+			result.NewEdges = append(result.NewEdges, relation)
 		}
 	}
-	return nil
+	return result, nil
 }
 
 // WriteRelation creates an edge and increments its subject summary exactly
-// once. A replay updates the edge bounds without changing the summary.
-func WriteRelation(ctx context.Context, store RelationStore, tableName string, relation types.DynamoDBRelation) error {
+// once, reporting whether the edge is new. A replay updates the edge bounds
+// without changing the summary.
+func WriteRelation(ctx context.Context, store RelationStore, tableName string, relation types.DynamoDBRelation) (bool, error) {
 	if err := validateRelation(relation); err != nil {
-		return err
+		return false, err
 	}
-	if err := ensureRelationSummary(ctx, store, tableName, relation); err != nil {
-		return err
+	if _, err := ensureRelationSummary(ctx, store, tableName, relation); err != nil {
+		return false, err
 	}
 	return writeRelation(ctx, store, tableName, relation)
 }
 
-func writeRelation(ctx context.Context, store RelationStore, tableName string, relation types.DynamoDBRelation) error {
+// writeRelation reports true when its put created the edge, false when the
+// edge already existed and only its bounds were widened.
+func writeRelation(ctx context.Context, store RelationStore, tableName string, relation types.DynamoDBRelation) (bool, error) {
 	item, err := attributevalue.MarshalMap(relation)
 	if err != nil {
-		return fmt.Errorf("marshal relation: %w", err)
+		return false, fmt.Errorf("marshal relation: %w", err)
 	}
 
 	var lastErr error
 	for attempt := 0; attempt < transactionMaxAttempts; attempt++ {
 		if attempt > 0 {
 			if err := waitForTransactionRetry(ctx, attempt); err != nil {
-				return err
+				return false, err
 			}
 		}
 		_, err = store.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
@@ -144,7 +167,7 @@ func writeRelation(ctx context.Context, store RelationStore, tableName string, r
 					UpdateExpression: aws.String("SET #counts.#kind = #counts.#kind + :one"),
 					ExpressionAttributeNames: map[string]string{
 						"#counts": "counts",
-						"#kind":   relationCountName(relation.RelatedKind),
+						"#kind":   RelationCountName(relation.RelatedKind),
 					},
 					ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 						":one": &ddbtypes.AttributeValueMemberN{Value: "1"},
@@ -153,23 +176,23 @@ func writeRelation(ctx context.Context, store RelationStore, tableName string, r
 			},
 		})
 		if err == nil {
-			return nil
+			return true, nil
 		}
 		if !isTransactionCancellation(err) && !isTransactionConflict(err) {
-			return fmt.Errorf("write relation %s/%s: %w", relation.PK, relation.SK, err)
+			return false, fmt.Errorf("write relation %s/%s: %w", relation.PK, relation.SK, err)
 		}
 		lastErr = err
 
 		existing, getErr := getRelation(ctx, store, tableName, relation.PK, relation.SK)
 		if getErr != nil {
-			return getErr
+			return false, getErr
 		}
 		if existing != nil {
-			return updateRelationBounds(ctx, store, tableName, relation)
+			return false, updateRelationBounds(ctx, store, tableName, relation)
 		}
 	}
 
-	return fmt.Errorf("write relation %s/%s did not converge after %d attempts: %w",
+	return false, fmt.Errorf("write relation %s/%s did not converge after %d attempts: %w",
 		relation.PK, relation.SK, transactionMaxAttempts, lastErr)
 }
 
@@ -199,10 +222,12 @@ func validRelationKind(kind string) bool {
 	return false
 }
 
-func ensureRelationSummary(ctx context.Context, store RelationStore, tableName string, relation types.DynamoDBRelation) error {
+// ensureRelationSummary creates the subject's _summary if it is missing and
+// reports whether this call created it.
+func ensureRelationSummary(ctx context.Context, store RelationStore, tableName string, relation types.DynamoDBRelation) (bool, error) {
 	counts := make(map[string]int, len(relationKinds))
 	for _, kind := range relationKinds {
-		counts[relationCountName(kind)] = 0
+		counts[RelationCountName(kind)] = 0
 	}
 	item, err := attributevalue.MarshalMap(types.DynamoDBRelationSummary{
 		PK:         relation.PK,
@@ -211,7 +236,7 @@ func ensureRelationSummary(ctx context.Context, store RelationStore, tableName s
 		Counts:     counts,
 	})
 	if err != nil {
-		return fmt.Errorf("marshal relation summary: %w", err)
+		return false, fmt.Errorf("marshal relation summary: %w", err)
 	}
 
 	err = retryTransactionConflict(ctx, func() error {
@@ -222,10 +247,35 @@ func ensureRelationSummary(ctx context.Context, store RelationStore, tableName s
 		})
 		return err
 	})
-	if err != nil && !isConditionalCheckFailure(err) {
-		return fmt.Errorf("create relation summary %s: %w", relation.PK, err)
+	if isConditionalCheckFailure(err) {
+		return false, nil
 	}
-	return nil
+	if err != nil {
+		return false, fmt.Errorf("create relation summary %s: %w", relation.PK, err)
+	}
+	return true, nil
+}
+
+// GetRelationSummaryCounts reads one noun's _summary counts, keyed by count
+// name ("people", "accounts", ...). A missing summary reads as nil.
+func GetRelationSummaryCounts(ctx context.Context, store RelationStore, tableName, pk string) (map[string]int, error) {
+	// Consistent, because callers read right after their own increments.
+	result, err := store.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      aws.String(tableName),
+		ConsistentRead: aws.Bool(true),
+		Key:            relationSummaryKey(pk),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get relation summary %s: %w", pk, err)
+	}
+	if len(result.Item) == 0 {
+		return nil, nil
+	}
+	var summary types.DynamoDBRelationSummary
+	if err := attributevalue.UnmarshalMap(result.Item, &summary); err != nil {
+		return nil, fmt.Errorf("unmarshal relation summary %s: %w", pk, err)
+	}
+	return summary.Counts, nil
 }
 
 func getRelation(ctx context.Context, store RelationStore, tableName, pk, sk string) (*types.DynamoDBRelation, error) {
@@ -299,7 +349,8 @@ func relationSummaryKey(pk string) map[string]ddbtypes.AttributeValue {
 	return relationKey(pk, RelationSummarySK)
 }
 
-func relationCountName(kind string) string {
+// RelationCountName is the _summary counts key for a related kind.
+func RelationCountName(kind string) string {
 	if kind == RelationKindPerson {
 		return "people"
 	}

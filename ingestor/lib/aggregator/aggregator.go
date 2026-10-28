@@ -80,6 +80,10 @@ type Config struct {
 
 	// IdleGap overrides DefaultIdleGap for the windowed fallback.
 	IdleGap time.Duration
+
+	// RecordWrites collects each session's mutating and denied records into
+	// Result.Sessions for Session Activity events. Off unless emitting.
+	RecordWrites bool
 }
 
 func (c Config) namespace() string {
@@ -100,14 +104,15 @@ func (c Config) idleGap() time.Duration {
 // DynamoDB. It is the single entry-point for both the open-source and SaaS
 // ingestors.
 func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events []types.CloudTrailRecord) error {
-	_, err := processInternal(ctx, ddbClient, cfg, events)
+	_, err := ProcessWithResult(ctx, ddbClient, cfg, events)
 	return err
 }
 
-// processInternal performs aggregation and DynamoDB writes, returning the
-// in-memory sessions map keyed by session ref ("person_key|sk"). Extracted for
-// testability.
-func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events []types.CloudTrailRecord) (map[string]*types.DynamoDBSession, error) {
+// ProcessWithResult is Process, also returning what the batch wrote: each
+// session's batch slice and the nouns and edges created for the first time.
+// The result is non-nil even alongside an error, holding whatever was written
+// before the failure.
+func ProcessWithResult(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events []types.CloudTrailRecord) (*Result, error) {
 	ns := cfg.namespace()
 	events = dedupeByEventID(events)
 	log.Printf("=== Processing Identity-First Aggregation ===")
@@ -118,22 +123,23 @@ func processInternal(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	groups := identity.GroupEvents(events)
 	stored, err := fetchStoredLinks(ctx, ddbClient, cfg.Tables.IdentityLinks, groups)
 	if err != nil {
-		return nil, fmt.Errorf("fetch correlation links: %w", err)
+		return &Result{Namespace: ns}, fmt.Errorf("fetch correlation links: %w", err)
 	}
 	return aggregateGroups(ctx, ddbClient, cfg, ns, groups, stored)
 }
 
 // aggregateGroups resolves the credential groups and aggregates their events
 // into entity records, writing to DynamoDB when a client is present. Split
-// from processInternal so tests can inject stored links and simulate
+// from ProcessWithResult so tests can inject stored links and simulate
 // cross-batch delivery.
-func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, ns string, groups []identity.Group, stored map[string]*link) (map[string]*types.DynamoDBSession, error) {
+func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, ns string, groups []identity.Group, stored map[string]*link) (*Result, error) {
 	// Aggregation maps for all nouns
 	roles := make(map[string]*types.DynamoDBRole)
 	services := make(map[string]*types.DynamoDBService)
 	resourceMap := make(map[string]*types.DynamoDBResource)
 	people := make(map[string]*types.DynamoDBPerson)
-	sessions := make(map[string]*types.DynamoDBSession) // keyed by session ref person_key|sk
+	sessions := make(map[string]*types.DynamoDBSession)        // keyed by session ref person_key|sk
+	sessionWrites := make(map[string][]types.CloudTrailRecord) // session ref → mutating or denied calls
 	accounts := make(map[string]*types.DynamoDBAccount)
 	relations := make(relationCollector)
 
@@ -298,6 +304,9 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 					sess.SessionTags = mergeSessionTagMaps(sess.SessionTags, creationTags)
 					registerCreationTarget(links, event, sessRef)
 					accumulateSessionEvent(sess, event, resourceList)
+					if cfg.RecordWrites && isWriteOrDenied(event) {
+						sessionWrites[sessRef] = append(sessionWrites[sessRef], event)
+					}
 					addToSet(sessionServices, sessRef, event.EventSource)
 					if chainL != nil {
 						childEvents++
@@ -396,6 +405,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 				relations,
 				ns,
 				event.EventTime,
+				event.EventID,
 				personKey,
 				sessRef,
 				accountID,
@@ -502,9 +512,11 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	log.Printf("Session breakdown: cli=%d web=%d agent=%d login=%d",
 		typeCounts[SessionTypeCLI], typeCounts[SessionTypeWeb], typeCounts[SessionTypeAgent], typeCounts[SessionTypeLogin])
 
+	res := &Result{Namespace: ns, byRef: sessions}
+
 	// Write aggregated data to DynamoDB (skip when client is nil, e.g. in tests)
 	if ddbClient == nil {
-		return sessions, nil
+		return res, nil
 	}
 
 	// Correlation is required for later files to resolve and receive creation
@@ -512,7 +524,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	// hidden behind a successful batch.
 	if cfg.Tables.IdentityLinks != "" {
 		if err := writeIdentityLinks(ctx, ddbClient, cfg.Tables.IdentityLinks, links); err != nil {
-			return sessions, fmt.Errorf("write correlation links: %w", err)
+			return res, fmt.Errorf("write correlation links: %w", err)
 		}
 	}
 
@@ -551,29 +563,24 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 	// win# session writes may fold into a resolved ref and rewrite the relations
 	// collector in place (replaceID does a full clear+rebuild). The DynamoDB write
-	// runs concurrently, but relMu serializes that in-memory reconciliation so the
-	// shared collector is never mutated by two goroutines at once.
-	var relMu sync.Mutex
+	// runs concurrently, but mu serializes that in-memory reconciliation (and the
+	// result append) so shared state is never mutated by two goroutines at once.
+	var mu sync.Mutex
 	writeAll(ctx, sessions, func(ctx context.Context, sess *types.DynamoDBSession) {
-		var err error
-		sess.Sid = identity.Sid(sess.PersonKey, sess.SK)
-		if strings.HasPrefix(sess.SK, "win#") {
-			var persisted *types.DynamoDBSession
-			persisted, err = ddblib.WriteWindowedSessionResolved(ctx, ddbClient, cfg.Tables.Sessions, sess, cfg.idleGap())
-			if err == nil {
-				oldRef := identity.SessionRef(sess.PersonKey, sess.SK)
-				newRef := identity.SessionRef(persisted.PersonKey, persisted.SK)
-				relMu.Lock()
-				relations.replaceID(ddblib.RelationKindSession, oldRef, newRef)
-				relMu.Unlock()
-			}
-		} else {
-			err = ddblib.WriteSession(ctx, ddbClient, cfg.Tables.Sessions, sess)
-		}
+		written, err := writeSessionRecord(ctx, ddbClient, cfg, sess)
 		if err != nil {
 			log.Printf("ERROR: Failed to write session %s: %v", sess.SK, err)
+			return
 		}
+		ref := identity.SessionRef(sess.PersonKey, sess.SK)
+		written.Person = people[sess.PersonKey]
+		written.Writes = sessionWrites[ref]
+		mu.Lock()
+		relations.replaceID(ddblib.RelationKindSession, ref, identity.SessionRef(sess.PersonKey, written.SK))
+		res.Sessions = append(res.Sessions, written)
+		mu.Unlock()
 	})
+	sortSessionResults(res.Sessions)
 
 	if cfg.Tables.Sessions != "" {
 		for sessionRef, tags := range lateSessionTagUpdates {
@@ -623,12 +630,38 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	})
 
 	if cfg.Tables.Relations != "" {
-		if err := ddblib.WriteRelations(ctx, ddbClient, cfg.Tables.Relations, relations.edges()); err != nil {
-			return sessions, fmt.Errorf("write noun relations: %w", err)
+		written, err := ddblib.WriteRelations(ctx, ddbClient, cfg.Tables.Relations, relations.edges())
+		// Whatever was created before a failure stays created, and a retry of
+		// this batch will not report it again, so the result carries it either way.
+		collectCreated(res, relations, written.NewSubjects, written.NewEdges)
+		indexTriggers(res, groups)
+		if err != nil {
+			return res, fmt.Errorf("write noun relations: %w", err)
 		}
 	}
 
-	log.Printf("Processed %d roles, %d services, %d resources, %d people, %d sessions, %d accounts, %d relation edges",
-		len(roles), len(services), len(resourceMap), len(people), len(sessions), len(accounts), len(relations))
-	return sessions, nil
+	log.Printf("Processed %d roles, %d services, %d resources, %d people, %d sessions, %d accounts, %d relation edges (%d new nouns, %d new edges)",
+		len(roles), len(services), len(resourceMap), len(people), len(sessions), len(accounts), len(relations), len(res.NewNouns), len(res.NewEdges))
+	return res, nil
+}
+
+// writeSessionRecord writes one batch session and names the persisted
+// survivor. A win# session can fold into an earlier window, whose SK and sid
+// then win; anchored sessions keep their own keys.
+func writeSessionRecord(ctx context.Context, store ddblib.SessionStore, cfg Config, sess *types.DynamoDBSession) (SessionResult, error) {
+	sess.Sid = identity.Sid(sess.PersonKey, sess.SK)
+	written := SessionResult{Session: sess, SK: sess.SK, Sid: sess.Sid}
+	if !strings.HasPrefix(sess.SK, "win#") {
+		created, err := ddblib.WriteSession(ctx, store, cfg.Tables.Sessions, sess)
+		written.New = created
+		return written, err
+	}
+	persisted, created, err := ddblib.WriteWindowedSessionResolved(ctx, store, cfg.Tables.Sessions, sess, cfg.idleGap())
+	if err != nil {
+		return written, err
+	}
+	written.SK = persisted.SK
+	written.Sid = identity.Sid(persisted.PersonKey, persisted.SK)
+	written.New = created
+	return written, nil
 }

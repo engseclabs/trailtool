@@ -18,6 +18,7 @@ import (
 
 	"github.com/engseclabs/trailtool/ingestor/lib/aggregator"
 	ddblib "github.com/engseclabs/trailtool/ingestor/lib/dynamodb"
+	tevents "github.com/engseclabs/trailtool/ingestor/lib/events"
 	"github.com/engseclabs/trailtool/ingestor/lib/parser"
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
 )
@@ -40,6 +41,34 @@ type Config struct {
 	// ResolveNS is called when an EventBridge event includes a source account.
 	// If nil, the default namespace is used for all events.
 	ResolveNS ResolveNamespace
+
+	// Publisher and ActivityEventBusArn turn on change events; emission needs
+	// both. Delivery is best-effort and never fails ingestion.
+	Publisher           tevents.Publisher
+	ActivityEventBusArn string
+
+	// SuppressEmission turns change events off for one invocation. Replays set
+	// it through their payload marker unless run with --emit-events.
+	SuppressEmission bool
+}
+
+// invocationMarker is the "trailtool" key `trailtool replay` adds to its
+// synthetic S3 events (core/replay LambdaInvoker).
+type invocationMarker struct {
+	TrailTool struct {
+		Replay     bool `json:"replay"`
+		EmitEvents bool `json:"emit_events"`
+	} `json:"trailtool"`
+}
+
+// suppressForReplay reports whether a raw event is a replay that did not opt
+// in to change events. After a reset every noun would otherwise look new.
+func suppressForReplay(rawEvent json.RawMessage) bool {
+	var marker invocationMarker
+	if err := json.Unmarshal(rawEvent, &marker); err != nil {
+		return false
+	}
+	return marker.TrailTool.Replay && !marker.TrailTool.EmitEvents
 }
 
 // GetEnvOrDefault returns the environment variable value or the default.
@@ -69,6 +98,12 @@ func IngestedFilesTableFromEnv(prefix string) string {
 	return GetEnvOrDefault("INGESTED_FILES_TABLE", prefix+"-ingested-files")
 }
 
+// ActivityEventBusArnFromEnv returns the bus change events go to; empty
+// disables them.
+func ActivityEventBusArnFromEnv() string {
+	return os.Getenv("ACTIVITY_EVENT_BUS_ARN")
+}
+
 // IdleGapFromEnv parses the IDLE_GAP environment variable (a Go duration,
 // e.g. "30m"). Zero means "use the default".
 func IdleGapFromEnv() time.Duration {
@@ -88,6 +123,11 @@ func IdleGapFromEnv() time.Duration {
 // processes all CloudTrail records found.
 func HandleLambdaEvent(ctx context.Context, ddbClient *dynamodb.Client, s3Client *s3.Client, cfg Config, rawEvent json.RawMessage) error {
 	log.Printf("FULL_EVENT_RECEIVED: %s", string(rawEvent))
+
+	if suppressForReplay(rawEvent) {
+		log.Printf("REPLAY: change events suppressed for this invocation")
+		cfg.SuppressEmission = true
+	}
 
 	// Try direct S3 event
 	var s3Event events.S3Event
@@ -181,11 +221,17 @@ func processS3Records(ctx context.Context, ddbClient *dynamodb.Client, s3Client 
 
 		log.Printf("Processing %d CloudTrail events from S3: %s/%s", len(cloudTrailLog.Records), bucket, key)
 
-		if err := aggregator.Process(ctx, ddbClient, aggregator.Config{
-			Tables:    cfg.Tables,
-			Namespace: namespace,
-			IdleGap:   cfg.IdleGap,
-		}, cloudTrailLog.Records); err != nil {
+		res, err := aggregator.ProcessWithResult(ctx, ddbClient, aggregator.Config{
+			Tables:       cfg.Tables,
+			Namespace:    namespace,
+			IdleGap:      cfg.IdleGap,
+			RecordWrites: cfg.emitting(),
+		}, cloudTrailLog.Records)
+		// Emit before the error check: nouns and edges created before a failure
+		// will not be reported by the retry. Session Activity waits for a clean
+		// run, since the retry merges and reports the sessions again.
+		emitChangeEvents(ctx, ddbClient, cfg, fileFromKey(key, cloudTrailLog.Records), res, err == nil)
+		if err != nil {
 			return fmt.Errorf("failed to process CloudTrail events: %w", err)
 		}
 
@@ -199,4 +245,76 @@ func processS3Records(ctx context.Context, ddbClient *dynamodb.Client, s3Client 
 	}
 
 	return nil
+}
+
+// emitChangeEvents publishes the batch's change events when emission is on.
+// complete is false when the batch failed partway; only created nouns and
+// edges go out then.
+func emitChangeEvents(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, file tevents.File, res *aggregator.Result, complete bool) {
+	if !cfg.emitting() || res == nil {
+		return
+	}
+	ctx, cancel := emitContext(ctx)
+	defer cancel()
+	if ctx.Err() != nil {
+		log.Printf("EMIT_FAILED: no time left before the Lambda deadline; skipped %s", file.Key)
+		return
+	}
+	var counts tevents.CountsFunc
+	if ddbClient != nil && cfg.Tables.Relations != "" {
+		counts = func(ctx context.Context, pk string) (map[string]int, error) {
+			return ddblib.GetRelationSummaryCounts(ctx, ddbClient, cfg.Tables.Relations, pk)
+		}
+	}
+	env := tevents.NewEnvelope(res.Namespace, file)
+	evs := tevents.BuildCreated(ctx, env, res, counts)
+	if complete {
+		evs = append(evs, tevents.BuildSessionActivity(env, res)...)
+	}
+	tevents.Emit(ctx, cfg.Publisher, cfg.ActivityEventBusArn, evs)
+}
+
+// emitting reports whether this invocation publishes change events.
+func (c Config) emitting() bool {
+	return c.Publisher != nil && c.ActivityEventBusArn != "" && !c.SuppressEmission
+}
+
+const (
+	// emitBudget caps how long one file's emission may take.
+	emitBudget = 30 * time.Second
+	// emitDeadlineMargin is left for MarkFileIngested after emission. A Lambda
+	// that times out is redelivered and double-merges its sessions.
+	emitDeadlineMargin = 10 * time.Second
+)
+
+// emitContext bounds emission so it can never run the Lambda past its deadline.
+func emitContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	budget := emitBudget
+	if deadline, ok := ctx.Deadline(); ok {
+		budget = min(budget, time.Until(deadline)-emitDeadlineMargin)
+	}
+	return context.WithTimeout(ctx, budget)
+}
+
+// fileFromKey names a CloudTrail object, reading account and region from the
+// standard .../<account>/CloudTrail/<region>/... layout and falling back to
+// the first record.
+func fileFromKey(key string, records []types.CloudTrailRecord) tevents.File {
+	file := tevents.File{Key: key}
+	parts := strings.Split(key, "/")
+	for i := 1; i+1 < len(parts); i++ {
+		if parts[i] == "CloudTrail" {
+			file.AccountID, file.Region = parts[i-1], parts[i+1]
+			break
+		}
+	}
+	if len(records) > 0 {
+		if file.AccountID == "" {
+			file.AccountID = records[0].RecipientAccountID
+		}
+		if file.Region == "" {
+			file.Region = records[0].AwsRegion
+		}
+	}
+	return file
 }
