@@ -152,6 +152,7 @@ Fires once per session per CloudTrail file, including read-only sessions. Every 
 - `writes` holds the file's mutating calls (`readOnly` false or absent), its credential-minting STS calls, and every access-denied call, earliest first. Credential-minting STS calls (`AssumeRole`, `AssumeRoleWithSAML`, `AssumeRoleWithWebIdentity`, `AssumeRoot`, `GetFederationToken`, `GetSessionToken`) are in `writes` too, even though CloudTrail marks them read-only, so a role assumption appears in the session that made it. The session it created also shows in `chained_into`. It is capped at 50 records; `writes_truncated` counts the rest and `write_count` is the total before truncation. If an event still exceeds EventBridge's 256 KB entry limit, more writes are dropped (and counted in `writes_truncated`) until it fits.
 - `write_count` and `denied_count` are numbers so rules can filter on them, for example `{"activity": {"write_count": [{"numeric": [">", 0]}]}}`.
 - `origin` fields are empty unless the session was created by role chaining, `aws login`, or AWS MCP Server authorization.
+- To follow a chain, use the child's `origin.assumed_from_session` (and `agent_authorized_by_session` or `login_granted_by_session`): every event for the child carries it. `chained_into` on the parent only lists children whose own activity is in the same file, because the parent's `AssumeRole` and the child's first calls often land in different files.
 
 ## 7. Delivery semantics
 
