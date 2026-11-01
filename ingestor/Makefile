@@ -177,7 +177,10 @@ check-sar-config:
 	@test -n "$(VERSION)" || { echo "ERROR: set VERSION to the semantic version to publish, e.g. VERSION=1.2.0"; exit 1; }
 	@test -n "$(SAR_BUCKET)" || { echo "ERROR: set SAR_BUCKET to an S3 bucket readable by serverlessrepo.amazonaws.com (see 'make sar-bucket-policy')."; exit 1; }
 
-publish-sar: check-sar-config build build-otlp-forwarder
+# The forwarder builds in a sub-make: `build` wipes bin/, so as a sibling
+# prerequisite under `make -j` it could delete the forwarder's zip.
+publish-sar: check-sar-config build
+	@$(MAKE) --no-print-directory build-otlp-forwarder VERSION=$(VERSION)
 	@set -e; account=$$(aws sts get-caller-identity --query Account --output text); \
 	for entry in $(SAR_APPS); do \
 		template=$${entry%%:*}; app=$${entry#*:}; \
