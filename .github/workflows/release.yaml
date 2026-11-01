@@ -28,9 +28,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
-  # Publishes trailtool-ingestor and trailtool-cloudtrail-forwarder to the
-  # Serverless Application Repository at the tag's version. Skipped unless the
-  # SAR_* repository variables are set, so tags release the CLI without it.
+  # Publishes trailtool-ingestor, trailtool-cloudtrail-forwarder and
+  # trailtool-otlp-forwarder to the Serverless Application Repository at the
+  # tag's version. Skipped unless the SAR_* repository variables are set, so
+  # tags release the CLI without it.
   serverless-app-repo:
     needs: goreleaser
     runs-on: ubuntu-latest

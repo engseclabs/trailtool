@@ -1,0 +1,236 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  TrailTool OTLP forwarder - sends TrailTool change events from an EventBridge
+  bus to an OTLP/HTTP logs endpoint as OpenTelemetry log records.
+
+# An optional consumer of the ingestor's change events (ActivityEventBusArn).
+# Deploy it in the account and region of that bus. The ingestor is unaware of
+# it, so an unreachable OTLP endpoint never affects ingestion.
+#
+# Failures land in one SQS dead-letter queue from two paths: EventBridge
+# dead-letters events it cannot invoke the function with (throttling, a missing
+# permission), and Lambda dead-letters events whose invocations still fail
+# after its async retries (any non-2xx or rejected record from the endpoint).
+#
+# Prerequisite, outside this stack: a Secrets Manager secret whose value is a
+# JSON object of header name to value, e.g. {"Authorization":"Bearer ..."}.
+
+# SAR listing, read by `sam publish`. The release workflow passes the version.
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: trailtool-otlp-forwarder
+    Description: >-
+      Sends TrailTool change events (new nouns, new relations, session activity)
+      from EventBridge to any OTLP/HTTP logs endpoint as OpenTelemetry log
+      records.
+    Author: EngSec Labs
+    SpdxLicenseId: Apache-2.0
+    LicenseUrl: ../LICENSE
+    ReadmeUrl: README-otlp-forwarder.md
+    Labels:
+      - cloudtrail
+      - security
+      - audit
+      - eventbridge
+      - opentelemetry
+      - otlp
+    HomePageUrl: https://github.com/engseclabs/trailtool
+    SourceCodeUrl: https://github.com/engseclabs/trailtool
+
+Parameters:
+  EventBusName:
+    Type: String
+    MinLength: 1
+    Description: Name or ARN of the bus receiving TrailTool change events (the ingestor's ActivityEventBusArn)
+
+  OtlpLogsEndpoint:
+    Type: String
+    AllowedPattern: '^https?://.+'
+    Description: >-
+      Full OTLP/HTTP logs URL, e.g. https://otlp.example.com/v1/logs. Must not
+      contain credentials; put them in the headers secret.
+
+  OtlpHeadersSecretArn:
+    Type: String
+    AllowedPattern: '^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:\d{12}:secret:.+-[A-Za-z0-9]{6}$'
+    Description: >-
+      Full ARN of a Secrets Manager secret holding a JSON object of header name
+      to value sent with every request, e.g. {"Authorization":"Bearer ..."}
+
+  SecretKmsKeyArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Customer managed KMS key that encrypts the headers secret. Empty when the
+      secret uses the AWS managed key
+
+  ServiceName:
+    Type: String
+    Default: trailtool
+    MinLength: 1
+    Description: service.name resource attribute on every log record
+
+  DetailTypes:
+    Type: CommaDelimitedList
+    Default: TrailTool Noun Created,TrailTool Relation Created,TrailTool Session Activity
+    Description: detail-types to forward (default all three)
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
+    Description: Retention of the function's log group
+
+Conditions:
+  UseKmsKey: !Not [!Equals [!Ref SecretKmsKeyArn, '']]
+
+Resources:
+  # Receives events from both failure paths. EventBridge writes the event
+  # itself; Lambda writes a destination record with the event and the error.
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600 # 14 days, the maximum
+
+  DeadLetterQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref DeadLetterQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EventBridgeDeadLetter
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt DeadLetterQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt ForwardingRule.Arn
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: !Ref LogRetentionDays
+
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: OtlpForwarder
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt LogGroup.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref OtlpHeadersSecretArn
+              # Lambda sends failed invocations to the on-failure destination
+              # with the function's role.
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt DeadLetterQueue.Arn
+              - !If
+                - UseKmsKey
+                - Effect: Allow
+                  Action: kms:Decrypt
+                  Resource: !Ref SecretKmsKeyArn
+                  Condition:
+                    StringEquals:
+                      kms:ViaService: !Sub 'secretsmanager.${AWS::Region}.amazonaws.com'
+                - !Ref AWS::NoValue
+
+  Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Sends TrailTool change events to an OTLP/HTTP logs endpoint
+      CodeUri: bin/otlp-forwarder/bootstrap.zip
+      Handler: bootstrap
+      Runtime: provided.al2023
+      Architectures:
+        - arm64
+      MemorySize: 128
+      # The HTTP client times out at 10 seconds; a 401 or 403 costs a secret
+      # read and a second request.
+      Timeout: 30
+      Role: !GetAtt FunctionRole.Arn
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref LogGroup
+      Environment:
+        Variables:
+          OTLP_LOGS_ENDPOINT: !Ref OtlpLogsEndpoint
+          OTLP_HEADERS_SECRET_ARN: !Ref OtlpHeadersSecretArn
+          SERVICE_NAME: !Ref ServiceName
+      # Function errors (non-2xx, rejected records) retry twice with Lambda's
+      # backoff, then go to the dead-letter queue.
+      EventInvokeConfig:
+        MaximumRetryAttempts: 2
+        MaximumEventAgeInSeconds: 3600
+        DestinationConfig:
+          OnFailure:
+            Type: SQS
+            Destination: !GetAtt DeadLetterQueue.Arn
+
+  ForwardingRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Forwards TrailTool change events to the OTLP forwarder
+      EventBusName: !Ref EventBusName
+      EventPattern:
+        source:
+          - trailtool
+        detail-type: !Ref DetailTypes
+      Targets:
+        - Arn: !GetAtt Function.Arn
+          Id: OtlpForwarder
+          # Covers failures to invoke the function, not errors it returns.
+          RetryPolicy:
+            MaximumRetryAttempts: 185
+            MaximumEventAgeInSeconds: 3600
+          DeadLetterConfig:
+            Arn: !GetAtt DeadLetterQueue.Arn
+
+  InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ForwardingRule.Arn
+
+Outputs:
+  FunctionArn:
+    Description: The forwarder function
+    Value: !GetAtt Function.Arn
+
+  LogGroupName:
+    Description: The forwarder's log group
+    Value: !Ref LogGroup
+
+  ForwardingRuleArn:
+    Description: Rule matching TrailTool change events on the bus
+    Value: !GetAtt ForwardingRule.Arn
+
+  DeadLetterQueueUrl:
+    Description: Events that could not be delivered after all retries
+    Value: !Ref DeadLetterQueue
+
+  DeadLetterQueueArn:
+    Description: ARN of the dead-letter queue
+    Value: !GetAtt DeadLetterQueue.Arn

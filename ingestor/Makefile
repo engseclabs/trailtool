@@ -1,4 +1,4 @@
-.PHONY: build clean deploy check-org-config deploy-org deploy-forwarder deploy-org-all check-sar-config publish-sar sar-public sar-bucket-policy test test-v test-cover
+.PHONY: build build-otlp-forwarder clean deploy check-org-config deploy-org deploy-forwarder deploy-org-all check-sar-config publish-sar sar-public sar-bucket-policy test test-v test-cover
 
 # ---------------------------------------------------------------------------
 # Cross-account (organization trail) deployment
@@ -38,6 +38,17 @@ build: clean
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/bootstrap .
 	cd bin && zip bootstrap.zip bootstrap && rm bootstrap
 	@echo "Ingestor build complete!"
+
+# Build the OTLP forwarder Lambda (arm64). VERSION becomes its scope version.
+build-otlp-forwarder:
+	@echo "Building OTLP forwarder Lambda..."
+	@rm -rf bin/otlp-forwarder
+	@mkdir -p bin/otlp-forwarder
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc \
+		-ldflags "-s -w -X main.version=$(or $(VERSION),dev)" \
+		-o bin/otlp-forwarder/bootstrap ./otlpforwarder
+	cd bin/otlp-forwarder && zip bootstrap.zip bootstrap && rm bootstrap
+	@echo "OTLP forwarder build complete!"
 
 clean:
 	@echo "Cleaning build artifacts..."
@@ -157,7 +168,8 @@ logs-sandbox:
 # ---------------------------------------------------------------------------
 SAR_BUCKET ?=
 SAR_REGION ?= us-east-1
-SAR_APPS   := template-forwarder.yaml:trailtool-cloudtrail-forwarder template.yaml:trailtool-ingestor
+SAR_APPS   := template-forwarder.yaml:trailtool-cloudtrail-forwarder template.yaml:trailtool-ingestor \
+              template-otlp-forwarder.yaml:trailtool-otlp-forwarder
 VERSION    ?=
 
 # Refuse to publish when the version or the staging bucket has not been supplied.
@@ -165,7 +177,7 @@ check-sar-config:
 	@test -n "$(VERSION)" || { echo "ERROR: set VERSION to the semantic version to publish, e.g. VERSION=1.2.0"; exit 1; }
 	@test -n "$(SAR_BUCKET)" || { echo "ERROR: set SAR_BUCKET to an S3 bucket readable by serverlessrepo.amazonaws.com (see 'make sar-bucket-policy')."; exit 1; }
 
-publish-sar: check-sar-config build
+publish-sar: check-sar-config build build-otlp-forwarder
 	@set -e; account=$$(aws sts get-caller-identity --query Account --output text); \
 	for entry in $(SAR_APPS); do \
 		template=$${entry%%:*}; app=$${entry#*:}; \

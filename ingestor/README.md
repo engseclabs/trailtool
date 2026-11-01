@@ -6,12 +6,15 @@ each event back to the human (or role) behind it, and writes queryable entities 
 people, sessions, roles, services, resources, accounts — into DynamoDB. The
 `trailtool` CLI reads those tables.
 
-Two applications are published to the Serverless Application Repository (SAR),
-always at the same version:
+Three applications are published to the Serverless Application Repository
+(SAR), always at the same version:
 
 - `trailtool-ingestor` (`template.yaml`) runs where you want the data.
 - `trailtool-cloudtrail-forwarder` (`template-forwarder.yaml`) runs in the
   bucket owner's account, for cross-account setups only.
+- `trailtool-otlp-forwarder` (`template-otlp-forwarder.yaml`) is optional. It
+  sends the ingestor's change events to an OTLP/HTTP logs endpoint; see
+  [`README-otlp-forwarder.md`](README-otlp-forwarder.md).
 
 S3 publishes EventBridge notifications only to the bucket owner's account. If the
 bucket and the ingestor share an account, nothing needs forwarding. If the bucket
@@ -161,6 +164,7 @@ resource.
 |-------------|--------------|
 | `trailtool-ingestor` | `CAPABILITY_IAM`, `CAPABILITY_NAMED_IAM`, `CAPABILITY_AUTO_EXPAND`, `CAPABILITY_RESOURCE_POLICY` |
 | `trailtool-cloudtrail-forwarder` | `CAPABILITY_NAMED_IAM`, `CAPABILITY_AUTO_EXPAND` |
+| `trailtool-otlp-forwarder` | `CAPABILITY_IAM`, `CAPABILITY_RESOURCE_POLICY`, `CAPABILITY_AUTO_EXPAND` |
 
 ## Verify it works
 
@@ -197,6 +201,11 @@ check the forwarder rule's `FailedInvocations` metric in `BUCKET_ACCOUNT`. Run
 `*/CloudTrail/*.json.gz` deliveries to the ingestor account's default bus, and
 the role it uses. When `IngestorAccountId` is empty or the stack's own account,
 it creates only an inert placeholder.
+
+`trailtool-otlp-forwarder`: an EventBridge rule on the activity bus, an arm64
+Lambda that posts each event as an OTLP log record, an SSE-encrypted SQS
+dead-letter queue, a log group, and a role limited to that log group, the
+headers secret, and the queue.
 
 Deploying over a pre-1.0 stack **deletes** the old `*-aggregated` tables and
 their data. There is no migration; history rebuilds from CloudTrail with
