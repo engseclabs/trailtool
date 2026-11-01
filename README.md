@@ -140,6 +140,23 @@ The ingestor can publish what it learns to EventBridge, so alerting and triage s
 
 Events come only from live ingestion; `trailtool replay` never publishes them. Delivery is best-effort. Schemas and delivery semantics are in [`docs/design/events.md`](docs/design/events.md).
 
+### Sending events to an OpenTelemetry backend
+
+`trailtool-otlp-forwarder`, a third Serverless Application Repository app, sends each change event to any OTLP/HTTP logs endpoint as an OpenTelemetry log record. It is an optional consumer of the bus: the ingestor is unchanged, and an unreachable endpoint never affects ingestion. Deploy it in the bus's account and region.
+
+| Parameter | Purpose |
+|-----------|---------|
+| `EventBusName` | The bus the ingestor publishes to. |
+| `OtlpLogsEndpoint` | Full logs URL, for example `https://otlp.example.com/v1/logs`. |
+| `OtlpHeadersSecretArn` | Secrets Manager secret holding the request headers. |
+| `ServiceName`, `DetailTypes`, `LogRetentionDays`, `SecretKmsKeyArn` | Optional. |
+
+Credentials never go in a parameter. The secret's value is a JSON object of header name to value, for example `{"Authorization": "Bearer <token>"}`. A 401 or 403 re-reads it, so rotation needs no redeploy.
+
+Each record carries a one-line summary as its body, `WARN` severity for sessions with denied calls (`INFO` otherwise), and the event's detail flattened into `trailtool.*` attributes. A non-2xx response or rejected record fails the invocation; Lambda retries it twice, then sends it to the stack's dead-letter queue. Delivery is at least once, so deduplicate on `trailtool.event_id` if it matters.
+
+Setup and parameters: [`ingestor/README-otlp-forwarder.md`](ingestor/README-otlp-forwarder.md). Field mapping: [`docs/design/otlp-forwarder.md`](docs/design/otlp-forwarder.md).
+
 ## Using TrailTool with agents
 
 TrailTool is designed to work well with AI coding agents like Claude Code and Cursor. To teach your agent about TrailTool's capabilities, copy [`docs/agent-instructions.md`](docs/agent-instructions.md) into your project as `CLAUDE.md` (or your agent's equivalent configuration file).

@@ -23,7 +23,7 @@ This will:
 1. Build linux/darwin binaries (amd64 + arm64)
 2. Create a GitHub release with archives
 3. Update the Homebrew tap (`engseclabs/homebrew-tap`)
-4. Publish the ingestor and forwarder to the Serverless Application Repository (see below)
+4. Publish the ingestor and both forwarders to the Serverless Application Repository (see below)
 
 Users install/upgrade via `brew install engseclabs/tap/trailtool`.
 
@@ -31,11 +31,12 @@ Config: `.goreleaser.yaml`, `.github/workflows/release.yaml`.
 
 ### Serverless Application Repository
 
-The same tag publishes `ingestor/template.yaml` as `trailtool-ingestor` and
-`ingestor/template-forwarder.yaml` as `trailtool-cloudtrail-forwarder` to the AWS
+The same tag publishes `ingestor/template.yaml` as `trailtool-ingestor`,
+`ingestor/template-forwarder.yaml` as `trailtool-cloudtrail-forwarder`, and
+`ingestor/template-otlp-forwarder.yaml` as `trailtool-otlp-forwarder` to the AWS
 Serverless Application Repository (account `843363563907`), so consumers can nest
 them with `AWS::Serverless::Application`. Each SAR listing lives in its template's
-`Metadata: AWS::ServerlessRepo::Application` block. Both get the tag's version
+`Metadata: AWS::ServerlessRepo::Application` block. Each gets the tag's version
 with the `v` stripped (`v1.2.0` → `1.2.0`). SAR versions are immutable, so
 `publish-sar` skips a version that already exists, which makes a failed job safe
 to re-run. `sar-public` sets each application policy to `Principals='*'`, which
@@ -57,8 +58,8 @@ To publish by hand (what the workflow does, step for step):
 make -C ingestor publish-sar sar-public VERSION=1.2.0 SAR_BUCKET=your-bucket
 ```
 
-The `SemanticVersion` in the `README.md` and `ingestor/README.md` examples should
-match the latest release.
+The `SemanticVersion` in the `README.md`, `ingestor/README.md`, and
+`ingestor/README-otlp-forwarder.md` examples should match the latest release.
 
 ## Project Structure
 

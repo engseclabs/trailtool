@@ -10,7 +10,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.51.0
 	github.com/aws/aws-sdk-go-v2/service/eventbridge v1.45.24
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.71.0
+	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.6
+	go.opentelemetry.io/proto/otlp v1.10.0
 	golang.org/x/sync v0.22.0
+	google.golang.org/protobuf v1.36.11
 )
 
 require (

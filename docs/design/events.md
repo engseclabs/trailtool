@@ -180,6 +180,8 @@ Consumers match on `source` and `detail-type`:
 }
 ```
 
+To send events to an OpenTelemetry backend instead of writing a consumer, deploy [`trailtool-otlp-forwarder`](otlp-forwarder.md).
+
 ## 9. Out of scope
 
 - An `action` relation kind (`eventSource:eventName`) for "first time this person called X". It touches relation kinds, summary counts, and CLI views, so it ships separately.
