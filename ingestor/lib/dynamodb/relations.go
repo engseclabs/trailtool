@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
@@ -152,9 +153,15 @@ type relationBounds struct {
 	LastSeen  string `dynamodbav:"last_seen"`
 }
 
+// RelationLastSeenGranularity is how far an existing edge's last_seen must
+// move before it is rewritten. A busy edge is observed in most files, so
+// recording every observation still rewrites it dozens of times a day;
+// last_seen on an edge is instead accurate to within this window.
+const RelationLastSeenGranularity = time.Hour
+
 // refreshRelationBounds widens a known edge's bounds only when they move:
-// first_seen when the batch saw the pair earlier, last_seen when it saw it
-// later. Each update is still conditional, so a stale prefetch can only cause
+// first_seen when the batch saw the pair earlier, last_seen when it saw it at
+// least RelationLastSeenGranularity later. Each update is still conditional, so a stale prefetch can only cause
 // a rejected no-op, never a regression.
 func refreshRelationBounds(ctx context.Context, store RelationStore, tableName string, relation types.DynamoDBRelation, prior relationBounds) error {
 	if relation.FirstSeen != "" && (prior.FirstSeen == "" || relation.FirstSeen < prior.FirstSeen) {
@@ -162,12 +169,24 @@ func refreshRelationBounds(ctx context.Context, store RelationStore, tableName s
 			return err
 		}
 	}
-	if relation.LastSeen != "" && relation.LastSeen > prior.LastSeen {
+	if relation.LastSeen != "" && lastSeenAdvances(prior.LastSeen, relation.LastSeen) {
 		if err := updateRelationBoundary(ctx, store, tableName, relation, "last_seen", relation.LastSeen, "<"); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func lastSeenAdvances(stored, observed string) bool {
+	if stored == "" {
+		return true
+	}
+	s, err1 := time.Parse(time.RFC3339, stored)
+	o, err2 := time.Parse(time.RFC3339, observed)
+	if err1 != nil || err2 != nil {
+		return observed > stored
+	}
+	return o.Sub(s) >= RelationLastSeenGranularity
 }
 
 // prefetchRelations batch-reads the edges and their subjects' summaries,

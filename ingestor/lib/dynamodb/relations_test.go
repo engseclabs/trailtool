@@ -409,8 +409,16 @@ func TestWriteRelationsSkipsEdgesWhoseBoundsDidNotMove(t *testing.T) {
 		t.Fatalf("unchanged edges issued %d writes", store.writes())
 	}
 
-	// A later observation moves last_seen with one exact update per edge.
-	if _, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T10:00:01Z")); err != nil {
+	// Under an hour later: still no write.
+	if _, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T10:59:59Z")); err != nil {
+		t.Fatal(err)
+	}
+	if store.writes() != 0 {
+		t.Fatalf("sub-hour last_seen move issued %d writes", store.writes())
+	}
+
+	// An hour later moves last_seen with one update per edge.
+	if _, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T11:00:00Z")); err != nil {
 		t.Fatal(err)
 	}
 	if store.transactionCalls != 0 || store.putCalls != 0 || store.updateCalls != 3 {
@@ -422,7 +430,7 @@ func TestWriteRelationsSkipsEdgesWhoseBoundsDidNotMove(t *testing.T) {
 	}
 	for _, r := range skipFixture("") {
 		got := store.edges[r.PK+"\x00"+r.SK]
-		if got.FirstSeen != "2026-01-01T09:00:00Z" || got.LastSeen != "2026-01-01T10:00:01Z" {
+		if got.FirstSeen != "2026-01-01T09:00:00Z" || got.LastSeen != "2026-01-01T11:00:00Z" {
 			t.Fatalf("%s/%s bounds = %s..%s", r.PK, r.SK, got.FirstSeen, got.LastSeen)
 		}
 	}
@@ -453,5 +461,23 @@ func TestWriteRelationsFallsBackWhenPrefetchFails(t *testing.T) {
 	r := skipFixture("")[0]
 	if got := store.edges[r.PK+"\x00"+r.SK].LastSeen; got != "2026-01-01T11:00:00Z" {
 		t.Fatalf("fallback last_seen = %s", got)
+	}
+}
+
+func TestLastSeenAdvances(t *testing.T) {
+	cases := []struct {
+		stored, observed string
+		want             bool
+	}{
+		{"", "2026-01-01T00:00:00Z", true},
+		{"2026-01-01T00:00:00Z", "2026-01-01T00:59:59Z", false},
+		{"2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z", true},
+		{"2026-01-01T02:00:00Z", "2026-01-01T01:00:00Z", false},
+		{"2026-01-01", "2026-01-02", true},
+	}
+	for _, c := range cases {
+		if got := lastSeenAdvances(c.stored, c.observed); got != c.want {
+			t.Errorf("lastSeenAdvances(%q, %q) = %v", c.stored, c.observed, got)
+		}
 	}
 }

@@ -317,7 +317,9 @@ first batch-reads the batch's edges and their subjects' `_summary` items
 (eventually consistent). A conditional transaction inserts each missing edge
 and increments the subject summary. An existing edge is written only when its
 bounds move: `first_seen` when the batch saw the pair earlier, `last_seen` when
-it saw the pair later, each with a condition that rejects a regression. An
+it saw the pair at least one hour later than stored, each with a condition that
+rejects a regression. Edge `last_seen` is therefore accurate to within an hour;
+`first_seen` is exact. An
 edge whose bounds did not move costs one half-unit read and no write. If the
 batch read fails, every edge takes the conditional create path, which is
 correct on its own.
