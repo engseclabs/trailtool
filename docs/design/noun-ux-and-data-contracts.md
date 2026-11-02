@@ -313,9 +313,17 @@ counts = { people, sessions, accounts, roles, services, resources }
 
 IDs in keys use base64url encoding. Raw IDs remain attributes for display.
 
-The aggregator deduplicates edges per batch and writes both directions. A
-conditional transaction inserts a new edge and increments the subject summary.
-Existing edges update first and last seen without changing counts.
+The aggregator deduplicates edges per batch and writes both directions. It
+first batch-reads the batch's edges and their subjects' `_summary` items
+(eventually consistent). A conditional transaction inserts each missing edge
+and increments the subject summary. An existing edge is written only when its
+bounds move: `first_seen` when the batch saw the pair earlier, `last_seen` when
+it saw the pair at least one hour later than stored, each with a condition that
+rejects a regression. Edge `last_seen` is therefore accurate to within an hour;
+`first_seen` is exact. An
+edge whose bounds did not move costs one half-unit read and no write. If the
+batch read fails, every edge takes the conditional create path, which is
+correct on its own.
 
 The CLI batch-gets `_summary` items after noun list queries. Detail commands
 query one relation partition. Existing session indexes provide person, role,

@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -140,6 +141,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	people := make(map[string]*types.DynamoDBPerson)
 	sessions := make(map[string]*types.DynamoDBSession)        // keyed by session ref person_key|sk
 	sessionWrites := make(map[string][]types.CloudTrailRecord) // session ref → mutating or denied calls
+	errorCodes := make(map[string]int)                         // CloudTrail errorCode → events in batch
 	accounts := make(map[string]*types.DynamoDBAccount)
 	relations := make(relationCollector)
 
@@ -316,7 +318,9 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			}
 
 			if event.ErrorCode != "" {
-				log.Printf("EVENT_ERROR: event=%s:%s errorCode=%s person=%s", event.EventSource, event.EventName, event.ErrorCode, personKey)
+				// CloudTrail events that record a failed call, not ingestor
+				// failures: summarized once per batch below.
+				errorCodes[event.ErrorCode]++
 			}
 			clickOps := sess != nil &&
 				!session.IsAccessDeniedError(event.ErrorCode) &&
@@ -501,6 +505,9 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 	// Log summary
 	log.Printf("=== Aggregation Summary ===")
+	if len(errorCodes) > 0 {
+		log.Printf("EVENT_ERROR_CODES: %s", summarizeCounts(errorCodes))
+	}
 	log.Printf("Found %d unique people, %d sessions, %d roles, %d services, %d resources, %d accounts",
 		len(people), len(sessions), len(roles), len(services), len(resourceMap), len(accounts))
 	typeCounts := make(map[string]int)
@@ -664,4 +671,23 @@ func writeSessionRecord(ctx context.Context, store ddblib.SessionStore, cfg Conf
 	written.Sid = identity.Sid(persisted.PersonKey, persisted.SK)
 	written.New = created
 	return written, nil
+}
+
+// summarizeCounts renders counts as "a=3 b=1", largest first.
+func summarizeCounts(counts map[string]int) string {
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if counts[keys[i]] != counts[keys[j]] {
+			return counts[keys[i]] > counts[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("%s=%d", k, counts[k])
+	}
+	return strings.Join(parts, " ")
 }
