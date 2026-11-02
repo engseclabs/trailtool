@@ -2,6 +2,7 @@ package dynamodb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"testing"
@@ -14,12 +15,23 @@ import (
 )
 
 type fakeRelationStore struct {
-	edges               map[string]types.DynamoDBRelation
-	summaries           map[string]types.DynamoDBRelationSummary
-	transactionCalls    int
+	edges            map[string]types.DynamoDBRelation
+	summaries        map[string]types.DynamoDBRelationSummary
+	transactionCalls int
+	putCalls         int
+	updateCalls      int
+	batchGetErr      error
+	batchSizes       []int
+	// unprocessedOnce returns the second half of the next BatchGetItem's
+	// keys as UnprocessedKeys, as DynamoDB does under throttling.
+	unprocessedOnce bool
+	// stale, when set, answers BatchGetItem for a key instead of the store,
+	// as a lagging replica can; returning nil reads as missing.
+	stale               func(key map[string]ddbtypes.AttributeValue) (map[string]ddbtypes.AttributeValue, bool)
 	transactionFailures int
 	putConflicts        int
 	updateConflicts     int
+	batchGetCalls       int
 }
 
 func newFakeRelationStore() *fakeRelationStore {
@@ -65,6 +77,7 @@ func (s *fakeRelationStore) GetItem(_ context.Context, input *dynamodb.GetItemIn
 }
 
 func (s *fakeRelationStore) PutItem(_ context.Context, input *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	s.putCalls++
 	if s.putConflicts > 0 {
 		s.putConflicts--
 		return nil, &ddbtypes.TransactionConflictException{}
@@ -91,6 +104,7 @@ func (s *fakeRelationStore) PutItem(_ context.Context, input *dynamodb.PutItemIn
 }
 
 func (s *fakeRelationStore) UpdateItem(_ context.Context, input *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	s.updateCalls++
 	if s.updateConflicts > 0 {
 		s.updateConflicts--
 		return nil, &ddbtypes.TransactionConflictException{}
@@ -346,4 +360,233 @@ func TestWriteRelationsReportsOnlyWhatItCreated(t *testing.T) {
 	if missing, err := GetRelationSummaryCounts(context.Background(), store, "relations", "test#person#none"); err != nil || missing != nil {
 		t.Fatalf("missing summary = %v, %v; want nil, nil", missing, err)
 	}
+}
+
+func (s *fakeRelationStore) BatchGetItem(ctx context.Context, input *dynamodb.BatchGetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.BatchGetItemOutput, error) {
+	s.batchGetCalls++
+	if s.batchGetErr != nil {
+		return nil, s.batchGetErr
+	}
+	out := &dynamodb.BatchGetItemOutput{Responses: map[string][]map[string]ddbtypes.AttributeValue{}}
+	for table, req := range input.RequestItems {
+		s.batchSizes = append(s.batchSizes, len(req.Keys))
+		if len(req.Keys) > 100 {
+			return nil, fmt.Errorf("ValidationException: too many keys (%d)", len(req.Keys))
+		}
+		keys := req.Keys
+		if s.unprocessedOnce && len(keys) > 1 {
+			s.unprocessedOnce = false
+			half := len(keys) / 2
+			out.UnprocessedKeys = map[string]ddbtypes.KeysAndAttributes{table: {Keys: keys[half:]}}
+			keys = keys[:half]
+		}
+		for _, key := range keys {
+			if s.stale != nil {
+				if item, ok := s.stale(key); ok {
+					if item != nil {
+						out.Responses[table] = append(out.Responses[table], item)
+					}
+					continue
+				}
+			}
+			got, err := s.GetItem(ctx, &dynamodb.GetItemInput{Key: key})
+			if err != nil {
+				return nil, err
+			}
+			if len(got.Item) > 0 {
+				out.Responses[table] = append(out.Responses[table], got.Item)
+			}
+		}
+	}
+	return out, nil
+}
+
+func skipFixture(at string) []types.DynamoDBRelation {
+	return []types.DynamoDBRelation{
+		NewRelation("default", RelationKindRole, "arn:aws:iam::111111111111:role/app", RelationKindService, "s3.amazonaws.com", at),
+		NewRelation("default", RelationKindService, "s3.amazonaws.com", RelationKindRole, "arn:aws:iam::111111111111:role/app", at),
+		NewRelation("default", RelationKindRole, "arn:aws:iam::111111111111:role/app", RelationKindAccount, "111111111111", at),
+	}
+}
+
+func (s *fakeRelationStore) writes() int {
+	return s.transactionCalls + s.putCalls + s.updateCalls
+}
+
+func TestWriteRelationsSkipsEdgesWhoseBoundsDidNotMove(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeRelationStore()
+	if _, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T10:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	store.transactionCalls, store.putCalls, store.updateCalls = 0, 0, 0
+
+	// The same observation again, and one inside the stored bounds: no write.
+	for _, at := range []string{"2026-01-01T10:00:00Z", "2026-01-01T10:00:00Z"} {
+		res, err := WriteRelations(ctx, store, "relations", skipFixture(at))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.NewEdges) != 0 || len(res.NewSubjects) != 0 {
+			t.Fatalf("replay reported creations: %+v", res)
+		}
+	}
+	if store.writes() != 0 {
+		t.Fatalf("unchanged edges issued %d writes", store.writes())
+	}
+
+	// A later observation moves last_seen with one exact update per edge.
+	if _, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T10:00:01Z")); err != nil {
+		t.Fatal(err)
+	}
+	if store.transactionCalls != 0 || store.putCalls != 0 || store.updateCalls != 3 {
+		t.Fatalf("last_seen move: tx=%d put=%d update=%d", store.transactionCalls, store.putCalls, store.updateCalls)
+	}
+	// An earlier observation moves first_seen.
+	if _, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T09:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range skipFixture("") {
+		got := store.edges[r.PK+"\x00"+r.SK]
+		if got.FirstSeen != "2026-01-01T09:00:00Z" || got.LastSeen != "2026-01-01T10:00:01Z" {
+			t.Fatalf("%s/%s bounds = %s..%s", r.PK, r.SK, got.FirstSeen, got.LastSeen)
+		}
+	}
+	pk := RelationPK("default", RelationKindRole, "arn:aws:iam::111111111111:role/app")
+	if counts := store.summaries[pk].Counts; counts["services"] != 1 || counts["accounts"] != 1 {
+		t.Fatalf("summary counts = %v", counts)
+	}
+}
+
+func TestWriteRelationsFallsBackWhenPrefetchFails(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeRelationStore()
+	if _, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T10:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	store.batchGetErr = errors.New("throttled")
+	res, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T11:00:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.NewEdges) != 0 {
+		t.Fatalf("fallback reported existing edges as new: %+v", res.NewEdges)
+	}
+	pk := RelationPK("default", RelationKindRole, "arn:aws:iam::111111111111:role/app")
+	if counts := store.summaries[pk].Counts; counts["services"] != 1 {
+		t.Fatalf("fallback double-counted: %v", counts)
+	}
+	r := skipFixture("")[0]
+	if got := store.edges[r.PK+"\x00"+r.SK].LastSeen; got != "2026-01-01T11:00:00Z" {
+		t.Fatalf("fallback last_seen = %s", got)
+	}
+}
+
+// manyEdges is one role related to n resources: n edges under one subject.
+func manyEdges(n int, at string) []types.DynamoDBRelation {
+	out := make([]types.DynamoDBRelation, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, NewRelation("default", RelationKindRole, "arn:aws:iam::111111111111:role/app",
+			RelationKindResource, fmt.Sprintf("111111111111#bucket-%03d", i), at))
+	}
+	return out
+}
+
+func TestWriteRelationsPrefetchesMoreThanOneBatch(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeRelationStore()
+	if _, err := WriteRelations(ctx, store, "relations", manyEdges(250, "2026-01-01T10:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	store.transactionCalls, store.putCalls, store.updateCalls, store.batchSizes = 0, 0, 0, nil
+
+	if _, err := WriteRelations(ctx, store, "relations", manyEdges(250, "2026-01-01T10:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	// 250 edges plus one summary: three requests of at most 100 keys.
+	if fmt.Sprint(store.batchSizes) != "[100 100 51]" {
+		t.Fatalf("batch sizes = %v", store.batchSizes)
+	}
+	if store.writes() != 0 {
+		t.Fatalf("known edges issued %d writes", store.writes())
+	}
+}
+
+func TestWriteRelationsRetriesUnprocessedPrefetchKeys(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeRelationStore()
+	if _, err := WriteRelations(ctx, store, "relations", manyEdges(40, "2026-01-01T10:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	store.transactionCalls, store.putCalls, store.updateCalls, store.batchSizes = 0, 0, 0, nil
+	store.unprocessedOnce = true
+
+	if _, err := WriteRelations(ctx, store, "relations", manyEdges(40, "2026-01-01T10:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	// 41 keys, 20 returned unprocessed and retried.
+	if fmt.Sprint(store.batchSizes) != "[41 21]" {
+		t.Fatalf("batch sizes = %v", store.batchSizes)
+	}
+	if store.writes() != 0 {
+		t.Fatalf("unprocessed keys were treated as missing: %d writes", store.writes())
+	}
+}
+
+func TestWriteRelationsToleratesStalePrefetch(t *testing.T) {
+	ctx := context.Background()
+	pk := RelationPK("default", RelationKindRole, "arn:aws:iam::111111111111:role/app")
+	edge := skipFixture("")[0]
+
+	t.Run("existing edge read as missing", func(t *testing.T) {
+		store := newFakeRelationStore()
+		if _, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T10:00:00Z")); err != nil {
+			t.Fatal(err)
+		}
+		store.stale = func(map[string]ddbtypes.AttributeValue) (map[string]ddbtypes.AttributeValue, bool) {
+			return nil, true // the replica has not seen anything yet
+		}
+		res, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T11:00:00Z"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.NewEdges) != 0 || len(res.NewSubjects) != 0 {
+			t.Fatalf("stale miss reported creations: %+v", res)
+		}
+		if counts := store.summaries[pk].Counts; counts["services"] != 1 || counts["accounts"] != 1 {
+			t.Fatalf("stale miss double-counted: %v", counts)
+		}
+		if got := store.edges[edge.PK+"\x00"+edge.SK].LastSeen; got != "2026-01-01T11:00:00Z" {
+			t.Fatalf("last_seen = %s", got)
+		}
+	})
+
+	t.Run("older bounds than stored", func(t *testing.T) {
+		store := newFakeRelationStore()
+		for _, at := range []string{"2026-01-01T10:00:00Z", "2026-01-01T12:00:00Z"} {
+			if _, err := WriteRelations(ctx, store, "relations", skipFixture(at)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// The replica still shows the first write's bounds.
+		store.stale = func(key map[string]ddbtypes.AttributeValue) (map[string]ddbtypes.AttributeValue, bool) {
+			if key["sk"].(*ddbtypes.AttributeValueMemberS).Value == RelationSummarySK {
+				return nil, false
+			}
+			old := NewRelation("default", RelationKindRole, "x", RelationKindService, "y", "2026-01-01T10:00:00Z")
+			item, _ := attributevalue.MarshalMap(old)
+			item["pk"], item["sk"] = key["pk"], key["sk"]
+			return item, true
+		}
+		if _, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T11:00:00Z")); err != nil {
+			t.Fatal(err)
+		}
+		got := store.edges[edge.PK+"\x00"+edge.SK]
+		if got.FirstSeen != "2026-01-01T10:00:00Z" || got.LastSeen != "2026-01-01T12:00:00Z" {
+			t.Fatalf("stale prefetch regressed bounds to %s..%s", got.FirstSeen, got.LastSeen)
+		}
+		if counts := store.summaries[pk].Counts; counts["services"] != 1 {
+			t.Fatalf("summary counts = %v", counts)
+		}
+	})
 }
