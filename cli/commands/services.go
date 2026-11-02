@@ -114,6 +114,9 @@ such as "ses" for "email.amazonaws.com" are not inferred.`,
 			if svc == nil {
 				return fatal("service not found: %s", args[0])
 			}
+			if err := s.LoadServiceActivity(ctx, CustomerID, svc); err != nil {
+				return fatal("%v", err)
+			}
 
 			related, err := s.LoadRelatedNouns(
 				ctx,

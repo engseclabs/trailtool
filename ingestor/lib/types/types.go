@@ -534,3 +534,30 @@ type EventBridgeS3Event struct {
 	Resources  []string               `json:"resources"`
 	Detail     map[string]interface{} `json:"detail"`
 }
+
+// DynamoDBActivity is the fixed part of one activity item: a small item that
+// holds counters split out of a role or service so neither grows with
+// activity. Activity items live in the noun's own table under the partition
+// "<customerId>#act#<noun id>" (dynamodb.ActivityPartition), keyed by the
+// table's own sort attribute:
+//
+//	evt#<event source>  roles: "c:<source>:<event>" / "d:<source>:<event>"
+//	                    allowed / denied counters, and service_count
+//	evt#<event name>    services: "c:<event>" / "d:<event>" counters
+//	ra#<digest>         roles: one allowed resource, a "c:<event>" counter per event
+//	dra#<digest>        roles: one denied (resource, event, policy), count
+//	dea#<digest>        roles: one denied event without a resource, count
+//
+// Counters are top-level number attributes with dynamic names, written with
+// UpdateItem ADD, so they are not fields here.
+type DynamoDBActivity struct {
+	Kind              string `dynamodbav:"kind"`
+	Name              string `dynamodbav:"name,omitempty"`
+	Service           string `dynamodbav:"service,omitempty"`
+	EventName         string `dynamodbav:"event_name,omitempty"`
+	Resource          string `dynamodbav:"resource,omitempty"`
+	ResourceAccountID string `dynamodbav:"resource_account_id,omitempty"`
+	PolicyARN         string `dynamodbav:"policy_arn,omitempty"`
+	PolicyType        string `dynamodbav:"policy_type,omitempty"`
+	ErrorMessage      string `dynamodbav:"error_message,omitempty"`
+}

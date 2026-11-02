@@ -267,8 +267,9 @@ identifier define identity.
 
 ### Commutative noun merges
 
-Account and service writes merge with the stored aggregate instead of replacing
-it. Every noun merge uses the same rules:
+Account and resource writes merge with the stored aggregate instead of
+replacing it; role and service writes add to it with `UpdateItem` (see
+"Bounded role and service items"). Every noun merge uses the same rules:
 
 - `first_seen`: minimum non-empty CloudTrail `eventTime`, stored as RFC3339;
 - `last_seen`: maximum CloudTrail `eventTime`, stored as RFC3339;
@@ -337,6 +338,74 @@ Write bidirectional edges for observed pairs:
 
 Events without a resolved person or session still contribute account, role,
 service, and resource edges when those identities exist.
+
+### Bounded role and service items
+
+Role and service items do not grow with activity. Each write touches only
+small items, and every counter is an `UpdateItem ADD`.
+
+The main item holds identity, `first_seen`, `last_seen`, `total_events`, and
+`total_denied_events`. Collections that grow move to activity items in the
+same table, under a sibling partition that list queries on `customerId` never
+see:
+
+```text
+customerId = <customerId>#act#<noun id>     (ids over 1.5 KB: sha256:<hex>)
+<sort key> = <kind>#<detail>               (the table's own sort attribute)
+```
+
+| Noun | Sort key | Holds |
+|------|----------|-------|
+| role | `evt#<event source>` | `c:<source>:<event>` / `d:<source>:<event>` counters and `service_count` |
+| service | `evt#<event name>` | `c:<event>` / `d:<event>` counters |
+| role | `ra#<digest>` | one allowed resource (`resource`, `resource_account_id`, `service`), a `c:<event>` counter per event |
+| role | `dra#<digest>` | one denied (resource, event, policy): `count`, `policy_type`, `error_message` |
+| role | `dea#<digest>` | one denied event without a resource, as above |
+
+Counters are top-level number attributes, so one `ADD` creates or increments
+them. Role event counters are grouped per source (bounded by that service's
+API); service counters per event name (a busy service's full map is larger
+than the names one file touches). More than 100 counters in one item are
+split across updates to stay under the 4 KB expression limit.
+
+Not kept on the main item: service `roles_using` and `resources_used` (the
+relations table holds every service-role and service-resource pair). Role
+`resources_count`, `resources_used`, and `services_used` are derived on read
+from activity items. The `people_count`, `sessions_count`, and
+`accounts_count` fallbacks are no longer refreshed; reads use relation
+`_summary` counts.
+
+Bounds. The writer reads the stored bounds (eventually consistent), then
+writes once:
+
+- item not seen: set both bounds under `attribute_not_exists` on the key, so a
+  stale read that missed an existing item fails instead of keeping the stored
+  `first_seen` through `if_not_exists`;
+- item seen: set `first_seen` only if earlier and `last_seen` only if later,
+  each under a condition that rejects a regression.
+
+A failed condition re-reads consistently and recomputes.
+
+Upgrade. Pre-activity data is not migrated. Items written before this layout
+carry `top_event_names`, `top_denied_event_names`, `services_count`,
+`services_used`, `resources_count`, `resources_used`, `resource_accesses`,
+`denied_resource_accesses`, `denied_event_accesses` (roles) and
+`roles_using`, `resources_used`, `top_event_names`, `top_denied_event_names`
+(services) inline. The first write of such an item removes them in the same
+`UpdateItem` that adds the batch. Its totals and bounds stay; its pre-upgrade
+per-event, per-service, and resource-access breakdowns are dropped, so detail
+views and `roles policy` show only activity since the upgrade. Items that were
+failing at 400 KB shrink on that write. To keep the full history, reset the
+derived tables and replay the CloudTrail archive after upgrading
+(docs/design/cloudtrail-replay.md).
+
+Reads. A noun not written since the upgrade still has its inline maps and no
+activity items, and is shown as stored. The first write removes the maps before
+it writes any activity item, so the two never coexist and the read path adds
+whatever it finds.
+
+`roles detail`, `roles policy`, and `services detail` query the activity
+partition; list commands read main items only.
 
 ### Account-qualified resources
 
