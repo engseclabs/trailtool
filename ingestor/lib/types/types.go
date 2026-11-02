@@ -549,9 +549,7 @@ type EventBridgeS3Event struct {
 //	dea#<digest>        roles: one denied event without a resource, count
 //
 // Counters are top-level number attributes with dynamic names, written with
-// UpdateItem ADD, so they are not fields here. Counts migrated from the
-// pre-activity layout sit beside them as "lc:", "ld:", legacy_service_count,
-// and legacy_count.
+// UpdateItem ADD, so they are not fields here.
 type DynamoDBActivity struct {
 	Kind              string `dynamodbav:"kind"`
 	Name              string `dynamodbav:"name,omitempty"`

@@ -275,11 +275,6 @@ type Role struct {
 
 	// Enriched information
 	AccountName string `json:"account_name,omitempty"`
-
-	// LegacyInline is set when the stored item still carries the
-	// pre-activity inline maps, which then take precedence over migrated
-	// copies in its activity items (see core/store/activity.go).
-	LegacyInline bool `json:"-" dynamodbav:"-"`
 }
 
 // RoleID returns the stable role selector derived from the canonical ARN.
@@ -465,7 +460,4 @@ type Service struct {
 	// Activity tracking
 	FirstSeen string `json:"first_seen" dynamodbav:"first_seen"`
 	LastSeen  string `json:"last_seen" dynamodbav:"last_seen"`
-
-	// LegacyInline: see Role.LegacyInline.
-	LegacyInline bool `json:"-" dynamodbav:"-"`
 }

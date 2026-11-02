@@ -380,46 +380,23 @@ writes once:
 
 A failed condition re-reads consistently and recomputes.
 
-Upgrade. Items written before this layout carry `top_event_names`,
-`top_denied_event_names`, `services_count`, `services_used`,
-`resources_count`, `resources_used`, `resource_accesses`,
+Upgrade. Pre-activity data is not migrated. Items written before this layout
+carry `top_event_names`, `top_denied_event_names`, `services_count`,
+`services_used`, `resources_count`, `resources_used`, `resource_accesses`,
 `denied_resource_accesses`, `denied_event_accesses` (roles) and
 `roles_using`, `resources_used`, `top_event_names`, `top_denied_event_names`
-(services) inline. The next write of the noun migrates them:
+(services) inline. The first write of such an item removes them in the same
+`UpdateItem` that adds the batch. Its totals and bounds stay; its pre-upgrade
+per-event, per-service, and resource-access breakdowns are dropped, so detail
+views and `roles policy` show only activity since the upgrade. Items that were
+failing at 400 KB shrink on that write. To keep the full history, reset the
+derived tables and replay the CloudTrail archive after upgrading
+(docs/design/cloudtrail-replay.md).
 
-1. snapshot: a strongly consistent read of the inline attributes, so the copy
-   starts from the current history, never an older replica's;
-2. copy: each count is written to its activity item as a separate
-   `lc:<key>`, `ld:<key>`, `legacy_service_count`, or `legacy_count`
-   attribute, under a condition that the stored copy is absent or no larger.
-   Inline counts only grow, so copies are the maximum over every snapshot
-   copied: a replay rewrites the same values and an older snapshot can never
-   lower a newer copy;
-3. remove: the inline attributes are removed only if each still equals the
-   snapshot that was copied.
-
-If the source changed in between (a pre-upgrade invocation still merging into
-it during rollout, or another batch migrating the same noun), the removal
-fails and the migration restarts from a fresh snapshot, up to three times. A
-failure at any step leaves the inline attributes in place, still
-authoritative, and the noun's next write tries again. Nothing is removed
-until a copy of exactly what is removed is durable, so no backfill job is
-needed, and items that were failing at 400 KB migrate on their next write.
-
-A failed migration does not drop the batch that triggered it: the batch's own
-counts go to the main item and to the `c:`/`d:` counters, which are separate
-from the copies. The aggregator logs noun-write errors and carries on, as it
-did before, so the file is still marked ingested; the migration is retried by
-the next file that touches the noun, not by re-processing this one.
-
-Reads. While a main item still has its inline attributes, they are
-authoritative and the `lc:`/`ld:`/`legacy_*` copies are ignored; once they are
-gone, the copies are read instead. The CLI reads the main item first and the
-activity partition with a strongly consistent query: if the main item showed
-the inline attributes, the copies are ignored whatever the query returns; if
-it did not, the removal had committed, and the consistent query returns every
-copy written before it. Batch counters (`c:`, `d:`, `service_count`, `count`)
-are always added.
+Reads. A noun not written since the upgrade still has its inline maps and no
+activity items, and is shown as stored. The first write removes the maps before
+it writes any activity item, so the two never coexist and the read path adds
+whatever it finds.
 
 `roles detail`, `roles policy`, and `services detail` query the activity
 partition; list commands read main items only.
