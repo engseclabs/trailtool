@@ -18,7 +18,7 @@ import (
 )
 
 // WriteResourceToDynamoDB writes or updates a resource in DynamoDB using read-merge-write pattern
-func WriteResourceToDynamoDB(ctx context.Context, ddbClient *dynamodb.Client, tableName string, resource *types.DynamoDBResource) error {
+func WriteResourceToDynamoDB(ctx context.Context, ddbClient EntityStore, tableName string, resource *types.DynamoDBResource) error {
 	resource.RolesCount = len(resource.RolesUsing)
 
 	// Query for existing resource
