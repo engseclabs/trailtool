@@ -5,7 +5,6 @@ package resources
 import (
 	"encoding/base64"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/engseclabs/trailtool/ingestor/lib/types"
@@ -149,7 +148,6 @@ func extractResourceIdentifiers(event types.CloudTrailRecord) []string {
 		}
 	case "iam.amazonaws.com":
 		resource := extractIAMResource(event.RequestParameters, event.EventName)
-		log.Printf("DEBUG_IAM: eventName=%s resource=%q params=%+v", event.EventName, resource, event.RequestParameters)
 		if resource != "" {
 			resources = append(resources, resource)
 			seen[resource] = true

@@ -92,6 +92,9 @@ func accountsDetailCmd() *cobra.Command {
 			if account == nil {
 				return fatal("account not found: %s", accountID)
 			}
+			if err := s.LoadAccountActivity(ctx, CustomerID, account); err != nil {
+				return fatal("%v", err)
+			}
 
 			related, err := s.LoadRelatedNouns(
 				ctx,

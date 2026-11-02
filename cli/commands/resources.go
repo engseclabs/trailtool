@@ -130,6 +130,9 @@ Example:
 			if err != nil {
 				return fatal("%v", err)
 			}
+			if err := s.LoadResourceActivity(ctx, CustomerID, resource); err != nil {
+				return fatal("%v", err)
+			}
 
 			related, err := s.LoadRelatedNouns(
 				ctx,

@@ -661,8 +661,15 @@ func (s *Store) ListResources(ctx context.Context, customerID string, filter Res
 				continue
 			}
 
-			// ClickOps filters
+			// ClickOps filters. Accesses live in activity items; only
+			// resources whose running count says they have any are read.
 			if filter.ClickOpsOnly {
+				if resource.ClickOpsCount == 0 && len(resource.ClickOpsAccesses) == 0 {
+					continue
+				}
+				if err := s.loadResourceClickOps(ctx, customerID, &resource); err != nil {
+					return nil, err
+				}
 				filterClickOpsActivity(&resource, filter.StartTime, filter.EndTime)
 				if len(resource.ClickOpsAccesses) == 0 {
 					continue

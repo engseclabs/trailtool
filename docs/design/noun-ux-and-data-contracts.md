@@ -267,14 +267,16 @@ identifier define identity.
 
 ### Commutative noun merges
 
-Account and service writes merge with the stored aggregate instead of replacing
-it. Every noun merge uses the same rules:
+Role, service, resource, and account writes add to the stored aggregate with
+`UpdateItem` instead of replacing it (see "Bounded aggregate items" below).
+Every noun merge uses the same rules:
 
 - `first_seen`: minimum non-empty CloudTrail `eventTime`, stored as RFC3339;
 - `last_seen`: maximum CloudTrail `eventTime`, stored as RFC3339;
 - event maps and totals: addition;
 - string relationships: set union;
-- optional labels: first defined value from a documented source;
+- optional labels: first defined value written (`if_not_exists`), except a
+  resource type, where a known type replaces `unknown`;
 - derived relationship counts: read from exact relation summaries.
 
 Property tests partition and permute one event set and require every ordering to
@@ -312,9 +314,14 @@ counts = { people, sessions, accounts, roles, services, resources }
 
 IDs in keys use base64url encoding. Raw IDs remain attributes for display.
 
-The aggregator deduplicates edges per batch and writes both directions. A
-conditional transaction inserts a new edge and increments the subject summary.
-Existing edges update first and last seen without changing counts.
+The aggregator deduplicates edges per batch and writes both directions. It
+first batch-reads the batch's edges and their subjects' `_summary` items
+(eventually consistent). A conditional transaction inserts each missing edge
+and increments the subject summary. An existing edge is written only when its
+bounds move: `first_seen` when the batch saw the pair earlier, `last_seen` when
+the batch saw it at least one hour later than stored. `last_seen` on an edge is
+therefore accurate to within an hour. Every bound update stays conditional, so
+a stale read can cause a rejected no-op but never a regression.
 
 The CLI batch-gets `_summary` items after noun list queries. Detail commands
 query one relation partition. Existing session indexes provide person, role,
@@ -331,6 +338,72 @@ Write bidirectional edges for observed pairs:
 
 Events without a resolved person or session still contribute account, role,
 service, and resource edges when those identities exist.
+
+### Bounded aggregate items
+
+No role, service, resource, or account item grows with activity. Each update
+touches only small items and every counter is an `UpdateItem ADD`, so batches
+never read-modify-write a whole aggregate and no item approaches DynamoDB's
+400 KB limit.
+
+The main item holds identity, `first_seen`, `last_seen`, and running totals
+(`total_events`, `total_denied_events`, `events_count`, `clickops_count`).
+Collections that grow move to activity items in the same table, under a
+sibling partition that list queries on `customerId` never see:
+
+```text
+customerId = <customerId>#act#<noun id>     (noun ids over 1.5 KB: sha256:<hex>)
+<sort key> = <kind>#<detail>               (the table's own sort attribute)
+```
+
+| Noun | Sort key | Holds |
+|------|----------|-------|
+| role, account | `evt#<event source>` | `c:<source>:<event>` and `d:<source>:<event>` counters; roles also `service_count` |
+| service | `evt#<event name>` | `c:<event>` and `d:<event>` counters |
+| role | `ra#<digest>` | one allowed resource (`resource`, `resource_account_id`, `service`) with a `c:<event>` counter per event name |
+| role | `dra#<digest>` | one denied (resource, event, policy) with `count`, `policy_type`, `error_message` |
+| role | `dea#<digest>` | one denied event without a resource, as above |
+| resource | `co#<digest>` | one ClickOps (session, event): `session_ref`, `person_key`, `access_time`, `resource_account_id`, `count` |
+
+A resource's own `c:<event>` and `d:<event>` counters stay on its main item:
+its service's API bounds them, and a separate item would double the writes of
+the many resources a file touches once.
+
+Counters are top-level number attributes so a single `ADD` creates or
+increments them. Event counters are grouped so one file touches few items:
+per source for roles and accounts (bounded by that service's API), per name for
+services (a busy service's full map is larger than the names one file
+touches).
+
+Dropped from the main items, because the relations table already holds them:
+service `roles_using` and `resources_used`; resource `roles_using` and
+`services_used`. Role `resources_count`, `resources_used`, and `services_used`
+are derived on read from the activity items. The `people_count`,
+`sessions_count`, and `accounts_count` fallbacks are no longer refreshed; reads
+use relation `_summary` counts.
+
+`first_seen` and `last_seen` only widen. The writer reads them (eventually
+consistent, half a read unit), then sets exactly the bounds that move under a
+condition that rejects a regression, retrying from a consistent read when
+another batch moved them first.
+
+Upgrade: items written before this layout keep `top_event_names`,
+`top_denied_event_names`, `services_count`, `services_used`, `resources_count`,
+`resources_used`, `resource_accesses`, `denied_resource_accesses`,
+`denied_event_accesses`, `roles_using`, and `clickops_accesses` inline. The
+first update of such an item removes them in the same `UpdateItem` and replays
+the returned old values into activity items. DynamoDB returns the old image to
+one writer only, so each legacy item migrates once. No backfill job is needed.
+Items whose writes were already failing at 400 KB are migrated by that same
+update, because removing the attributes brings the item under the limit.
+
+Reads sum the legacy inline fields and the activity items. A count lives in
+exactly one place at any moment (the migrating write removes it from the main
+item before it replays it), so mixed old and new items read correctly. Detail
+commands (`roles detail`, `roles policy`, `services detail`, `accounts detail`,
+`resources detail`) query the noun's activity partition; list commands read only
+main items. `resources list --clickops` queries the ClickOps items of resources
+whose `clickops_count` is non-zero.
 
 ### Account-qualified resources
 

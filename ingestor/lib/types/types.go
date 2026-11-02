@@ -534,3 +534,41 @@ type EventBridgeS3Event struct {
 	Resources  []string               `json:"resources"`
 	Detail     map[string]interface{} `json:"detail"`
 }
+
+// DynamoDBActivity is one activity item: a small counter item split out of a
+// role, service, or account (and a resource's ClickOps accesses) so that no
+// aggregate item grows with activity. Activity items live in the noun's own
+// table under the partition "<customerId>#act#<noun id>" (see
+// dynamodb.ActivityPartition), keyed by the table's own sort attribute:
+//
+//	evt#<event source>  roles, accounts: "c:<event key>" / "d:<event key>"
+//	                    allowed / denied counters, plus service_count (roles)
+//	evt#<event name>    services: the same counters for one event name
+//	ra#<digest>         roles: one allowed resource, "c:<event name>" counters
+//	dra#<digest>        roles: one denied (resource, event, policy), count
+//	dea#<digest>        roles: one denied event without a resource, count
+//	co#<digest>         resources: one ClickOps (session, event), count
+//
+// A resource's own event counters ("c:<event name>", "d:<event name>") are
+// top-level attributes of its main item. Counters are dynamic attribute names,
+// so they are written with UpdateItem ADD and are not fields of this struct.
+type DynamoDBActivity struct {
+	Kind  string `dynamodbav:"kind"`
+	Name  string `dynamodbav:"name,omitempty"`
+	Count int    `dynamodbav:"count,omitempty"`
+
+	Service           string `dynamodbav:"service,omitempty"`
+	EventName         string `dynamodbav:"event_name,omitempty"`
+	Resource          string `dynamodbav:"resource,omitempty"`
+	ResourceAccountID string `dynamodbav:"resource_account_id,omitempty"`
+	PolicyARN         string `dynamodbav:"policy_arn,omitempty"`
+	PolicyType        string `dynamodbav:"policy_type,omitempty"`
+	ErrorMessage      string `dynamodbav:"error_message,omitempty"`
+
+	SessionRef string `dynamodbav:"session_ref,omitempty"`
+	PersonKey  string `dynamodbav:"person_key,omitempty"`
+	AccessTime string `dynamodbav:"access_time,omitempty"`
+	// A ClickOps access's account is stored as resource_account_id: the
+	// accounts table's sort attribute is account_id, so no activity item may
+	// carry an attribute of that name.
+}

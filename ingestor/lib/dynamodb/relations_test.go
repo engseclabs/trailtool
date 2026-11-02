@@ -20,6 +20,7 @@ type fakeRelationStore struct {
 	transactionFailures int
 	putConflicts        int
 	updateConflicts     int
+	batchGetCalls       int
 }
 
 func newFakeRelationStore() *fakeRelationStore {
@@ -346,4 +347,21 @@ func TestWriteRelationsReportsOnlyWhatItCreated(t *testing.T) {
 	if missing, err := GetRelationSummaryCounts(context.Background(), store, "relations", "test#person#none"); err != nil || missing != nil {
 		t.Fatalf("missing summary = %v, %v; want nil, nil", missing, err)
 	}
+}
+
+func (s *fakeRelationStore) BatchGetItem(ctx context.Context, input *dynamodb.BatchGetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.BatchGetItemOutput, error) {
+	s.batchGetCalls++
+	out := &dynamodb.BatchGetItemOutput{Responses: map[string][]map[string]ddbtypes.AttributeValue{}}
+	for table, req := range input.RequestItems {
+		for _, key := range req.Keys {
+			got, err := s.GetItem(ctx, &dynamodb.GetItemInput{Key: key})
+			if err != nil {
+				return nil, err
+			}
+			if len(got.Item) > 0 {
+				out.Responses[table] = append(out.Responses[table], got.Item)
+			}
+		}
+	}
+	return out, nil
 }

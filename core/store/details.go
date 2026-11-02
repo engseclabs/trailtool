@@ -79,6 +79,7 @@ func (s *Store) GetResource(ctx context.Context, customerID, resourceKey string)
 	if err := attributevalue.UnmarshalMap(result.Item, &resource); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal resource: %w", err)
 	}
+	addInlineEventCounters(&resource, result.Item)
 	resource.Rid = resource.RID()
 	return &resource, nil
 }

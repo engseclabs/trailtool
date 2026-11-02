@@ -6,7 +6,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
@@ -99,11 +101,30 @@ func WriteRelations(ctx context.Context, store RelationStore, tableName string, 
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	summaries := make(map[string]bool)
+	for _, key := range keys {
+		if err := validateRelation(merged[key]); err != nil {
+			return result, err
+		}
+	}
+
+	// One batched read tells which edges and summaries already exist, so a
+	// replayed or already-known edge costs half a read unit instead of a
+	// cancelled transaction, a failed conditional put, and two boundary
+	// updates. A failed read only loses the shortcut: every edge then takes
+	// the create-if-absent path, which is correct on its own.
+	stored, summaries, err := prefetchRelations(ctx, store, tableName, merged, keys)
+	if err != nil {
+		log.Printf("WARNING: relation prefetch failed, writing every edge: %v", err)
+		stored, summaries = nil, make(map[string]bool)
+	}
+
 	for _, key := range keys {
 		relation := merged[key]
-		if err := validateRelation(relation); err != nil {
-			return result, err
+		if prior, ok := stored[key]; ok {
+			if err := refreshRelationBounds(ctx, store, tableName, relation, prior); err != nil {
+				return result, err
+			}
+			continue
 		}
 		if !summaries[relation.PK] {
 			created, err := ensureRelationSummary(ctx, store, tableName, relation)
@@ -124,6 +145,104 @@ func WriteRelations(ctx context.Context, store RelationStore, tableName string, 
 		}
 	}
 	return result, nil
+}
+
+// RelationLastSeenGranularity is how far an edge's last_seen must move before
+// it is rewritten. Edges are observed again in most files, so recording every
+// observation would rewrite each edge dozens of times a day; last_seen is
+// instead kept accurate to within this window.
+const RelationLastSeenGranularity = time.Hour
+
+// relationBounds is the stored first and last observation of one edge.
+type relationBounds struct {
+	FirstSeen string `dynamodbav:"first_seen"`
+	LastSeen  string `dynamodbav:"last_seen"`
+}
+
+// refreshRelationBounds widens a known edge's bounds only when they move:
+// first_seen when the batch saw it earlier, last_seen when the batch saw it at
+// least RelationLastSeenGranularity later. Each update is still conditional,
+// so a stale prefetch can only cause a rejected no-op, never a regression.
+func refreshRelationBounds(ctx context.Context, store RelationStore, tableName string, relation types.DynamoDBRelation, prior relationBounds) error {
+	if relation.FirstSeen != "" && (prior.FirstSeen == "" || relation.FirstSeen < prior.FirstSeen) {
+		if err := updateRelationBoundary(ctx, store, tableName, relation, "first_seen", relation.FirstSeen, ">"); err != nil {
+			return err
+		}
+	}
+	if relation.LastSeen != "" && lastSeenAdvances(prior.LastSeen, relation.LastSeen) {
+		if err := updateRelationBoundary(ctx, store, tableName, relation, "last_seen", relation.LastSeen, "<"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func lastSeenAdvances(stored, observed string) bool {
+	if stored == "" {
+		return true
+	}
+	s, err1 := time.Parse(time.RFC3339, stored)
+	o, err2 := time.Parse(time.RFC3339, observed)
+	if err1 != nil || err2 != nil {
+		return observed > stored
+	}
+	return o.Sub(s) >= RelationLastSeenGranularity
+}
+
+// prefetchRelations batch-reads the edges and their subjects' summaries,
+// returning the bounds of edges that exist (by merged key) and the set of PKs
+// whose _summary exists. Reads are eventually consistent: a miss falls back to
+// the conditional create path, which handles an edge that does exist.
+func prefetchRelations(ctx context.Context, store RelationStore, tableName string, merged map[string]types.DynamoDBRelation, keys []string) (map[string]relationBounds, map[string]bool, error) {
+	stored := make(map[string]relationBounds)
+	summaries := make(map[string]bool)
+	var reqKeys []map[string]ddbtypes.AttributeValue
+	seenPK := make(map[string]bool)
+	for _, key := range keys {
+		relation := merged[key]
+		reqKeys = append(reqKeys, relationKey(relation.PK, relation.SK))
+		if !seenPK[relation.PK] {
+			seenPK[relation.PK] = true
+			reqKeys = append(reqKeys, relationSummaryKey(relation.PK))
+		}
+	}
+	const batchSize = 100
+	for start := 0; start < len(reqKeys); start += batchSize {
+		end := min(start+batchSize, len(reqKeys))
+		req := map[string]ddbtypes.KeysAndAttributes{tableName: {
+			Keys:                     reqKeys[start:end],
+			ProjectionExpression:     aws.String("#pk, #sk, #fs, #ls"),
+			ExpressionAttributeNames: map[string]string{"#pk": "pk", "#sk": "sk", "#fs": "first_seen", "#ls": "last_seen"},
+		}}
+		for attempt := 0; len(req) > 0; attempt++ {
+			if attempt > 0 {
+				if attempt >= transactionMaxAttempts {
+					return nil, nil, fmt.Errorf("relation prefetch: unprocessed keys after %d attempts", attempt)
+				}
+				if err := waitForTransactionRetry(ctx, attempt); err != nil {
+					return nil, nil, err
+				}
+			}
+			out, err := store.BatchGetItem(ctx, &dynamodb.BatchGetItemInput{RequestItems: req})
+			if err != nil {
+				return nil, nil, err
+			}
+			for _, item := range out.Responses[tableName] {
+				pk, sk := stringAttr(item, "pk"), stringAttr(item, "sk")
+				if sk == RelationSummarySK {
+					summaries[pk] = true
+					continue
+				}
+				var bounds relationBounds
+				if err := attributevalue.UnmarshalMap(item, &bounds); err != nil {
+					return nil, nil, err
+				}
+				stored[pk+"\x00"+sk] = bounds
+			}
+			req = out.UnprocessedKeys
+		}
+	}
+	return stored, summaries, nil
 }
 
 // WriteRelation creates an edge and increments its subject summary exactly

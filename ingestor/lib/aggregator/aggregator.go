@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -84,6 +85,48 @@ type Config struct {
 	// RecordWrites collects each session's mutating and denied records into
 	// Result.Sessions for Session Activity events. Off unless emitting.
 	RecordWrites bool
+
+	// Writers overrides the noun and relation write paths. Nil uses the
+	// package defaults; the write-cost measurement substitutes the previous
+	// read-merge-put paths to compare against.
+	Writers *Writers
+}
+
+// Writers are the DynamoDB write paths for the aggregate nouns and relations.
+type Writers struct {
+	Role      func(context.Context, ddblib.Client, string, *types.DynamoDBRole) error
+	Service   func(context.Context, ddblib.Client, string, *types.DynamoDBService) error
+	Resource  func(context.Context, ddblib.Client, string, *types.DynamoDBResource) error
+	Account   func(context.Context, ddblib.Client, string, *types.DynamoDBAccount) error
+	Relations func(context.Context, ddblib.Client, string, []types.DynamoDBRelation) (ddblib.RelationWriteResult, error)
+}
+
+// DefaultWriters are the bounded write paths: UpdateItem on small items only.
+func DefaultWriters() *Writers {
+	return &Writers{
+		Role: func(ctx context.Context, c ddblib.Client, t string, r *types.DynamoDBRole) error {
+			return ddblib.WriteRoleToDynamoDB(ctx, c, t, r)
+		},
+		Service: func(ctx context.Context, c ddblib.Client, t string, s *types.DynamoDBService) error {
+			return ddblib.WriteServiceToDynamoDB(ctx, c, t, s)
+		},
+		Resource: func(ctx context.Context, c ddblib.Client, t string, r *types.DynamoDBResource) error {
+			return ddblib.WriteResourceToDynamoDB(ctx, c, t, r)
+		},
+		Account: func(ctx context.Context, c ddblib.Client, t string, a *types.DynamoDBAccount) error {
+			return ddblib.WriteAccountToDynamoDB(ctx, c, t, a)
+		},
+		Relations: func(ctx context.Context, c ddblib.Client, t string, r []types.DynamoDBRelation) (ddblib.RelationWriteResult, error) {
+			return ddblib.WriteRelations(ctx, c, t, r)
+		},
+	}
+}
+
+func (c Config) writers() *Writers {
+	if c.Writers != nil {
+		return c.Writers
+	}
+	return DefaultWriters()
 }
 
 func (c Config) namespace() string {
@@ -113,6 +156,16 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 // The result is non-nil even alongside an error, holding whatever was written
 // before the failure.
 func ProcessWithResult(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events []types.CloudTrailRecord) (*Result, error) {
+	// A nil *dynamodb.Client must stay a nil interface: tests run without one.
+	var store ddblib.Client
+	if ddbClient != nil {
+		store = ddbClient
+	}
+	return ProcessWithStore(ctx, store, cfg, events)
+}
+
+// ProcessWithStore is ProcessWithResult over any DynamoDB implementation.
+func ProcessWithStore(ctx context.Context, ddbClient ddblib.Client, cfg Config, events []types.CloudTrailRecord) (*Result, error) {
 	ns := cfg.namespace()
 	events = dedupeByEventID(events)
 	log.Printf("=== Processing Identity-First Aggregation ===")
@@ -132,7 +185,7 @@ func ProcessWithResult(ctx context.Context, ddbClient *dynamodb.Client, cfg Conf
 // into entity records, writing to DynamoDB when a client is present. Split
 // from ProcessWithResult so tests can inject stored links and simulate
 // cross-batch delivery.
-func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, ns string, groups []identity.Group, stored map[string]*link) (*Result, error) {
+func aggregateGroups(ctx context.Context, ddbClient ddblib.Client, cfg Config, ns string, groups []identity.Group, stored map[string]*link) (*Result, error) {
 	// Aggregation maps for all nouns
 	roles := make(map[string]*types.DynamoDBRole)
 	services := make(map[string]*types.DynamoDBService)
@@ -140,6 +193,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	people := make(map[string]*types.DynamoDBPerson)
 	sessions := make(map[string]*types.DynamoDBSession)        // keyed by session ref person_key|sk
 	sessionWrites := make(map[string][]types.CloudTrailRecord) // session ref → mutating or denied calls
+	errorCodes := make(map[string]int)                         // CloudTrail errorCode → events in batch
 	accounts := make(map[string]*types.DynamoDBAccount)
 	relations := make(relationCollector)
 
@@ -316,7 +370,9 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 			}
 
 			if event.ErrorCode != "" {
-				log.Printf("EVENT_ERROR: event=%s:%s errorCode=%s person=%s", event.EventSource, event.EventName, event.ErrorCode, personKey)
+				// CloudTrail events that record a failed call, not ingestor
+				// failures: summarized once per batch below.
+				errorCodes[event.ErrorCode]++
 			}
 			clickOps := sess != nil &&
 				!session.IsAccessDeniedError(event.ErrorCode) &&
@@ -501,6 +557,9 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 	// Log summary
 	log.Printf("=== Aggregation Summary ===")
+	if len(errorCodes) > 0 {
+		log.Printf("EVENT_ERROR_CODES: %s", summarizeCounts(errorCodes))
+	}
 	log.Printf("Found %d unique people, %d sessions, %d roles, %d services, %d resources, %d accounts",
 		len(people), len(sessions), len(roles), len(services), len(resourceMap), len(accounts))
 	typeCounts := make(map[string]int)
@@ -518,6 +577,7 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	if ddbClient == nil {
 		return res, nil
 	}
+	writers := cfg.writers()
 
 	// Correlation is required for later files to resolve and receive creation
 	// metadata. Persist it before aggregate writes so a link failure cannot be
@@ -535,21 +595,21 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	// concurrency stays bounded and the log output keeps its per-type grouping.
 	writeAll(ctx, roles, func(ctx context.Context, role *types.DynamoDBRole) {
 		role.CustomerID = ns
-		if err := ddblib.WriteRoleToDynamoDB(ctx, ddbClient, cfg.Tables.Roles, role); err != nil {
+		if err := writers.Role(ctx, ddbClient, cfg.Tables.Roles, role); err != nil {
 			log.Printf("ERROR: Failed to write role: %v", err)
 		}
 	})
 
 	writeAll(ctx, services, func(ctx context.Context, service *types.DynamoDBService) {
 		service.CustomerID = ns
-		if err := ddblib.WriteServiceToDynamoDB(ctx, ddbClient, cfg.Tables.Services, service); err != nil {
+		if err := writers.Service(ctx, ddbClient, cfg.Tables.Services, service); err != nil {
 			log.Printf("ERROR: Failed to write service: %v", err)
 		}
 	})
 
 	writeAll(ctx, resourceMap, func(ctx context.Context, resource *types.DynamoDBResource) {
 		resource.CustomerID = ns
-		if err := ddblib.WriteResourceToDynamoDB(ctx, ddbClient, cfg.Tables.Resources, resource); err != nil {
+		if err := writers.Resource(ctx, ddbClient, cfg.Tables.Resources, resource); err != nil {
 			log.Printf("ERROR: Failed to write resource: %v", err)
 		}
 	})
@@ -624,13 +684,13 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 	writeAll(ctx, accounts, func(ctx context.Context, account *types.DynamoDBAccount) {
 		account.CustomerID = ns
-		if err := ddblib.WriteAccountToDynamoDB(ctx, ddbClient, cfg.Tables.Accounts, account); err != nil {
+		if err := writers.Account(ctx, ddbClient, cfg.Tables.Accounts, account); err != nil {
 			log.Printf("ERROR: Failed to write account: %v", err)
 		}
 	})
 
 	if cfg.Tables.Relations != "" {
-		written, err := ddblib.WriteRelations(ctx, ddbClient, cfg.Tables.Relations, relations.edges())
+		written, err := writers.Relations(ctx, ddbClient, cfg.Tables.Relations, relations.edges())
 		// Whatever was created before a failure stays created, and a retry of
 		// this batch will not report it again, so the result carries it either way.
 		collectCreated(res, relations, written.NewSubjects, written.NewEdges)
@@ -664,4 +724,23 @@ func writeSessionRecord(ctx context.Context, store ddblib.SessionStore, cfg Conf
 	written.Sid = identity.Sid(persisted.PersonKey, persisted.SK)
 	written.New = created
 	return written, nil
+}
+
+// summarizeCounts renders counts as "a=3 b=1", largest first.
+func summarizeCounts(counts map[string]int) string {
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if counts[keys[i]] != counts[keys[j]] {
+			return counts[keys[i]] > counts[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("%s=%d", k, counts[k])
+	}
+	return strings.Join(parts, " ")
 }
