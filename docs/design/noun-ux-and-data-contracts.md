@@ -385,18 +385,32 @@ Upgrade. Items written before this layout carry `top_event_names`,
 `resources_count`, `resources_used`, `resource_accesses`,
 `denied_resource_accesses`, `denied_event_accesses` (roles) and
 `roles_using`, `resources_used`, `top_event_names`, `top_denied_event_names`
-(services) inline. The next write migrates them in two steps:
+(services) inline. The next write of the noun migrates them:
 
-1. copy: each legacy count is written to its activity item as a separate
+1. snapshot: a strongly consistent read of the inline attributes, so the copy
+   starts from the current history, never an older replica's;
+2. copy: each count is written to its activity item as a separate
    `lc:<key>`, `ld:<key>`, `legacy_service_count`, or `legacy_count`
-   attribute with `if_not_exists`;
-2. remove: only after every copy succeeded are the inline attributes removed.
+   attribute, under a condition that the stored copy is absent or no larger.
+   Inline counts only grow, so copies are the maximum over every snapshot
+   copied: a replay rewrites the same values and an older snapshot can never
+   lower a newer copy;
+3. remove: the inline attributes are removed only if each still equals the
+   snapshot that was copied.
 
-A failure at either step leaves the inline attributes in place and fails the
-batch; the retry copies the same values again (`if_not_exists` keeps them
-from doubling) and then removes. Nothing is discarded before its copy is
-durable, so no backfill job is needed, and items that were failing at 400 KB
-migrate on their next write.
+If the source changed in between (a pre-upgrade invocation still merging into
+it during rollout, or another batch migrating the same noun), the removal
+fails and the migration restarts from a fresh snapshot, up to three times. A
+failure at any step leaves the inline attributes in place, still
+authoritative, and the noun's next write tries again. Nothing is removed
+until a copy of exactly what is removed is durable, so no backfill job is
+needed, and items that were failing at 400 KB migrate on their next write.
+
+A failed migration does not drop the batch that triggered it: the batch's own
+counts go to the main item and to the `c:`/`d:` counters, which are separate
+from the copies. The aggregator logs noun-write errors and carries on, as it
+did before, so the file is still marked ingested; the migration is retried by
+the next file that touches the noun, not by re-processing this one.
 
 Reads. While a main item still has its inline attributes, they are
 authoritative and the `lc:`/`ld:`/`legacy_*` copies are ignored; once they are

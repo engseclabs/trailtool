@@ -203,7 +203,7 @@ func TestStaleReadCannotDropTheEarliestObservation(t *testing.T) {
 	if err := WriteRoleToDynamoDB(ctx, store, testRoles, roleBatch("2026-01-01T10:00:00Z", "2026-01-01T11:00:00Z", "s3:bucket:x")); err != nil {
 		t.Fatal(err)
 	}
-	store.StaleGet = func(*dynamodb.GetItemInput) bool { return true }
+	store.StaleGet = func(*dynamodb.GetItemInput) (ddbfake.Item, bool) { return nil, true }
 	if err := WriteRoleToDynamoDB(ctx, store, testRoles, roleBatch("2026-01-01T08:00:00Z", "2026-01-01T12:00:00Z", "s3:bucket:x")); err != nil {
 		t.Fatal(err)
 	}
@@ -216,55 +216,69 @@ func TestStaleReadCannotDropTheEarliestObservation(t *testing.T) {
 	}
 }
 
-// failActivity fails the first n activity-item updates.
-func failActivity(store *ddbfake.Store, n int) {
+// failCopies fails the first n updates that copy legacy counts.
+func failCopies(store *ddbfake.Store, n int) {
 	store.FailUpdate = func(in *dynamodb.UpdateItemInput) error {
-		if n > 0 && strings.Contains(attrString(in.Key, "customerId"), ActivityPartitionInfix) {
-			n--
-			return errors.New("injected failure")
+		for _, name := range in.ExpressionAttributeNames {
+			if n > 0 && (strings.HasPrefix(name, LegacyAllowedCounterPrefix) || strings.HasPrefix(name, "legacy_")) {
+				n--
+				return errors.New("injected failure")
+			}
 		}
 		return nil
+	}
+}
+
+func writeGetObjects(t *testing.T, store *ddbfake.Store) error {
+	t.Helper()
+	return WriteRoleToDynamoDB(context.Background(), store, testRoles,
+		roleBatch("2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z", "s3:bucket:old"))
+}
+
+func assertMigrated(t *testing.T, store *ddbfake.Store) {
+	t.Helper()
+	main := store.Get(testRoles, nounKey(RoleSortAttr, "default", testRoleARN))
+	for _, attr := range LegacyRoleAttrs {
+		if _, ok := main[attr]; ok {
+			t.Fatalf("legacy attribute %s survived a successful migration", attr)
+		}
 	}
 }
 
 func TestMigrationKeepsHistoryWhenTheCopyFails(t *testing.T) {
 	for _, failures := range []int{1, 2, 100} {
 		t.Run(strconv.Itoa(failures), func(t *testing.T) {
-			ctx := context.Background()
 			store := newNounFake()
 			seedLegacyRole(t, store)
 
-			failActivity(store, failures)
-			if err := WriteRoleToDynamoDB(ctx, store, testRoles, roleBatch("2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z", "s3:bucket:old")); err == nil {
-				t.Fatal("write succeeded despite failed copies")
+			failCopies(store, failures)
+			if err := writeGetObjects(t, store); err == nil {
+				t.Fatal("write reported success despite failed copies")
 			}
 			main := store.Get(testRoles, nounKey(RoleSortAttr, "default", testRoleARN))
 			if _, ok := main["top_event_names"]; !ok {
 				t.Fatal("legacy attributes removed before their copies were written")
 			}
-			if got := getObjectCount(t, store); got != 40 {
-				t.Fatalf("after failed migration GetObject = %d, want 40", got)
+			// The batch itself was still recorded: 40 historical + 2.
+			if got := getObjectCount(t, store); got != 42 {
+				t.Fatalf("after failed migration GetObject = %d, want 42", got)
 			}
 
+			// The noun's next batch retries the migration.
 			store.FailUpdate = nil
-			if err := WriteRoleToDynamoDB(ctx, store, testRoles, roleBatch("2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z", "s3:bucket:old")); err != nil {
+			if err := writeGetObjects(t, store); err != nil {
 				t.Fatal(err)
 			}
-			main = store.Get(testRoles, nounKey(RoleSortAttr, "default", testRoleARN))
-			for _, attr := range LegacyRoleAttrs {
-				if _, ok := main[attr]; ok {
-					t.Fatalf("legacy attribute %s survived a successful migration", attr)
-				}
-			}
-			if got := getObjectCount(t, store); got != 42 {
-				t.Fatalf("GetObject = %d, want 40 historical + 2", got)
+			assertMigrated(t, store)
+			if got := getObjectCount(t, store); got != 44 {
+				t.Fatalf("GetObject = %d, want 40 historical + 2 + 2", got)
 			}
 			raSK := ActivityResourceAccess + "#" + digest("s3.amazonaws.com", "111111111111", "s3:bucket:old")
-			if got := readCount(t, store, testRoles, RoleSortAttr, testRoleARN, raSK, "c:GetObject", "lc:GetObject", ""); got != 42 {
-				t.Fatalf("resource access = %d, want 42", got)
+			if got := readCount(t, store, testRoles, RoleSortAttr, testRoleARN, raSK, "c:GetObject", "lc:GetObject", ""); got != 44 {
+				t.Fatalf("resource access = %d, want 44", got)
 			}
 			role := storedRole(t, store)
-			if role.TotalEvents != 42 || role.FirstSeen != "2026-01-01T10:00:00Z" {
+			if role.TotalEvents != 44 || role.FirstSeen != "2026-01-01T10:00:00Z" {
 				t.Fatalf("role = %+v", role)
 			}
 		})
@@ -272,7 +286,6 @@ func TestMigrationKeepsHistoryWhenTheCopyFails(t *testing.T) {
 }
 
 func TestMigrationReplaysIdempotentlyWhenRemovalFails(t *testing.T) {
-	ctx := context.Background()
 	store := newNounFake()
 	seedLegacyRole(t, store)
 	store.FailUpdate = func(in *dynamodb.UpdateItemInput) error {
@@ -281,19 +294,92 @@ func TestMigrationReplaysIdempotentlyWhenRemovalFails(t *testing.T) {
 		}
 		return nil
 	}
-	if err := WriteRoleToDynamoDB(ctx, store, testRoles, roleBatch("2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z", "s3:bucket:old")); err == nil {
-		t.Fatal("write succeeded despite failed removal")
+	if err := writeGetObjects(t, store); err == nil {
+		t.Fatal("write reported success despite failed removal")
 	}
 	// The copies exist, but the original is still authoritative.
-	if got := getObjectCount(t, store); got != 40 {
-		t.Fatalf("mid-migration GetObject = %d, want 40", got)
+	if got := getObjectCount(t, store); got != 42 {
+		t.Fatalf("mid-migration GetObject = %d, want 42", got)
 	}
 	store.FailUpdate = nil
-	if err := WriteRoleToDynamoDB(ctx, store, testRoles, roleBatch("2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z", "s3:bucket:old")); err != nil {
+	if err := writeGetObjects(t, store); err != nil {
 		t.Fatal(err)
 	}
+	assertMigrated(t, store)
+	if got := getObjectCount(t, store); got != 44 {
+		t.Fatalf("GetObject = %d, want 44 (a replayed copy must not double)", got)
+	}
+}
+
+// A replica can return an older version of the item, not just miss it. The
+// migration must copy the current history, not that version.
+func TestMigrationCopiesFromAnAuthoritativeSnapshot(t *testing.T) {
+	store := newNounFake()
+	seedLegacyRole(t, store)
+	stale := store.Get(testRoles, nounKey(RoleSortAttr, "default", testRoleARN))
+	stale["top_event_names"] = &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{
+		"s3.amazonaws.com:GetObject": num(30),
+	}}
+	store.StaleGet = func(*dynamodb.GetItemInput) (ddbfake.Item, bool) { return stale, true }
+	if err := writeGetObjects(t, store); err != nil {
+		t.Fatal(err)
+	}
+	assertMigrated(t, store)
 	if got := getObjectCount(t, store); got != 42 {
-		t.Fatalf("GetObject = %d, want 42 (replayed copy must not double)", got)
+		t.Fatalf("GetObject = %d, want 40 historical + 2", got)
+	}
+}
+
+// A pre-upgrade writer still running during rollout can merge into the
+// legacy attributes between the snapshot and the removal.
+func TestMigrationRestartsWhenTheSourceChangesBeforeRemoval(t *testing.T) {
+	store := newNounFake()
+	seedLegacyRole(t, store)
+	changed := false
+	store.FailUpdate = func(in *dynamodb.UpdateItemInput) error {
+		if !changed && strings.HasPrefix(aws.ToString(in.UpdateExpression), "REMOVE") {
+			changed = true
+			item := store.Get(testRoles, nounKey(RoleSortAttr, "default", testRoleARN))
+			item["top_event_names"] = &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{
+				"s3.amazonaws.com:GetObject": num(45),
+			}}
+			if err := store.Seed(testRoles, item); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := writeGetObjects(t, store); err != nil {
+		t.Fatal(err)
+	}
+	assertMigrated(t, store)
+	if got := getObjectCount(t, store); got != 47 {
+		t.Fatalf("GetObject = %d, want the 45 written by the old writer + 2", got)
+	}
+}
+
+// Copies are the maximum over snapshots: copying an older snapshot over a
+// newer one fails instead of lowering it.
+func TestMigratedCopiesNeverDecrease(t *testing.T) {
+	ctx := context.Background()
+	store := newNounFake()
+	partition := ActivityPartition("default", testRoleARN)
+	copyOf := func(n int) error {
+		set := activitySet{}
+		set.events(bySource, map[string]int{"s3.amazonaws.com:GetObject": n}, nil)
+		return writeActivity(ctx, store, testRoles, RoleSortAttr, partition, set, true)
+	}
+	for _, n := range []int{40, 40, 45} {
+		if err := copyOf(n); err != nil {
+			t.Fatalf("copy %d: %v", n, err)
+		}
+	}
+	if err := copyOf(30); err == nil {
+		t.Fatal("an older snapshot overwrote a newer copy")
+	}
+	evt := store.Get(testRoles, nounKey(RoleSortAttr, partition, "evt#s3.amazonaws.com"))
+	if got := numAttr(t, evt, "lc:s3.amazonaws.com:GetObject"); got != 45 {
+		t.Fatalf("copy = %d, want 45", got)
 	}
 }
 

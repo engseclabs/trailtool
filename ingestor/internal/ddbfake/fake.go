@@ -4,7 +4,8 @@
 // It supports GetItem and UpdateItem with the expression subset those paths
 // use: SET (value or if_not_exists), ADD (number or string set), and REMOVE
 // on top-level attributes, and conditions built from AND, OR, parentheses,
-// attribute_exists, attribute_not_exists, and = < > comparisons. It enforces
+// attribute_exists, attribute_not_exists, and comparisons (= and <> on any
+// type, < <= > >= on strings and numbers). It enforces
 // the 400 KB item limit and meters write units the way DynamoDB bills them:
 // ceil(max(size before, size after) / 1 KB), failed conditions included.
 package ddbfake
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"reflect"
 	"strings"
 	"sync"
 	"unicode"
@@ -37,12 +39,14 @@ type Store struct {
 	tables map[string]map[string]Item // table → key → item
 	wcu    map[string]float64         // table → write units
 
-	// FailUpdate, when set, is consulted before every UpdateItem; a non-nil
-	// error fails the call without changing anything.
+	// FailUpdate, when set, is consulted before every UpdateItem, outside
+	// the store's lock (so it may call Seed to simulate a concurrent writer);
+	// a non-nil error fails the call without changing anything.
 	FailUpdate func(*dynamodb.UpdateItemInput) error
 	// StaleGet, when set and returning true for an eventually consistent
-	// GetItem, makes that read return no item, as a lagging replica can.
-	StaleGet func(*dynamodb.GetItemInput) bool
+	// GetItem, answers that read with the returned item (nil for none), as a
+	// lagging replica can.
+	StaleGet func(*dynamodb.GetItemInput) (Item, bool)
 }
 
 // New returns a store whose tables have the given hash and range attributes.
@@ -114,11 +118,13 @@ func (s *Store) WriteUnits(table string) float64 {
 
 // GetItem implements the DynamoDB API (projections are ignored).
 func (s *Store) GetItem(_ context.Context, in *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	if s.StaleGet != nil && !aws.ToBool(in.ConsistentRead) {
+		if item, ok := s.StaleGet(in); ok {
+			return &dynamodb.GetItemOutput{Item: copyItem(item)}, nil
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.StaleGet != nil && !aws.ToBool(in.ConsistentRead) && s.StaleGet(in) {
-		return &dynamodb.GetItemOutput{}, nil
-	}
 	table := aws.ToString(in.TableName)
 	k, err := s.key(table, in.Key)
 	if err != nil {
@@ -129,13 +135,13 @@ func (s *Store) GetItem(_ context.Context, in *dynamodb.GetItemInput, _ ...func(
 
 // UpdateItem implements the DynamoDB API.
 func (s *Store) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.FailUpdate != nil {
 		if err := s.FailUpdate(in); err != nil {
 			return nil, err
 		}
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	table := aws.ToString(in.TableName)
 	k, err := s.key(table, in.Key)
 	if err != nil {
@@ -195,6 +201,9 @@ func tokenize(s string) []string {
 		switch {
 		case unicode.IsSpace(c):
 			i++
+		case strings.HasPrefix(s[i:], "<="), strings.HasPrefix(s[i:], ">="), strings.HasPrefix(s[i:], "<>"):
+			out = append(out, s[i:i+2])
+			i += 2
 		case strings.ContainsRune("(),=<>", c):
 			out = append(out, string(c))
 			i++
@@ -407,14 +416,20 @@ func (e *evaluator) primary(item Item) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if op == "=" || op == "<>" {
+		// Equality works on every type, maps and lists included.
+		return (left != nil && right != nil && reflect.DeepEqual(left, right)) == (op == "="), nil
+	}
 	c, comparable := compare(left, right)
 	switch op {
-	case "=":
-		return comparable && c == 0, nil
 	case "<":
 		return comparable && c < 0, nil
+	case "<=":
+		return comparable && c <= 0, nil
 	case ">":
 		return comparable && c > 0, nil
+	case ">=":
+		return comparable && c >= 0, nil
 	}
 	return false, fmt.Errorf("unsupported comparator %q", op)
 }

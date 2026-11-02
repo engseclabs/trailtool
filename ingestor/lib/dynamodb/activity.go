@@ -10,18 +10,12 @@
 // what the small item weighs, not what the noun has accumulated.
 //
 // Items written before this layout carry the old unbounded attributes inline.
-// Migrating one is two durable steps, so a failure at any point loses
-// nothing:
-//
-//  1. copy: the legacy counts are written to their activity items as
-//     separate "lc:"/"ld:"/"legacy_*" attributes with if_not_exists, so a
-//     replay after a partial failure writes the same values again;
-//  2. remove: only after every copy succeeded are the legacy attributes
-//     removed from the main item.
-//
-// Until step 2 the legacy attributes stay authoritative and readers ignore
-// the copies; after it, readers use the copies. A count is therefore read
-// from exactly one place whichever side of the removal a read lands on.
+// Migration (see nounUpdate.migrate) copies them from a strongly consistent
+// snapshot into separate "lc:"/"ld:"/"legacy_*" attributes of the activity
+// items, then removes them only if they still equal that snapshot. Until the
+// removal the legacy attributes stay authoritative and readers ignore the
+// copies; after it, readers use the copies. A count is therefore read from
+// exactly one place whichever side of the removal a read lands on.
 package dynamodb
 
 import (
@@ -83,8 +77,13 @@ const (
 	maxPartitionKeyBytes = 1536
 	// maxSortKeyBytes keeps activity sort keys under the 1024-byte limit.
 	maxSortKeyBytes = 768
-	// maxCountersPerUpdate keeps an expression under the 4 KB limit.
-	maxCountersPerUpdate = 100
+	// maxCountersPerUpdate and maxMigratedCountersPerUpdate keep update and
+	// condition expressions under DynamoDB's 4 KB limit.
+	maxCountersPerUpdate         = 100
+	maxMigratedCountersPerUpdate = 40
+	// maxMigrationAttempts bounds how often a migration restarts because its
+	// source changed between the snapshot and the removal.
+	maxMigrationAttempts = 3
 	// activityConcurrency bounds in-flight activity updates per noun.
 	activityConcurrency = 8
 	// maxBoundAttempts bounds conditional retries of a main-item write.
@@ -308,11 +307,16 @@ func joinClauses(set, add, remove []string) string {
 
 // activityUpdate builds one activity item's UpdateItem for some of its
 // counters. Descriptive fields are fixed by the sort key, so setting them
-// never grows the item. Batch counters are ADDed; migrated legacy counts are
-// set once.
+// never grows the item. Batch counters are ADDed.
+//
+// Migrated legacy counts are copied as the maximum of every snapshot copied
+// so far: each is set under a condition that the stored copy is absent or no
+// larger. Legacy counts only ever grow, so a copy taken from an older snapshot
+// fails its condition instead of overwriting a newer one, and a replay of the
+// same snapshot rewrites the same values.
 func activityUpdate(table, sortAttr, partition string, op *activityOp, attrs []string, migrate bool) *dynamodb.UpdateItemInput {
 	b := newExprBuilder()
-	var set, add []string
+	var set, add, conditions []string
 	assign := func(attr, v string) {
 		if v != "" {
 			set = append(set, b.name(attr)+" = "+b.value(str(v)))
@@ -334,10 +338,16 @@ func activityUpdate(table, sortAttr, partition string, op *activityOp, attrs []s
 	for _, attr := range attrs {
 		n := op.counters[attr]
 		if migrate {
-			set = append(set, b.setOnce(legacyCounter(attr), num(n)))
+			name, value := b.name(legacyCounter(attr)), b.value(num(n))
+			set = append(set, name+" = "+value)
+			conditions = append(conditions, "(attribute_not_exists("+name+") OR "+name+" <= "+value+")")
 		} else {
 			add = append(add, b.name(attr)+" "+b.value(num(n)))
 		}
+	}
+	var condition *string
+	if len(conditions) > 0 {
+		condition = aws.String(strings.Join(conditions, " AND "))
 	}
 	return &dynamodb.UpdateItemInput{
 		TableName: aws.String(table),
@@ -346,6 +356,7 @@ func activityUpdate(table, sortAttr, partition string, op *activityOp, attrs []s
 			sortAttr:     str(op.sk),
 		},
 		UpdateExpression:          aws.String(joinClauses(set, add, nil)),
+		ConditionExpression:       condition,
 		ExpressionAttributeNames:  b.names,
 		ExpressionAttributeValues: b.values,
 	}
@@ -367,8 +378,12 @@ func writeActivity(ctx context.Context, store NounStore, table, sortAttr, partit
 			attrs = append(attrs, attr)
 		}
 		sort.Strings(attrs)
-		for start := 0; start < len(attrs); start += maxCountersPerUpdate {
-			chunk := attrs[start:min(start+maxCountersPerUpdate, len(attrs))]
+		per := maxCountersPerUpdate
+		if migrate {
+			per = maxMigratedCountersPerUpdate // each also adds a condition clause
+		}
+		for start := 0; start < len(attrs); start += per {
+			chunk := attrs[start:min(start+per, len(attrs))]
 			inputs = append(inputs, activityUpdate(table, sortAttr, partition, op, chunk, migrate))
 		}
 	}
@@ -521,60 +536,101 @@ func (u nounUpdate) apply(ctx context.Context, store NounStore, state nounState)
 	}
 }
 
-// migrate copies a legacy item's counts into activity items and only then
-// removes the legacy attributes. A failure before the removal leaves the
-// legacy attributes in place for the next batch to migrate again; the copies
-// use if_not_exists, so the retry writes the same values.
-func (u nounUpdate) migrate(ctx context.Context, store NounStore, legacy activitySet) error {
+// errLegacyUndecodable marks legacy attributes that cannot be decoded. They
+// are left in place: nothing new is added to them, readers still count them,
+// and no data is lost.
+var errLegacyUndecodable = errors.New("legacy attributes undecodable")
+
+// migrate moves a legacy item's inline counts into activity items:
+//
+//  1. snapshot: a strongly consistent read of the legacy attributes, so the
+//     copy starts from the current history, never an older replica's;
+//  2. copy: every count into its activity item, as the maximum over all
+//     snapshots copied so far (see activityUpdate);
+//  3. remove: delete the legacy attributes only if each still equals the
+//     snapshot that was copied.
+//
+// If the source changed in between (a pre-upgrade writer still merging into
+// it, or another batch migrating it), the removal fails and the migration
+// restarts from a fresh snapshot; its copies only ever raise the earlier
+// ones. A failure at any step leaves the legacy attributes in place, still
+// authoritative for readers, and the next write of the noun tries again.
+// Nothing is removed until a copy of exactly what is being removed is
+// durable.
+func (u nounUpdate) migrate(ctx context.Context, store NounStore, decode func(map[string]ddbtypes.AttributeValue) (activitySet, error)) error {
 	partition := ActivityPartition(u.customerID, u.id)
-	if err := writeActivity(ctx, store, u.table, u.sortAttr, partition, legacy, true); err != nil {
-		return fmt.Errorf("copy legacy activity: %w", err)
+	for attempt := 1; ; attempt++ {
+		snapshot, err := u.read(ctx, store, true)
+		if err != nil {
+			return fmt.Errorf("read legacy snapshot: %w", err)
+		}
+		if len(snapshot.legacy) == 0 {
+			return nil // already migrated
+		}
+		legacy, err := decode(snapshot.legacy)
+		if err != nil {
+			return fmt.Errorf("%w: %v", errLegacyUndecodable, err)
+		}
+		if err := writeActivity(ctx, store, u.table, u.sortAttr, partition, legacy, true); err != nil {
+			return fmt.Errorf("copy legacy activity: %w", err)
+		}
+
+		b := newExprBuilder()
+		conditions := []string{"attribute_exists(" + b.name(u.sortAttr) + ")"}
+		var remove []string
+		for _, attr := range u.legacy {
+			n := b.name(attr)
+			remove = append(remove, n)
+			if v, ok := snapshot.legacy[attr]; ok {
+				conditions = append(conditions, n+" = "+b.value(v))
+			} else {
+				conditions = append(conditions, "attribute_not_exists("+n+")")
+			}
+		}
+		_, err = store.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+			TableName:                 aws.String(u.table),
+			Key:                       u.key(),
+			UpdateExpression:          aws.String(joinClauses(nil, nil, remove)),
+			ConditionExpression:       aws.String(strings.Join(conditions, " AND ")),
+			ExpressionAttributeNames:  b.names,
+			ExpressionAttributeValues: b.values,
+		})
+		if err == nil {
+			log.Printf("LEGACY_MIGRATED: table=%s id=%s activity_items=%d", u.table, u.id, len(legacy))
+			return nil
+		}
+		if !isConditionalCheckFailure(err) {
+			return fmt.Errorf("remove legacy attributes: %w", err)
+		}
+		if attempt == maxMigrationAttempts {
+			return fmt.Errorf("legacy attributes changed during %d migration attempts; left in place", attempt)
+		}
 	}
-	b := newExprBuilder()
-	var remove []string
-	for _, attr := range u.legacy {
-		remove = append(remove, b.name(attr))
-	}
-	_, err := store.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName:                 aws.String(u.table),
-		Key:                       u.key(),
-		UpdateExpression:          aws.String(joinClauses(nil, nil, remove)),
-		ConditionExpression:       aws.String("attribute_exists(" + b.name(u.sortAttr) + ")"),
-		ExpressionAttributeNames:  b.names,
-		ExpressionAttributeValues: nil,
-	})
-	if isConditionalCheckFailure(err) {
-		return nil // deleted meanwhile (reset); nothing left to remove
-	}
-	if err != nil {
-		return fmt.Errorf("remove legacy attributes: %w", err)
-	}
-	log.Printf("LEGACY_MIGRATED: table=%s id=%s activity_items=%d", u.table, u.id, len(legacy))
-	return nil
 }
 
 // write runs one noun's batch: migrate any legacy attributes, update the main
-// item, then add the batch's activity. legacyActivity decodes the legacy
-// attributes; it is called only when some are present.
-func (u nounUpdate) write(ctx context.Context, store NounStore, batch activitySet, legacyActivity func(map[string]ddbtypes.AttributeValue) (activitySet, error)) error {
+// item, then add the batch's activity. A failed migration does not stop the
+// batch: its counts go to the main item and batch counters, which are separate
+// from the legacy ones, and the migration is retried on the noun's next write.
+// The error is still returned for the caller to log.
+func (u nounUpdate) write(ctx context.Context, store NounStore, batch activitySet, decode func(map[string]ddbtypes.AttributeValue) (activitySet, error)) error {
 	state, err := u.read(ctx, store, false)
 	if err != nil {
 		return err
 	}
+	var migrationErr error
 	if len(state.legacy) > 0 {
-		legacy, err := legacyActivity(state.legacy)
-		if err != nil {
-			// Undecodable legacy attributes are left in place: nothing new is
-			// added to them, readers still count them, and no data is lost.
-			log.Printf("WARNING: %s %s: legacy attributes not migrated: %v", u.table, u.id, err)
-		} else if err := u.migrate(ctx, store, legacy); err != nil {
-			return err
+		migrationErr = u.migrate(ctx, store, decode)
+		if errors.Is(migrationErr, errLegacyUndecodable) {
+			log.Printf("WARNING: %s %s: %v; left in place", u.table, u.id, migrationErr)
+			migrationErr = nil
 		}
 	}
 	if err := u.apply(ctx, store, state); err != nil {
-		return err
+		return errors.Join(migrationErr, err)
 	}
-	return writeActivity(ctx, store, u.table, u.sortAttr, ActivityPartition(u.customerID, u.id), batch, false)
+	err = writeActivity(ctx, store, u.table, u.sortAttr, ActivityPartition(u.customerID, u.id), batch, false)
+	return errors.Join(migrationErr, err)
 }
 
 // WriteRoleToDynamoDB adds one batch's activity for a role.
