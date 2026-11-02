@@ -2,6 +2,7 @@ package dynamodb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"testing"
@@ -17,9 +18,13 @@ type fakeRelationStore struct {
 	edges               map[string]types.DynamoDBRelation
 	summaries           map[string]types.DynamoDBRelationSummary
 	transactionCalls    int
+	putCalls            int
+	updateCalls         int
+	batchGetErr         error
 	transactionFailures int
 	putConflicts        int
 	updateConflicts     int
+	batchGetCalls       int
 }
 
 func newFakeRelationStore() *fakeRelationStore {
@@ -65,6 +70,7 @@ func (s *fakeRelationStore) GetItem(_ context.Context, input *dynamodb.GetItemIn
 }
 
 func (s *fakeRelationStore) PutItem(_ context.Context, input *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	s.putCalls++
 	if s.putConflicts > 0 {
 		s.putConflicts--
 		return nil, &ddbtypes.TransactionConflictException{}
@@ -91,6 +97,7 @@ func (s *fakeRelationStore) PutItem(_ context.Context, input *dynamodb.PutItemIn
 }
 
 func (s *fakeRelationStore) UpdateItem(_ context.Context, input *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	s.updateCalls++
 	if s.updateConflicts > 0 {
 		s.updateConflicts--
 		return nil, &ddbtypes.TransactionConflictException{}
@@ -345,5 +352,106 @@ func TestWriteRelationsReportsOnlyWhatItCreated(t *testing.T) {
 	}
 	if missing, err := GetRelationSummaryCounts(context.Background(), store, "relations", "test#person#none"); err != nil || missing != nil {
 		t.Fatalf("missing summary = %v, %v; want nil, nil", missing, err)
+	}
+}
+
+func (s *fakeRelationStore) BatchGetItem(ctx context.Context, input *dynamodb.BatchGetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.BatchGetItemOutput, error) {
+	s.batchGetCalls++
+	if s.batchGetErr != nil {
+		return nil, s.batchGetErr
+	}
+	out := &dynamodb.BatchGetItemOutput{Responses: map[string][]map[string]ddbtypes.AttributeValue{}}
+	for table, req := range input.RequestItems {
+		for _, key := range req.Keys {
+			got, err := s.GetItem(ctx, &dynamodb.GetItemInput{Key: key})
+			if err != nil {
+				return nil, err
+			}
+			if len(got.Item) > 0 {
+				out.Responses[table] = append(out.Responses[table], got.Item)
+			}
+		}
+	}
+	return out, nil
+}
+
+func skipFixture(at string) []types.DynamoDBRelation {
+	return []types.DynamoDBRelation{
+		NewRelation("default", RelationKindRole, "arn:aws:iam::111111111111:role/app", RelationKindService, "s3.amazonaws.com", at),
+		NewRelation("default", RelationKindService, "s3.amazonaws.com", RelationKindRole, "arn:aws:iam::111111111111:role/app", at),
+		NewRelation("default", RelationKindRole, "arn:aws:iam::111111111111:role/app", RelationKindAccount, "111111111111", at),
+	}
+}
+
+func (s *fakeRelationStore) writes() int {
+	return s.transactionCalls + s.putCalls + s.updateCalls
+}
+
+func TestWriteRelationsSkipsEdgesWhoseBoundsDidNotMove(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeRelationStore()
+	if _, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T10:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	store.transactionCalls, store.putCalls, store.updateCalls = 0, 0, 0
+
+	// The same observation again, and one inside the stored bounds: no write.
+	for _, at := range []string{"2026-01-01T10:00:00Z", "2026-01-01T10:00:00Z"} {
+		res, err := WriteRelations(ctx, store, "relations", skipFixture(at))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.NewEdges) != 0 || len(res.NewSubjects) != 0 {
+			t.Fatalf("replay reported creations: %+v", res)
+		}
+	}
+	if store.writes() != 0 {
+		t.Fatalf("unchanged edges issued %d writes", store.writes())
+	}
+
+	// A later observation moves last_seen with one exact update per edge.
+	if _, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T10:00:01Z")); err != nil {
+		t.Fatal(err)
+	}
+	if store.transactionCalls != 0 || store.putCalls != 0 || store.updateCalls != 3 {
+		t.Fatalf("last_seen move: tx=%d put=%d update=%d", store.transactionCalls, store.putCalls, store.updateCalls)
+	}
+	// An earlier observation moves first_seen.
+	if _, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T09:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range skipFixture("") {
+		got := store.edges[r.PK+"\x00"+r.SK]
+		if got.FirstSeen != "2026-01-01T09:00:00Z" || got.LastSeen != "2026-01-01T10:00:01Z" {
+			t.Fatalf("%s/%s bounds = %s..%s", r.PK, r.SK, got.FirstSeen, got.LastSeen)
+		}
+	}
+	pk := RelationPK("default", RelationKindRole, "arn:aws:iam::111111111111:role/app")
+	if counts := store.summaries[pk].Counts; counts["services"] != 1 || counts["accounts"] != 1 {
+		t.Fatalf("summary counts = %v", counts)
+	}
+}
+
+func TestWriteRelationsFallsBackWhenPrefetchFails(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeRelationStore()
+	if _, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T10:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	store.batchGetErr = errors.New("throttled")
+	res, err := WriteRelations(ctx, store, "relations", skipFixture("2026-01-01T11:00:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.NewEdges) != 0 {
+		t.Fatalf("fallback reported existing edges as new: %+v", res.NewEdges)
+	}
+	pk := RelationPK("default", RelationKindRole, "arn:aws:iam::111111111111:role/app")
+	if counts := store.summaries[pk].Counts; counts["services"] != 1 {
+		t.Fatalf("fallback double-counted: %v", counts)
+	}
+	r := skipFixture("")[0]
+	if got := store.edges[r.PK+"\x00"+r.SK].LastSeen; got != "2026-01-01T11:00:00Z" {
+		t.Fatalf("fallback last_seen = %s", got)
 	}
 }
