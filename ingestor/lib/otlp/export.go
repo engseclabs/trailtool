@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"net/http"
 	"strconv"
@@ -64,25 +65,33 @@ type Result struct {
 }
 
 // Export sends one payload. The headers secret is read on first use and
-// cached; a 401 or 403 re-reads it once and retries, so a rotated credential
-// takes effect without a redeploy. Any non-2xx status, or a partial success
-// that rejected records, is an error.
+// cached; a 400, 401, or 403 re-reads it once and retries if it changed, so a
+// rotated or corrected credential takes effect without a redeploy. Some
+// receivers answer a malformed Authorization header with 400. Any non-2xx
+// status, or a partial success that rejected records, is an error.
 func (e *Exporter) Export(ctx context.Context, body []byte) (Result, error) {
 	headers, err := e.loadHeaders(ctx, false)
 	if err != nil {
 		return Result{}, err
 	}
 	res, err := e.post(ctx, body, headers)
-	if res.Status == http.StatusUnauthorized || res.Status == http.StatusForbidden {
-		if headers, err = e.loadHeaders(ctx, true); err != nil {
-			return res, err
+	if rereadsSecret(res.Status) {
+		fresh, rerr := e.loadHeaders(ctx, true)
+		if rerr != nil {
+			return res, rerr
 		}
-		res, err = e.post(ctx, body, headers)
+		if !maps.Equal(fresh, headers) {
+			res, err = e.post(ctx, body, fresh)
+		}
 	}
 	if err != nil {
 		return res, e.redact(err)
 	}
 	return res, nil
+}
+
+func rereadsSecret(status int) bool {
+	return status == http.StatusBadRequest || status == http.StatusUnauthorized || status == http.StatusForbidden
 }
 
 func (e *Exporter) loadHeaders(ctx context.Context, reload bool) (map[string]string, error) {

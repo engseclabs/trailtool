@@ -165,8 +165,8 @@ Resources:
       Architectures:
         - arm64
       MemorySize: 128
-      # The HTTP client times out at 10 seconds; a 401 or 403 costs a secret
-      # read and a second request.
+      # The HTTP client times out at 10 seconds; a 400, 401, or 403 costs a
+      # secret read and, if the secret changed, a second request.
       Timeout: 30
       Role: !GetAtt FunctionRole.Arn
       LoggingConfig:

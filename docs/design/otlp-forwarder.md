@@ -156,10 +156,12 @@ does not require Go 1.26, so the ingestor module's Go version is unchanged.
 
 ## 6. Delivery and failure
 
-1. The headers secret is read once per cold start and cached. On a 401 or 403
-   the forwarder re-reads it once and retries the request, so a rotated
-   credential takes effect without a redeploy. A second 401 or 403 is a
-   failure.
+1. The headers secret is read once per cold start and cached. On a 400, 401,
+   or 403 the forwarder re-reads it once and, if it changed, retries the
+   request, so a rotated or corrected credential takes effect without a
+   redeploy. 400 is included because some receivers, Braintrust among them,
+   answer a malformed `Authorization` header with it. An unchanged secret, or
+   a second failure, is a failure.
 2. Any non-2xx response is a failure, and so is a 2xx whose
    `partial_success.rejected_log_records` is above zero.
 3. A failure returns an error from the function. Lambda retries the
