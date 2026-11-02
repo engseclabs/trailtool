@@ -153,10 +153,17 @@ type relationBounds struct {
 	LastSeen  string `dynamodbav:"last_seen"`
 }
 
-// RelationLastSeenGranularity is how far an existing edge's last_seen must
-// move before it is rewritten. A busy edge is observed in most files, so
-// recording every observation still rewrites it dozens of times a day;
-// last_seen on an edge is instead accurate to within this window.
+// RelationLastSeenGranularity is how far past the prefetched last_seen a
+// batch's observation must be before the batch rewrites it. A busy edge is
+// observed in most files, so recording every observation still rewrites it
+// dozens of times a day; last_seen on an edge is instead accurate to within
+// this window.
+//
+// The threshold is checked against the batch's own read, while the write
+// itself only requires last_seen to advance. Concurrent batches that read
+// the same value can therefore each write once, so this bounds staleness,
+// not write frequency: in steady state an edge is rewritten about once per
+// window, but not strictly at most once.
 const RelationLastSeenGranularity = time.Hour
 
 // refreshRelationBounds widens a known edge's bounds only when they move:
