@@ -151,7 +151,7 @@ Events come only from live ingestion; `trailtool replay` never publishes them. D
 | `OtlpHeadersSecretArn` | Secrets Manager secret holding the request headers. |
 | `ServiceName`, `DetailTypes`, `LogRetentionDays`, `SecretKmsKeyArn` | Optional. |
 
-Credentials never go in a parameter. The secret's value is a JSON object of header name to value, for example `{"Authorization": "Bearer <token>"}`. A 401 or 403 re-reads it, so rotation needs no redeploy.
+Credentials never go in a parameter. The secret's value is a JSON object of header name to value, for example `{"Authorization": "Bearer <token>"}`. A 400, 401, or 403 re-reads it, so rotating or correcting it needs no redeploy.
 
 Each record carries a one-line summary as its body, `WARN` severity for sessions with denied calls (`INFO` otherwise), and the event's detail flattened into `trailtool.*` attributes. A non-2xx response or rejected record fails the invocation; Lambda retries it twice, then sends it to the stack's dead-letter queue. Delivery is at least once, so deduplicate on `trailtool.event_id` if it matters.
 

@@ -189,7 +189,7 @@ func TestExportPartialSuccessIsError(t *testing.T) {
 }
 
 func TestExportAuthFailureRereadsSecretOnce(t *testing.T) {
-	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			// The endpoint accepts only the rotated token.
 			var requests atomic.Int32
@@ -233,7 +233,7 @@ func TestExportPersistentAuthFailureRereadsOnlyOnce(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	secrets := &fakeSecrets{values: []string{headerSecret(testToken)}}
+	secrets := &fakeSecrets{values: []string{headerSecret("stale"), headerSecret("rotated")}}
 	exp := NewExporter(srv.URL, nil, secrets, "arn:secret")
 	res, err := exp.Export(context.Background(), nil)
 	if err == nil || res.Status != http.StatusUnauthorized {
@@ -244,6 +244,51 @@ func TestExportPersistentAuthFailureRereadsOnlyOnce(t *testing.T) {
 	}
 	if n := requests.Load(); n != 2 {
 		t.Errorf("%d requests, want 2", n)
+	}
+}
+
+// An unchanged secret is not worth a second request: the receiver would
+// reject the same headers again.
+func TestExportRereadSkipsRetryWhenSecretUnchanged(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var requests atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.WriteHeader(status)
+			}))
+			defer srv.Close()
+
+			secrets := &fakeSecrets{values: []string{headerSecret(testToken)}}
+			exp := NewExporter(srv.URL, nil, secrets, "arn:secret")
+			res, err := exp.Export(context.Background(), nil)
+			if err == nil || res.Status != status {
+				t.Fatalf("result = %+v, err = %v; want an HTTP %d error", res, err, status)
+			}
+			if n := secrets.calls.Load(); n != 2 {
+				t.Errorf("secret read %d times, want 2", n)
+			}
+			if n := requests.Load(); n != 1 {
+				t.Errorf("%d requests, want 1", n)
+			}
+		})
+	}
+}
+
+// Other failures leave the cached secret alone.
+func TestExportServerErrorDoesNotRereadSecret(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	secrets := &fakeSecrets{values: []string{headerSecret(testToken)}}
+	exp := NewExporter(srv.URL, nil, secrets, "arn:secret")
+	if _, err := exp.Export(context.Background(), nil); err == nil {
+		t.Fatal("Export succeeded, want an error")
+	}
+	if n := secrets.calls.Load(); n != 1 {
+		t.Errorf("secret read %d times, want 1", n)
 	}
 }
 

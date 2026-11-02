@@ -83,8 +83,8 @@ Any non-2xx response, or a response reporting rejected records, fails the
 invocation. Lambda retries it twice, then sends the event and the error to the
 stack's dead-letter queue (output `DeadLetterQueueUrl`). Events EventBridge
 cannot deliver to the function at all land in the same queue after an hour of
-retries. A 401 or 403 re-reads the secret once first, so rotating the
-credential needs no redeploy.
+retries. A 400, 401, or 403 re-reads the secret once first and retries if it
+changed, so rotating or correcting the credential needs no redeploy.
 
 Delivery is at least once. Deduplicate on the `trailtool.event_id` attribute if
 duplicates matter.
