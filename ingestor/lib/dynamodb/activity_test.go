@@ -219,7 +219,7 @@ func TestStaleReadCannotDropTheEarliestObservation(t *testing.T) {
 // failActivity fails the first n activity-item updates.
 func failActivity(store *ddbfake.Store, n int) {
 	store.FailUpdate = func(in *dynamodb.UpdateItemInput) error {
-		if n > 0 && strings.Contains(stringAttr(in.Key, "customerId"), ActivityPartitionInfix) {
+		if n > 0 && strings.Contains(attrString(in.Key, "customerId"), ActivityPartitionInfix) {
 			n--
 			return errors.New("injected failure")
 		}
