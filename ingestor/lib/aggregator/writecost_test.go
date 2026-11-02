@@ -6,9 +6,9 @@ package aggregator
 // ones, against a metering in-memory
 // DynamoDB, and reports per-table item sizes and capacity units per file.
 //
-// The default size keeps CI fast. For the numbers in the PR description:
+// It is opt-in (WRITECOST=1). For the numbers in the PR description:
 //
-//	WRITECOST_ACCOUNTS=30 WRITECOST_WARM_SLOTS=24 WRITECOST_SLOTS=12 \
+//	WRITECOST=1 WRITECOST_ACCOUNTS=30 WRITECOST_WARM_SLOTS=24 WRITECOST_SLOTS=12 \
 //	  go test ./lib/aggregator -run TestWriteCost -v -timeout 2h
 //
 // Each slot is five minutes of the organization: one file per account and
@@ -297,8 +297,8 @@ func runCost(t *testing.T, legacy bool, warm, measured int) costRun {
 }
 
 func TestWriteCost(t *testing.T) {
-	if testing.Short() {
-		t.Skip("write-cost measurement skipped in -short mode")
+	if os.Getenv("WRITECOST") == "" {
+		t.Skip("write-cost study is opt-in: set WRITECOST=1")
 	}
 	log.SetOutput(io.Discard)
 	defer log.SetOutput(os.Stderr)
@@ -346,4 +346,27 @@ func kb(n int) string {
 		return fmt.Sprintf("%d B", n)
 	}
 	return fmt.Sprintf("%.1f KB", float64(n)/1024)
+}
+
+// The "before" relation path must batch summary creation per subject as the
+// old WriteRelations did, or the study overstates the old cost.
+func TestLegacyRelationsCreateEachSummaryOncePerBatch(t *testing.T) {
+	store := newCostStore()
+	edges := []types.DynamoDBRelation{
+		ddblib.NewRelation("default", ddblib.RelationKindRole, "role-a", ddblib.RelationKindService, "s3.amazonaws.com", "2026-01-01T00:00:00Z"),
+		ddblib.NewRelation("default", ddblib.RelationKindRole, "role-a", ddblib.RelationKindAccount, "111111111111", "2026-01-01T00:00:00Z"),
+	}
+	if _, err := legacyWriteRelations(context.Background(), store, costTables.Relations, edges); err != nil {
+		t.Fatal(err)
+	}
+	store.ResetMeters()
+	if _, err := legacyWriteRelations(context.Background(), store, costTables.Relations, edges); err != nil {
+		t.Fatal(err)
+	}
+	// One failed summary put (1) + per edge: cancelled transaction (2 items
+	// x 2) + two failed boundary updates (2) = 1 + 2*6.
+	stats := store.Stats()[costTables.Relations]
+	if stats.WriteUnits != 13 || stats.ReadUnits != 2 {
+		t.Fatalf("replay of two edges under one subject: %.0f WCU, %.1f RCU", stats.WriteUnits, stats.ReadUnits)
+	}
 }

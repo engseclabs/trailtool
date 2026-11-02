@@ -313,38 +313,21 @@ func legacyMergeService(existing, incoming *types.DynamoDBService) *types.Dynamo
 	}
 }
 
-// legacyWriteRelations writes every edge through the create-if-absent path:
-// summary put, create transaction, and on an existing edge a consistent read
-// and two boundary updates.
+// legacyWriteRelations is WriteRelations as it was before the prefetch:
+// deduplicate, create each subject's summary once per batch, then run every
+// edge through the create-if-absent transaction (and, for an existing edge, a
+// consistent read and both boundary updates). The current WriteRelations
+// does exactly that when its prefetch finds nothing, so the old behavior is
+// reproduced by hiding the prefetch from it, without billing a read.
 func legacyWriteRelations(ctx context.Context, store ddblib.RelationStore, table string, relations []types.DynamoDBRelation) (ddblib.RelationWriteResult, error) {
-	result := ddblib.RelationWriteResult{NewSubjects: map[string]bool{}}
-	merged := map[string]types.DynamoDBRelation{}
-	for _, r := range relations {
-		if r.SubjectID == "" || r.RelatedID == "" {
-			continue
-		}
-		k := r.PK + "\x00" + r.SK
-		if prior, ok := merged[k]; ok {
-			r.FirstSeen = earliestNonEmpty(prior.FirstSeen, r.FirstSeen)
-			r.LastSeen = latestNonEmpty(prior.LastSeen, r.LastSeen)
-		}
-		merged[k] = r
-	}
-	keys := make([]string, 0, len(merged))
-	for k := range merged {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		created, err := ddblib.WriteRelation(ctx, store, table, merged[k])
-		if err != nil {
-			return result, err
-		}
-		if created {
-			result.NewEdges = append(result.NewEdges, merged[k])
-		}
-	}
-	return result, nil
+	return ddblib.WriteRelations(ctx, noPrefetch{store}, table, relations)
+}
+
+// noPrefetch answers every BatchGetItem with nothing found.
+type noPrefetch struct{ ddblib.RelationStore }
+
+func (noPrefetch) BatchGetItem(context.Context, *dynamodb.BatchGetItemInput, ...func(*dynamodb.Options)) (*dynamodb.BatchGetItemOutput, error) {
+	return &dynamodb.BatchGetItemOutput{}, nil
 }
 
 func maxInt(a, b int) int {
