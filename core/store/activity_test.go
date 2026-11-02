@@ -24,91 +24,79 @@ func TestActivityPartitionMatchesIngestorLayout(t *testing.T) {
 	}
 }
 
-func TestParseActivityItemSeparatesBatchAndMigratedCounters(t *testing.T) {
+func TestParseActivityItemReadsCounters(t *testing.T) {
 	it, err := parseActivityItem(map[string]types.AttributeValue{
 		"kind": s("evt"), "name": s("s3.amazonaws.com"),
-		"c:s3.amazonaws.com:GetObject":  n(2),
-		"lc:s3.amazonaws.com:GetObject": n(40),
-		"d:s3.amazonaws.com:PutObject":  n(1),
-		"service_count":                 n(2),
-		"legacy_service_count":          n(40),
+		"c:s3.amazonaws.com:GetObject": n(2),
+		"d:s3.amazonaws.com:PutObject": n(1),
+		"service_count":                n(3),
+		"total_events":                 n(9),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if it.Allowed["s3.amazonaws.com:GetObject"] != 2 || it.LegacyAllowed["s3.amazonaws.com:GetObject"] != 40 ||
-		it.Denied["s3.amazonaws.com:PutObject"] != 1 || it.ServiceCount != 2 || it.LegacyServiceCount != 40 {
+	if it.Allowed["s3.amazonaws.com:GetObject"] != 2 || it.Denied["s3.amazonaws.com:PutObject"] != 1 ||
+		it.ServiceCount != 3 || len(it.Allowed) != 1 {
 		t.Fatalf("item = %+v", it)
 	}
 }
 
-func migratedItems() []ActivityItem {
+func roleItems() []ActivityItem {
 	return []ActivityItem{
-		{Kind: activityEvent, Name: "s3.amazonaws.com", ServiceCount: 2, LegacyServiceCount: 40,
-			Allowed: map[string]int{"s3.amazonaws.com:GetObject": 2}, LegacyAllowed: map[string]int{"s3.amazonaws.com:GetObject": 40}},
+		{Kind: activityEvent, Name: "s3.amazonaws.com", ServiceCount: 2,
+			Allowed: map[string]int{"s3.amazonaws.com:GetObject": 2}},
+		{Kind: activityEvent, Name: "kms.amazonaws.com", ServiceCount: 1,
+			Allowed: map[string]int{"kms.amazonaws.com:Decrypt": 1}, Denied: map[string]int{"kms.amazonaws.com:Decrypt": 3}},
 		{Kind: activityResourceAccess, Resource: "s3:bucket:a", ResourceAccountID: "111111111111", Service: "s3.amazonaws.com",
-			Allowed: map[string]int{"GetObject": 2}, LegacyAllowed: map[string]int{"GetObject": 40}},
+			Allowed: map[string]int{"GetObject": 2}},
 		{Kind: activityDeniedResourceAccess, Resource: "kms:key:k", Service: "kms.amazonaws.com", EventName: "Decrypt",
-			Count: 1, LegacyCount: 3, PolicyARN: "p", PolicyType: "SCP"},
+			Count: 3, PolicyARN: "p", PolicyType: "SCP"},
 		{Kind: activityDeniedEventAccess, Service: "iam.amazonaws.com", EventName: "ListRoles", Count: 1, ErrorMessage: "denied"},
 	}
 }
 
-func TestApplyRoleActivityUsesMigratedCopiesOnceInlineMapsAreGone(t *testing.T) {
+func TestApplyRoleActivity(t *testing.T) {
 	role := &models.Role{}
-	ApplyRoleActivity(role, migratedItems())
-	if role.TopEventNames["s3.amazonaws.com:GetObject"] != 42 || role.ServicesCount["s3.amazonaws.com"] != 42 {
-		t.Fatalf("events = %v services = %v", role.TopEventNames, role.ServicesCount)
+	ApplyRoleActivity(role, roleItems())
+	if role.TopEventNames["s3.amazonaws.com:GetObject"] != 2 || role.TopDeniedEventNames["kms.amazonaws.com:Decrypt"] != 3 {
+		t.Fatalf("events = %v / %v", role.TopEventNames, role.TopDeniedEventNames)
 	}
-	if len(role.ResourceAccesses) != 1 || role.ResourceAccesses[0].Count != 42 || role.ResourcesCount["s3:bucket:a"] != 42 {
+	if role.ServicesCount["s3.amazonaws.com"] != 2 || strings.Join(role.ServicesUsed, ",") != "kms.amazonaws.com,s3.amazonaws.com" {
+		t.Fatalf("services = %v %v", role.ServicesCount, role.ServicesUsed)
+	}
+	if len(role.ResourceAccesses) != 1 || role.ResourceAccesses[0].Count != 2 || role.ResourcesCount["s3:bucket:a"] != 2 {
 		t.Fatalf("accesses = %+v", role.ResourceAccesses)
 	}
-	if role.DeniedResourceAccesses[0].Count != 4 || role.DeniedResourceAccesses[0].PolicyType != "SCP" {
+	if role.DeniedResourceAccesses[0].Count != 3 || role.DeniedResourceAccesses[0].PolicyType != "SCP" {
 		t.Fatalf("denied = %+v", role.DeniedResourceAccesses)
 	}
-	if strings.Join(role.ServicesUsed, ",") != "s3.amazonaws.com" || strings.Join(role.ResourcesUsed, ",") != "s3:bucket:a" {
-		t.Fatalf("used = %v %v", role.ServicesUsed, role.ResourcesUsed)
+	if len(role.DeniedEventAccesses) != 1 || role.DeniedEventAccesses[0].ErrorMessage != "denied" {
+		t.Fatalf("denied events = %+v", role.DeniedEventAccesses)
 	}
 }
 
-// While the main item still holds its inline maps, the migrated copies are
-// ignored: counting both would double the history.
-func TestApplyRoleActivityIgnoresCopiesWhileInlineMapsRemain(t *testing.T) {
+// A role not written since the upgrade still has its inline maps and no
+// activity items; they are shown as stored.
+func TestApplyRoleActivityLeavesUnwrittenLegacyRolesAsStored(t *testing.T) {
 	role := &models.Role{
-		LegacyInline:  true,
-		TopEventNames: map[string]int{"s3.amazonaws.com:GetObject": 40},
-		ServicesCount: map[string]int{"s3.amazonaws.com": 40},
-		ResourceAccesses: []models.ResourceAccessItem{{
-			Resource: "s3:bucket:a", ResourceAccountID: "111111111111", Service: "s3.amazonaws.com", EventName: "GetObject", Count: 40,
-		}},
-		DeniedResourceAccesses: []models.ResourceAccessItem{{
-			Resource: "kms:key:k", Service: "kms.amazonaws.com", EventName: "Decrypt", Count: 3, PolicyARN: "p",
-		}},
+		TopEventNames:  map[string]int{"s3.amazonaws.com:GetObject": 40},
+		ResourcesCount: map[string]int{"s3:bucket:a": 40},
+		ResourcesUsed:  []string{"s3:bucket:a"},
 	}
-	ApplyRoleActivity(role, migratedItems())
-	if role.TopEventNames["s3.amazonaws.com:GetObject"] != 42 || role.ServicesCount["s3.amazonaws.com"] != 42 {
-		t.Fatalf("events = %v services = %v", role.TopEventNames, role.ServicesCount)
-	}
-	if len(role.ResourceAccesses) != 1 || role.ResourceAccesses[0].Count != 42 {
-		t.Fatalf("accesses = %+v", role.ResourceAccesses)
-	}
-	if role.DeniedResourceAccesses[0].Count != 4 || role.DeniedResourceAccesses[0].PolicyType != "SCP" {
-		t.Fatalf("denied = %+v", role.DeniedResourceAccesses)
+	ApplyRoleActivity(role, nil)
+	if role.TopEventNames["s3.amazonaws.com:GetObject"] != 40 || role.ResourcesCount["s3:bucket:a"] != 40 {
+		t.Fatalf("role = %+v", role)
 	}
 }
 
 func TestApplyServiceActivity(t *testing.T) {
-	items := []ActivityItem{{Kind: activityEvent, Name: "GetObject",
-		Allowed: map[string]int{"GetObject": 2}, LegacyAllowed: map[string]int{"GetObject": 10},
-		Denied: map[string]int{"GetObject": 1}}}
-	migrated := &models.Service{}
-	ApplyServiceActivity(migrated, items)
-	inline := &models.Service{LegacyInline: true, TopEventNames: map[string]int{"GetObject": 10}}
-	ApplyServiceActivity(inline, items)
-	for _, svc := range []*models.Service{migrated, inline} {
-		if svc.TopEventNames["GetObject"] != 12 || svc.TopDeniedEventNames["GetObject"] != 1 {
-			t.Fatalf("service = %+v", svc)
-		}
+	svc := &models.Service{}
+	ApplyServiceActivity(svc, []ActivityItem{
+		{Kind: activityEvent, Name: "GetObject", Allowed: map[string]int{"GetObject": 2}, Denied: map[string]int{"GetObject": 1}},
+		{Kind: activityEvent, Name: "PutObject", Allowed: map[string]int{"PutObject": 5}},
+	})
+	if svc.TopEventNames["GetObject"] != 2 || svc.TopEventNames["PutObject"] != 5 || svc.TopDeniedEventNames["GetObject"] != 1 {
+		t.Fatalf("service = %+v", svc)
 	}
 }
 

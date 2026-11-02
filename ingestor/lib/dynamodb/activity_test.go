@@ -2,7 +2,6 @@ package dynamodb
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -47,33 +46,10 @@ func numAttr(t *testing.T, item map[string]ddbtypes.AttributeValue, attr string)
 	return v
 }
 
-// readCount is a counter as the CLI reads it: the batch counter, plus either
-// the original inline legacy count (while the main item still holds it) or
-// its migrated copy (once it does not). inlineMap names the main item's
-// legacy map holding the original under the counter's key.
-func readCount(t *testing.T, store *ddbfake.Store, table, sortAttr, id, sk, attr, legacyAttr, inlineMap string) int {
+// readCount reads one activity counter.
+func readCount(t *testing.T, store *ddbfake.Store, table, sortAttr, id, sk, attr string) int {
 	t.Helper()
-	activity := store.Get(table, nounKey(sortAttr, ActivityPartition("default", id), sk))
-	n := numAttr(t, activity, attr)
-	main := store.Get(table, nounKey(sortAttr, "default", id))
-	legacyAttrs := LegacyRoleAttrs
-	if table == testServices {
-		legacyAttrs = LegacyServiceAttrs
-	}
-	inline := false
-	for _, a := range legacyAttrs {
-		if _, ok := main[a]; ok {
-			inline = true
-		}
-	}
-	if !inline {
-		return n + numAttr(t, activity, legacyAttr)
-	}
-	if m, ok := main[inlineMap].(*ddbtypes.AttributeValueMemberM); ok {
-		_, key, _ := strings.Cut(attr, ":")
-		n += numAttr(t, m.Value, key)
-	}
-	return n
+	return numAttr(t, store.Get(table, nounKey(sortAttr, ActivityPartition("default", id), sk)), attr)
 }
 
 func roleBatch(first, last, resource string) *types.DynamoDBRole {
@@ -130,8 +106,7 @@ func seedLegacyRole(t *testing.T, store *ddbfake.Store) {
 }
 
 func getObjectCount(t *testing.T, store *ddbfake.Store) int {
-	return readCount(t, store, testRoles, RoleSortAttr, testRoleARN, "evt#s3.amazonaws.com",
-		"c:s3.amazonaws.com:GetObject", "lc:s3.amazonaws.com:GetObject", "top_event_names")
+	return readCount(t, store, testRoles, RoleSortAttr, testRoleARN, "evt#s3.amazonaws.com", "c:s3.amazonaws.com:GetObject")
 }
 
 func TestWriteRoleKeepsTheMainItemSmall(t *testing.T) {
@@ -216,174 +191,36 @@ func TestStaleReadCannotDropTheEarliestObservation(t *testing.T) {
 	}
 }
 
-// failCopies fails the first n updates that copy legacy counts.
-func failCopies(store *ddbfake.Store, n int) {
-	store.FailUpdate = func(in *dynamodb.UpdateItemInput) error {
-		for _, name := range in.ExpressionAttributeNames {
-			if n > 0 && (strings.HasPrefix(name, LegacyAllowedCounterPrefix) || strings.HasPrefix(name, "legacy_")) {
-				n--
-				return errors.New("injected failure")
-			}
-		}
-		return nil
+// Pre-activity items are not migrated: their first write removes the inline
+// maps and keeps the totals and bounds.
+func TestWriteRoleDropsLegacyInlineAttributes(t *testing.T) {
+	store := newNounFake()
+	seedLegacyRole(t, store)
+	legacySize := ddbfake.ItemSize(store.Get(testRoles, nounKey(RoleSortAttr, "default", testRoleARN)))
+	if err := WriteRoleToDynamoDB(context.Background(), store, testRoles,
+		roleBatch("2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z", "s3:bucket:old")); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func writeGetObjects(t *testing.T, store *ddbfake.Store) error {
-	t.Helper()
-	return WriteRoleToDynamoDB(context.Background(), store, testRoles,
-		roleBatch("2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z", "s3:bucket:old"))
-}
-
-func assertMigrated(t *testing.T, store *ddbfake.Store) {
-	t.Helper()
 	main := store.Get(testRoles, nounKey(RoleSortAttr, "default", testRoleARN))
 	for _, attr := range LegacyRoleAttrs {
 		if _, ok := main[attr]; ok {
-			t.Fatalf("legacy attribute %s survived a successful migration", attr)
+			t.Fatalf("legacy attribute %s survived the first write", attr)
 		}
 	}
-}
-
-func TestMigrationKeepsHistoryWhenTheCopyFails(t *testing.T) {
-	for _, failures := range []int{1, 2, 100} {
-		t.Run(strconv.Itoa(failures), func(t *testing.T) {
-			store := newNounFake()
-			seedLegacyRole(t, store)
-
-			failCopies(store, failures)
-			if err := writeGetObjects(t, store); err == nil {
-				t.Fatal("write reported success despite failed copies")
-			}
-			main := store.Get(testRoles, nounKey(RoleSortAttr, "default", testRoleARN))
-			if _, ok := main["top_event_names"]; !ok {
-				t.Fatal("legacy attributes removed before their copies were written")
-			}
-			// The batch itself was still recorded: 40 historical + 2.
-			if got := getObjectCount(t, store); got != 42 {
-				t.Fatalf("after failed migration GetObject = %d, want 42", got)
-			}
-
-			// The noun's next batch retries the migration.
-			store.FailUpdate = nil
-			if err := writeGetObjects(t, store); err != nil {
-				t.Fatal(err)
-			}
-			assertMigrated(t, store)
-			if got := getObjectCount(t, store); got != 44 {
-				t.Fatalf("GetObject = %d, want 40 historical + 2 + 2", got)
-			}
-			raSK := ActivityResourceAccess + "#" + digest("s3.amazonaws.com", "111111111111", "s3:bucket:old")
-			if got := readCount(t, store, testRoles, RoleSortAttr, testRoleARN, raSK, "c:GetObject", "lc:GetObject", ""); got != 44 {
-				t.Fatalf("resource access = %d, want 44", got)
-			}
-			role := storedRole(t, store)
-			if role.TotalEvents != 44 || role.FirstSeen != "2026-01-01T10:00:00Z" {
-				t.Fatalf("role = %+v", role)
-			}
-		})
+	if size := ddbfake.ItemSize(main); size >= legacySize {
+		t.Fatalf("item did not shrink: %d -> %d bytes", legacySize, size)
+	}
+	role := storedRole(t, store)
+	if role.TotalEvents != 42 || role.FirstSeen != "2026-01-01T10:00:00Z" || role.LastSeen != "2026-01-02T00:00:00Z" {
+		t.Fatalf("role = %+v", role)
+	}
+	// Only post-upgrade activity is broken down.
+	if got := getObjectCount(t, store); got != 2 {
+		t.Fatalf("GetObject = %d, want 2", got)
 	}
 }
 
-func TestMigrationReplaysIdempotentlyWhenRemovalFails(t *testing.T) {
-	store := newNounFake()
-	seedLegacyRole(t, store)
-	store.FailUpdate = func(in *dynamodb.UpdateItemInput) error {
-		if strings.HasPrefix(aws.ToString(in.UpdateExpression), "REMOVE") {
-			return errors.New("injected failure")
-		}
-		return nil
-	}
-	if err := writeGetObjects(t, store); err == nil {
-		t.Fatal("write reported success despite failed removal")
-	}
-	// The copies exist, but the original is still authoritative.
-	if got := getObjectCount(t, store); got != 42 {
-		t.Fatalf("mid-migration GetObject = %d, want 42", got)
-	}
-	store.FailUpdate = nil
-	if err := writeGetObjects(t, store); err != nil {
-		t.Fatal(err)
-	}
-	assertMigrated(t, store)
-	if got := getObjectCount(t, store); got != 44 {
-		t.Fatalf("GetObject = %d, want 44 (a replayed copy must not double)", got)
-	}
-}
-
-// A replica can return an older version of the item, not just miss it. The
-// migration must copy the current history, not that version.
-func TestMigrationCopiesFromAnAuthoritativeSnapshot(t *testing.T) {
-	store := newNounFake()
-	seedLegacyRole(t, store)
-	stale := store.Get(testRoles, nounKey(RoleSortAttr, "default", testRoleARN))
-	stale["top_event_names"] = &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{
-		"s3.amazonaws.com:GetObject": num(30),
-	}}
-	store.StaleGet = func(*dynamodb.GetItemInput) (ddbfake.Item, bool) { return stale, true }
-	if err := writeGetObjects(t, store); err != nil {
-		t.Fatal(err)
-	}
-	assertMigrated(t, store)
-	if got := getObjectCount(t, store); got != 42 {
-		t.Fatalf("GetObject = %d, want 40 historical + 2", got)
-	}
-}
-
-// A pre-upgrade writer still running during rollout can merge into the
-// legacy attributes between the snapshot and the removal.
-func TestMigrationRestartsWhenTheSourceChangesBeforeRemoval(t *testing.T) {
-	store := newNounFake()
-	seedLegacyRole(t, store)
-	changed := false
-	store.FailUpdate = func(in *dynamodb.UpdateItemInput) error {
-		if !changed && strings.HasPrefix(aws.ToString(in.UpdateExpression), "REMOVE") {
-			changed = true
-			item := store.Get(testRoles, nounKey(RoleSortAttr, "default", testRoleARN))
-			item["top_event_names"] = &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{
-				"s3.amazonaws.com:GetObject": num(45),
-			}}
-			if err := store.Seed(testRoles, item); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	if err := writeGetObjects(t, store); err != nil {
-		t.Fatal(err)
-	}
-	assertMigrated(t, store)
-	if got := getObjectCount(t, store); got != 47 {
-		t.Fatalf("GetObject = %d, want the 45 written by the old writer + 2", got)
-	}
-}
-
-// Copies are the maximum over snapshots: copying an older snapshot over a
-// newer one fails instead of lowering it.
-func TestMigratedCopiesNeverDecrease(t *testing.T) {
-	ctx := context.Background()
-	store := newNounFake()
-	partition := ActivityPartition("default", testRoleARN)
-	copyOf := func(n int) error {
-		set := activitySet{}
-		set.events(bySource, map[string]int{"s3.amazonaws.com:GetObject": n}, nil)
-		return writeActivity(ctx, store, testRoles, RoleSortAttr, partition, set, true)
-	}
-	for _, n := range []int{40, 40, 45} {
-		if err := copyOf(n); err != nil {
-			t.Fatalf("copy %d: %v", n, err)
-		}
-	}
-	if err := copyOf(30); err == nil {
-		t.Fatal("an older snapshot overwrote a newer copy")
-	}
-	evt := store.Get(testRoles, nounKey(RoleSortAttr, partition, "evt#s3.amazonaws.com"))
-	if got := numAttr(t, evt, "lc:s3.amazonaws.com:GetObject"); got != 45 {
-		t.Fatalf("copy = %d, want 45", got)
-	}
-}
-
-func TestWriteServiceMigratesEventsAndDropsRelationLists(t *testing.T) {
+func TestWriteServiceDropsLegacyInlineAttributes(t *testing.T) {
 	ctx := context.Background()
 	store := newNounFake()
 	legacy, err := attributevalue.MarshalMap(&types.DynamoDBService{
@@ -420,44 +257,34 @@ func TestWriteServiceMigratesEventsAndDropsRelationLists(t *testing.T) {
 	if svc.TotalEvents != 16 || svc.DisplayName != "S3" || svc.LastSeen != "2026-01-02T00:00:00Z" {
 		t.Fatalf("service = %+v", svc)
 	}
-	if got := readCount(t, store, testServices, ServiceSortAttr, "s3.amazonaws.com", "evt#GetObject", "c:GetObject", "lc:GetObject", "top_event_names"); got != 16 {
+	if got := readCount(t, store, testServices, ServiceSortAttr, "s3.amazonaws.com", "evt#GetObject", "c:GetObject"); got != 6 {
 		t.Fatalf("GetObject = %d", got)
 	}
-	if got := readCount(t, store, testServices, ServiceSortAttr, "s3.amazonaws.com", "evt#PutObject", "d:PutObject", "ld:PutObject", "top_denied_event_names"); got != 3 {
+	if got := readCount(t, store, testServices, ServiceSortAttr, "s3.amazonaws.com", "evt#PutObject", "d:PutObject"); got != 3 {
 		t.Fatalf("PutObject denied = %d", got)
 	}
 }
 
-func TestLargeLegacyCounterSetsAreSplit(t *testing.T) {
-	// 350 event names under one source: more counters than one update
-	// expression can carry.
-	ctx := context.Background()
+func TestLargeCounterSetsAreSplit(t *testing.T) {
+	// 350 event names under one source in one batch: more counters than one
+	// update expression can carry.
 	store := newNounFake()
-	legacy := roleBatch("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "s3:bucket:x")
-	legacy.TopEventNames = map[string]int{}
+	batch := roleBatch("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "s3:bucket:x")
 	for i := 0; i < 350; i++ {
-		legacy.TopEventNames[fmt.Sprintf("ec2.amazonaws.com:DescribeThing%03d", i)] = i + 1
-	}
-	item, err := attributevalue.MarshalMap(legacy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Seed(testRoles, item); err != nil {
-		t.Fatal(err)
+		batch.TopEventNames[fmt.Sprintf("ec2.amazonaws.com:DescribeThing%03d", i)] = i + 1
 	}
 	var longest int
 	store.FailUpdate = func(in *dynamodb.UpdateItemInput) error {
 		longest = max(longest, len(aws.ToString(in.UpdateExpression)))
 		return nil
 	}
-	if err := WriteRoleToDynamoDB(ctx, store, testRoles, roleBatch("2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z", "s3:bucket:x")); err != nil {
+	if err := WriteRoleToDynamoDB(context.Background(), store, testRoles, batch); err != nil {
 		t.Fatal(err)
 	}
 	if longest > 4096 {
 		t.Fatalf("longest update expression is %d bytes", longest)
 	}
-	if got := readCount(t, store, testRoles, RoleSortAttr, testRoleARN, "evt#ec2.amazonaws.com",
-		"c:ec2.amazonaws.com:DescribeThing349", "lc:ec2.amazonaws.com:DescribeThing349", "top_event_names"); got != 350 {
+	if got := readCount(t, store, testRoles, RoleSortAttr, testRoleARN, "evt#ec2.amazonaws.com", "c:ec2.amazonaws.com:DescribeThing349"); got != 350 {
 		t.Fatalf("DescribeThing349 = %d", got)
 	}
 }

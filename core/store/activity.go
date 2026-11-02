@@ -6,13 +6,12 @@ package store
 // docs/design/noun-ux-and-data-contracts.md and written by
 // ingestor/lib/dynamodb/activity.go; the key helpers below must match it.
 //
-// Items written by older ingestors keep their counts inline on the main item.
-// The ingestor copies them into activity items ("lc:", "ld:", legacy_*
-// attributes) and only afterwards removes them from the main item. So while a
-// main item still has its inline maps, those are authoritative and the copies
-// are ignored; once the maps are gone, the copies are used. The main item is
-// read first and the activity partition with a consistent query, so a reader
-// that saw the maps removed also sees every copy written before the removal.
+// Items written by older ingestors keep their counts inline on the main item
+// instead. They are not migrated: the ingestor's first write of such an item
+// removes the inline maps in the same update that adds the batch, before it
+// writes any activity item. So a noun has either inline maps (not written
+// since the upgrade) or activity items, never both, and the read path simply
+// adds whatever it finds.
 
 import (
 	"context"
@@ -41,25 +40,6 @@ const (
 	activityDeniedEventAccess    = "dea"
 )
 
-// Inline attributes of the pre-activity layout, per table.
-var (
-	legacyRoleAttrs = []string{
-		"services_used", "services_count", "resources_used", "resources_count",
-		"top_event_names", "top_denied_event_names",
-		"resource_accesses", "denied_resource_accesses", "denied_event_accesses",
-	}
-	legacyServiceAttrs = []string{"roles_using", "resources_used", "top_event_names", "top_denied_event_names"}
-)
-
-func hasAnyAttr(item map[string]types.AttributeValue, names []string) bool {
-	for _, n := range names {
-		if _, ok := item[n]; ok {
-			return true
-		}
-	}
-	return false
-}
-
 // ActivityPartition is the partition key value of a noun's activity items.
 func ActivityPartition(customerID, nounID string) string {
 	p := customerID + activityPartitionInfix + nounID
@@ -83,16 +63,11 @@ type ActivityItem struct {
 	PolicyType        string `dynamodbav:"policy_type"`
 	ErrorMessage      string `dynamodbav:"error_message"`
 
-	// Counters written by batches ("c:", "d:", service_count, count).
+	// Counters ("c:", "d:", service_count, count).
 	Allowed      map[string]int `dynamodbav:"-"`
 	Denied       map[string]int `dynamodbav:"-"`
 	ServiceCount int            `dynamodbav:"-"`
 	Count        int            `dynamodbav:"-"`
-	// Copies of migrated legacy counts ("lc:", "ld:", legacy_*).
-	LegacyAllowed      map[string]int `dynamodbav:"-"`
-	LegacyDenied       map[string]int `dynamodbav:"-"`
-	LegacyServiceCount int            `dynamodbav:"-"`
-	LegacyCount        int            `dynamodbav:"-"`
 }
 
 func parseActivityItem(raw map[string]types.AttributeValue) (ActivityItem, error) {
@@ -115,50 +90,16 @@ func parseActivityItem(raw map[string]types.AttributeValue) (ActivityItem, error
 			it.ServiceCount = count
 		case name == "count":
 			it.Count = count
-		case name == "legacy_service_count":
-			it.LegacyServiceCount = count
-		case name == "legacy_count":
-			it.LegacyCount = count
 		case prefix == "c":
 			addCount(&it.Allowed, key, count)
 		case prefix == "d":
 			addCount(&it.Denied, key, count)
-		case prefix == "lc":
-			addCount(&it.LegacyAllowed, key, count)
-		case prefix == "ld":
-			addCount(&it.LegacyDenied, key, count)
 		}
 	}
 	return it, nil
 }
 
-// counts returns the item's counters to read: batch counters plus, once the
-// main item no longer holds its inline maps, the migrated copies.
-func (it ActivityItem) counts(legacyInline bool) (allowed, denied map[string]int, serviceCount, count int) {
-	allowed, denied = map[string]int{}, map[string]int{}
-	for k, n := range it.Allowed {
-		allowed[k] += n
-	}
-	for k, n := range it.Denied {
-		denied[k] += n
-	}
-	serviceCount, count = it.ServiceCount, it.Count
-	if !legacyInline {
-		for k, n := range it.LegacyAllowed {
-			allowed[k] += n
-		}
-		for k, n := range it.LegacyDenied {
-			denied[k] += n
-		}
-		serviceCount += it.LegacyServiceCount
-		count += it.LegacyCount
-	}
-	return allowed, denied, serviceCount, count
-}
-
-// queryActivity reads every activity item of one noun. The query is strongly
-// consistent so it sees every migrated copy written before the main item lost
-// its inline maps.
+// queryActivity reads every activity item of one noun.
 func (s *Store) queryActivity(ctx context.Context, table, customerID, nounID string) ([]ActivityItem, error) {
 	var items []ActivityItem
 	var lastKey map[string]types.AttributeValue
@@ -169,7 +110,6 @@ func (s *Store) queryActivity(ctx context.Context, table, customerID, nounID str
 			ExpressionAttributeValues: map[string]types.AttributeValue{
 				":p": &types.AttributeValueMemberS{Value: ActivityPartition(customerID, nounID)},
 			},
-			ConsistentRead:    aws.Bool(true),
 			ExclusiveStartKey: lastKey,
 		})
 		if err != nil {
@@ -280,7 +220,7 @@ func ApplyRoleActivity(role *models.Role, items []ActivityItem) {
 	}
 
 	for _, it := range items {
-		a, d, serviceCount, count := it.counts(role.LegacyInline)
+		a, d, serviceCount, count := it.Allowed, it.Denied, it.ServiceCount, it.Count
 		switch it.Kind {
 		case activityEvent:
 			for k, n := range a {
@@ -380,7 +320,7 @@ func ApplyServiceActivity(service *models.Service, items []ActivityItem) {
 		if it.Kind != activityEvent {
 			continue
 		}
-		a, d, _, _ := it.counts(service.LegacyInline)
+		a, d := it.Allowed, it.Denied
 		for k, n := range a {
 			addCount(&service.TopEventNames, k, n)
 		}

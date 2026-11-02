@@ -129,9 +129,6 @@ func (s *Store) ListRoles(ctx context.Context, customerID string) ([]models.Role
 		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal roles: %w", err)
 		}
-		for i := range page {
-			page[i].LegacyInline = hasAnyAttr(result.Items[i], legacyRoleAttrs)
-		}
 		roles = append(roles, page...)
 
 		if result.LastEvaluatedKey == nil {
@@ -167,7 +164,6 @@ func (s *Store) GetRole(ctx context.Context, customerID, roleARN string) (*model
 	if err := attributevalue.UnmarshalMap(result.Item, &role); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal role: %w", err)
 	}
-	role.LegacyInline = hasAnyAttr(result.Item, legacyRoleAttrs)
 	role.RoleSelector = role.RoleID()
 	return &role, nil
 }
@@ -819,9 +815,6 @@ func (s *Store) ListServices(ctx context.Context, customerID string) ([]models.S
 		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal services: %w", err)
 		}
-		for i := range page {
-			page[i].LegacyInline = hasAnyAttr(result.Items[i], legacyServiceAttrs)
-		}
 		services = append(services, page...)
 
 		if result.LastEvaluatedKey == nil {
@@ -857,7 +850,6 @@ func (s *Store) GetService(ctx context.Context, customerID, eventSource string) 
 	if err := attributevalue.UnmarshalMap(result.Item, &service); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal service: %w", err)
 	}
-	service.LegacyInline = hasAnyAttr(result.Item, legacyServiceAttrs)
 	return &service, nil
 }
 
