@@ -151,15 +151,78 @@ func nounLabel(n events.Noun) string {
 	return n.ID
 }
 
+// MaxSummaryActions caps the actions named in a Session Activity body; the
+// rest are counted as "+N more action types".
+const MaxSummaryActions = 5
+
+// sessionSummary names the actor and the APIs they called in one CloudTrail
+// file, e.g.
+//
+//	example-user: logs.amazonaws.com:DescribeMetricFilters ×1; 0 denied, 0 writes in account 111111111111 (web session example-session-id; this file)
+//
+// The trailing "this file" marks the counts as per-file, not the session's
+// lifetime.
 func sessionSummary(d events.SessionActivity) string {
-	who := firstNonEmpty(d.Session.Person.Email, d.Session.Person.Label, d.Session.Person.Key, d.Session.RoleARN, d.Session.Sid)
-	session := d.Session.Type + " session"
-	if d.Session.NewSession {
+	s := d.Session
+	who := firstNonEmpty(s.Person.Email, s.Person.Label, s.RoleSessionName, s.RoleARN, s.Person.Key, s.Sid)
+	if who == "" {
+		who = "Unknown actor"
+	}
+	session := s.Type + " session"
+	if s.NewSession {
 		session = "new " + session
 	}
-	return fmt.Sprintf("%s: %d calls, %d denied, %d writes in account %s (%s %s)",
-		who, d.Activity.EventsCount, d.Activity.DeniedCount, d.Activity.WriteCount,
-		d.Session.AccountID, session, d.Session.Sid)
+	return fmt.Sprintf("%s: %s; %d denied, %d writes in account %s (%s %s; this file)",
+		who, actionSummary(d.Activity.EventCounts, d.Activity.DeniedEventCounts),
+		d.Activity.DeniedCount, d.Activity.WriteCount, s.AccountID, session, s.Sid)
+}
+
+type summaryAction struct {
+	event  string
+	count  int
+	denied bool
+}
+
+// actionSummary lists allowed and denied actions together, by count
+// descending, then event name, then allowed before denied, capped at
+// MaxSummaryActions.
+func actionSummary(allowed, denied map[string]int) string {
+	actions := make([]summaryAction, 0, len(allowed)+len(denied))
+	for event, n := range allowed {
+		actions = append(actions, summaryAction{event, n, false})
+	}
+	for event, n := range denied {
+		actions = append(actions, summaryAction{event, n, true})
+	}
+	if len(actions) == 0 {
+		return "no actions recorded"
+	}
+	sort.Slice(actions, func(i, j int) bool {
+		a, b := actions[i], actions[j]
+		if a.count != b.count {
+			return a.count > b.count
+		}
+		if a.event != b.event {
+			return a.event < b.event
+		}
+		return !a.denied && b.denied
+	})
+	shown := actions
+	if len(shown) > MaxSummaryActions {
+		shown = shown[:MaxSummaryActions]
+	}
+	parts := make([]string, 0, len(shown)+1)
+	for _, a := range shown {
+		label := fmt.Sprintf("%s ×%d", a.event, a.count)
+		if a.denied {
+			label = "denied " + label
+		}
+		parts = append(parts, label)
+	}
+	if omitted := len(actions) - len(shown); omitted > 0 {
+		parts = append(parts, fmt.Sprintf("+%d more action types", omitted))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func sessionSeverity(d events.SessionActivity) logsv1.SeverityNumber {
