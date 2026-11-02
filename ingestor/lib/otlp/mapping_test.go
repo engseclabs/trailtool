@@ -241,7 +241,7 @@ func TestBuildRecordSessionActivity(t *testing.T) {
 	if rec.SeverityNumber != logsv1.SeverityNumber_SEVERITY_NUMBER_INFO {
 		t.Errorf("severity = %v, want INFO with no denied calls", rec.SeverityNumber)
 	}
-	want := "alice@example.com: 3 calls, 0 denied, 2 writes in account 111111111111 (new cli session gfo65rnbteswfydb)"
+	want := "alice@example.com: s3.amazonaws.com:GetObject ×2, s3.amazonaws.com:PutBucketPolicy ×1; 0 denied, 2 writes in account 111111111111 (new cli session gfo65rnbteswfydb; this file)"
 	if got := rec.Body.GetStringValue(); got != want {
 		t.Errorf("body = %q, want %q", got, want)
 	}
@@ -370,5 +370,144 @@ func TestBuildRecordCapsMapFields(t *testing.T) {
 	}
 	if got := mustAttr(t, attrs, "trailtool.activity.event_counts_dropped").GetIntValue(); got != 7 {
 		t.Errorf("event_counts_dropped = %d, want 7", got)
+	}
+}
+
+func TestSessionSummary(t *testing.T) {
+	base := func() events.SessionActivity {
+		return events.SessionActivity{
+			Session: events.SessionInfo{
+				Sid:             "example-session-id",
+				Person:          events.Person{Key: "idc#d-0000000000#user-0000"},
+				Type:            "web",
+				AccountID:       "111111111111",
+				RoleARN:         "arn:aws:iam::111111111111:role/ExampleRole",
+				RoleSessionName: "example-user",
+			},
+			Activity: events.Activity{
+				EventsCount: 1,
+				EventCounts: map[string]int{"logs.amazonaws.com:DescribeMetricFilters": 1},
+			},
+		}
+	}
+	const tail = "in account 111111111111 (web session example-session-id; this file)"
+
+	tests := []struct {
+		name   string
+		modify func(*events.SessionActivity)
+		want   string
+	}{
+		{
+			name:   "single read-only action",
+			modify: func(*events.SessionActivity) {},
+			want:   "example-user: logs.amazonaws.com:DescribeMetricFilters ×1; 0 denied, 0 writes " + tail,
+		},
+		{
+			name: "multiple actions ordered by count then name",
+			modify: func(d *events.SessionActivity) {
+				d.Activity.EventCounts = map[string]int{
+					"s3.amazonaws.com:ListBuckets":   1,
+					"ec2.amazonaws.com:RunInstances": 1,
+					"s3.amazonaws.com:GetObject":     4,
+					"iam.amazonaws.com:CreateRole":   2,
+				}
+				d.Activity.DeniedEventCounts = map[string]int{"iam.amazonaws.com:CreateRole": 2}
+				d.Activity.DeniedCount = 2
+				d.Activity.WriteCount = 5
+			},
+			want: "example-user: s3.amazonaws.com:GetObject ×4, iam.amazonaws.com:CreateRole ×2, " +
+				"denied iam.amazonaws.com:CreateRole ×2, ec2.amazonaws.com:RunInstances ×1, " +
+				"s3.amazonaws.com:ListBuckets ×1; 2 denied, 5 writes " + tail,
+		},
+		{
+			name: "denied only",
+			modify: func(d *events.SessionActivity) {
+				d.Activity.EventCounts = map[string]int{}
+				d.Activity.DeniedEventCounts = map[string]int{"s3.amazonaws.com:GetObject": 3}
+				d.Activity.DeniedCount = 3
+				d.Activity.WriteCount = 3
+			},
+			want: "example-user: denied s3.amazonaws.com:GetObject ×3; 3 denied, 3 writes " + tail,
+		},
+		{
+			name: "empty action maps",
+			modify: func(d *events.SessionActivity) {
+				d.Activity.EventCounts = nil
+				d.Activity.DeniedEventCounts = nil
+			},
+			want: "example-user: no actions recorded; 0 denied, 0 writes " + tail,
+		},
+		{
+			name: "truncation",
+			modify: func(d *events.SessionActivity) {
+				d.Activity.EventCounts = map[string]int{}
+				for i := range MaxSummaryActions + 3 {
+					d.Activity.EventCounts[fmt.Sprintf("svc.amazonaws.com:Call%d", i)] = 10 - i
+				}
+			},
+			want: "example-user: svc.amazonaws.com:Call0 ×10, svc.amazonaws.com:Call1 ×9, " +
+				"svc.amazonaws.com:Call2 ×8, svc.amazonaws.com:Call3 ×7, svc.amazonaws.com:Call4 ×6, " +
+				"+3 more action types; 0 denied, 0 writes " + tail,
+		},
+		{
+			name: "new session",
+			modify: func(d *events.SessionActivity) {
+				d.Session.NewSession = true
+			},
+			want: "example-user: logs.amazonaws.com:DescribeMetricFilters ×1; 0 denied, 0 writes " +
+				"in account 111111111111 (new web session example-session-id; this file)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := base()
+			tt.modify(&d)
+			if got := sessionSummary(d); got != tt.want {
+				t.Errorf("summary =\n  %q\nwant\n  %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSessionSummaryActorFallback(t *testing.T) {
+	full := events.SessionInfo{
+		Sid:             "example-session-id",
+		Person:          events.Person{Key: "idc#d-0000000000#user-0000", Email: "user@example.com", Label: "Example User"},
+		RoleSessionName: "example-user",
+		RoleARN:         "arn:aws:iam::111111111111:role/ExampleRole",
+	}
+	tests := []struct {
+		name  string
+		clear func(*events.SessionInfo)
+		want  string
+	}{
+		{"email", func(*events.SessionInfo) {}, "user@example.com"},
+		{"display name", func(s *events.SessionInfo) { s.Person.Email = "" }, "Example User"},
+		{"role session name", func(s *events.SessionInfo) { s.Person.Email, s.Person.Label = "", "" }, "example-user"},
+		{"role ARN when role session name is absent", func(s *events.SessionInfo) {
+			s.Person.Email, s.Person.Label, s.RoleSessionName = "", "", ""
+		}, "arn:aws:iam::111111111111:role/ExampleRole"},
+		{"person key", func(s *events.SessionInfo) {
+			s.Person.Email, s.Person.Label, s.RoleSessionName, s.RoleARN = "", "", "", ""
+		}, "idc#d-0000000000#user-0000"},
+		{"session ID", func(s *events.SessionInfo) {
+			s.Person = events.Person{}
+			s.RoleSessionName, s.RoleARN = "", ""
+		}, "example-session-id"},
+		{"unknown actor", func(s *events.SessionInfo) { *s = events.SessionInfo{} }, "Unknown actor"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := full
+			tt.clear(&s)
+			d := events.SessionActivity{
+				Session:  s,
+				Activity: events.Activity{EventCounts: map[string]int{"logs.amazonaws.com:DescribeMetricFilters": 1}},
+			}
+			got := sessionSummary(d)
+			if !strings.HasPrefix(got, tt.want+": logs.amazonaws.com:DescribeMetricFilters ×1; ") {
+				t.Errorf("summary = %q, want actor %q followed by the action", got, tt.want)
+			}
+		})
 	}
 }
