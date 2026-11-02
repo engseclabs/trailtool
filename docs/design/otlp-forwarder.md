@@ -83,7 +83,7 @@ Bodies:
 |---------------|------|
 | Noun Created | `account 123456789012 seen for the first time`; resources read `resource s3:bucket:logs in account 111111111111 …` |
 | Relation Created | `person alice@example.com reached account 123456789012 for the first time` |
-| Session Activity | `alice@example.com: 3 calls, 1 denied, 2 writes in account 111111111111 (new cli session gfo65rnbteswfydb)`; the actor is the first of email, label, person key, role ARN, sid |
+| Session Activity | `alice@example.com: s3.amazonaws.com:GetObject ×2, denied s3.amazonaws.com:PutBucketPolicy ×1; 1 denied, 2 writes in account 111111111111 (new cli session gfo65rnbteswfydb; this file)`; the actor is the first non-empty of email, label, role session name, role ARN, person key, sid (else `Unknown actor`). Actions merge `event_counts` and `denied_event_counts` (the latter prefixed `denied`), ordered by count descending then name, capped at 5 with `+N more action types`. Counts cover the one CloudTrail file the event came from, not the session's lifetime |
 | anything else | the `detail-type` |
 
 ### Flattening
