@@ -267,8 +267,9 @@ identifier define identity.
 
 ### Commutative noun merges
 
-Account and service writes merge with the stored aggregate instead of replacing
-it. Every noun merge uses the same rules:
+Account and resource writes merge with the stored aggregate instead of
+replacing it; role and service writes add to it with `UpdateItem` (see
+"Bounded role and service items"). Every noun merge uses the same rules:
 
 - `first_seen`: minimum non-empty CloudTrail `eventTime`, stored as RFC3339;
 - `last_seen`: maximum CloudTrail `eventTime`, stored as RFC3339;
@@ -331,6 +332,83 @@ Write bidirectional edges for observed pairs:
 
 Events without a resolved person or session still contribute account, role,
 service, and resource edges when those identities exist.
+
+### Bounded role and service items
+
+Role and service items do not grow with activity. Each write touches only
+small items, and every counter is an `UpdateItem ADD`.
+
+The main item holds identity, `first_seen`, `last_seen`, `total_events`, and
+`total_denied_events`. Collections that grow move to activity items in the
+same table, under a sibling partition that list queries on `customerId` never
+see:
+
+```text
+customerId = <customerId>#act#<noun id>     (ids over 1.5 KB: sha256:<hex>)
+<sort key> = <kind>#<detail>               (the table's own sort attribute)
+```
+
+| Noun | Sort key | Holds |
+|------|----------|-------|
+| role | `evt#<event source>` | `c:<source>:<event>` / `d:<source>:<event>` counters and `service_count` |
+| service | `evt#<event name>` | `c:<event>` / `d:<event>` counters |
+| role | `ra#<digest>` | one allowed resource (`resource`, `resource_account_id`, `service`), a `c:<event>` counter per event |
+| role | `dra#<digest>` | one denied (resource, event, policy): `count`, `policy_type`, `error_message` |
+| role | `dea#<digest>` | one denied event without a resource, as above |
+
+Counters are top-level number attributes, so one `ADD` creates or increments
+them. Role event counters are grouped per source (bounded by that service's
+API); service counters per event name (a busy service's full map is larger
+than the names one file touches). More than 100 counters in one item are
+split across updates to stay under the 4 KB expression limit.
+
+Not kept on the main item: service `roles_using` and `resources_used` (the
+relations table holds every service-role and service-resource pair). Role
+`resources_count`, `resources_used`, and `services_used` are derived on read
+from activity items. The `people_count`, `sessions_count`, and
+`accounts_count` fallbacks are no longer refreshed; reads use relation
+`_summary` counts.
+
+Bounds. The writer reads the stored bounds (eventually consistent), then
+writes once:
+
+- item not seen: set both bounds under `attribute_not_exists` on the key, so a
+  stale read that missed an existing item fails instead of keeping the stored
+  `first_seen` through `if_not_exists`;
+- item seen: set `first_seen` only if earlier and `last_seen` only if later,
+  each under a condition that rejects a regression.
+
+A failed condition re-reads consistently and recomputes.
+
+Upgrade. Items written before this layout carry `top_event_names`,
+`top_denied_event_names`, `services_count`, `services_used`,
+`resources_count`, `resources_used`, `resource_accesses`,
+`denied_resource_accesses`, `denied_event_accesses` (roles) and
+`roles_using`, `resources_used`, `top_event_names`, `top_denied_event_names`
+(services) inline. The next write migrates them in two steps:
+
+1. copy: each legacy count is written to its activity item as a separate
+   `lc:<key>`, `ld:<key>`, `legacy_service_count`, or `legacy_count`
+   attribute with `if_not_exists`;
+2. remove: only after every copy succeeded are the inline attributes removed.
+
+A failure at either step leaves the inline attributes in place and fails the
+batch; the retry copies the same values again (`if_not_exists` keeps them
+from doubling) and then removes. Nothing is discarded before its copy is
+durable, so no backfill job is needed, and items that were failing at 400 KB
+migrate on their next write.
+
+Reads. While a main item still has its inline attributes, they are
+authoritative and the `lc:`/`ld:`/`legacy_*` copies are ignored; once they are
+gone, the copies are read instead. The CLI reads the main item first and the
+activity partition with a strongly consistent query: if the main item showed
+the inline attributes, the copies are ignored whatever the query returns; if
+it did not, the removal had committed, and the consistent query returns every
+copy written before it. Batch counters (`c:`, `d:`, `service_count`, `count`)
+are always added.
+
+`roles detail`, `roles policy`, and `services detail` query the activity
+partition; list commands read main items only.
 
 ### Account-qualified resources
 

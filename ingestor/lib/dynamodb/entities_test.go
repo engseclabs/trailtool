@@ -25,109 +25,6 @@ func (s *fakeEntityStore) PutItem(_ context.Context, input *dynamodb.PutItemInpu
 	return &dynamodb.PutItemOutput{}, nil
 }
 
-func TestMergeServiceAggregatedIsOrderIndependent(t *testing.T) {
-	a := &types.DynamoDBService{
-		CustomerID:          "test",
-		EventSource:         "s3.amazonaws.com",
-		DisplayName:         "Amazon S3",
-		Category:            "Storage",
-		TotalEvents:         2,
-		RolesUsing:          []string{"role-b", "role-a"},
-		ResourcesUsed:       []string{"s3:bucket:one"},
-		TopEventNames:       map[string]int{"GetObject": 2},
-		FirstSeen:           "2026-07-03",
-		LastSeen:            "2026-07-04",
-		TotalDeniedEvents:   1,
-		TopDeniedEventNames: map[string]int{"PutObject": 1},
-		PeopleCount:         2,
-		SessionsCount:       1,
-		AccountsCount:       1,
-	}
-	b := &types.DynamoDBService{
-		CustomerID:          "test",
-		EventSource:         "s3.amazonaws.com",
-		DisplayName:         "Amazon S3",
-		Category:            "Storage",
-		TotalEvents:         3,
-		RolesUsing:          []string{"role-c", "role-a"},
-		ResourcesUsed:       []string{"s3:bucket:two", "s3:bucket:one"},
-		TopEventNames:       map[string]int{"GetObject": 1, "ListBuckets": 2},
-		FirstSeen:           "2026-07-01",
-		LastSeen:            "2026-07-05",
-		TotalDeniedEvents:   2,
-		TopDeniedEventNames: map[string]int{"PutObject": 2},
-		PeopleCount:         1,
-		SessionsCount:       3,
-		AccountsCount:       1,
-	}
-
-	ab := MergeServiceAggregated(a, b)
-	ba := MergeServiceAggregated(b, a)
-	if !reflect.DeepEqual(ab, ba) {
-		t.Fatalf("service merge depends on arrival order:\nab=%+v\nba=%+v", ab, ba)
-	}
-	if ab.TotalEvents != 5 || ab.TotalDeniedEvents != 3 {
-		t.Fatalf("event totals = %d/%d, want 5/3", ab.TotalEvents, ab.TotalDeniedEvents)
-	}
-	if ab.FirstSeen != "2026-07-01" || ab.LastSeen != "2026-07-05" {
-		t.Fatalf("bounds = %s/%s, want 2026-07-01/2026-07-05", ab.FirstSeen, ab.LastSeen)
-	}
-	if ab.RolesCount != 3 || ab.ResourcesCount != 2 {
-		t.Fatalf("role/resource counts = %d/%d, want 3/2", ab.RolesCount, ab.ResourcesCount)
-	}
-}
-
-func TestMergeServiceAggregatedIsPartitionIndependent(t *testing.T) {
-	a := &types.DynamoDBService{
-		CustomerID: "test", EventSource: "ec2.amazonaws.com", TotalEvents: 1,
-		TopEventNames: map[string]int{"RunInstances": 1}, FirstSeen: "2026-07-03", LastSeen: "2026-07-03",
-	}
-	b := &types.DynamoDBService{
-		CustomerID: "test", EventSource: "ec2.amazonaws.com", TotalEvents: 2,
-		TopEventNames: map[string]int{"DescribeInstances": 2}, FirstSeen: "2026-07-01", LastSeen: "2026-07-02",
-	}
-	c := &types.DynamoDBService{
-		CustomerID: "test", EventSource: "ec2.amazonaws.com", TotalEvents: 3,
-		TopEventNames: map[string]int{"RunInstances": 3}, FirstSeen: "2026-07-04", LastSeen: "2026-07-05",
-	}
-
-	left := MergeServiceAggregated(MergeServiceAggregated(a, b), c)
-	right := MergeServiceAggregated(a, MergeServiceAggregated(b, c))
-	if !reflect.DeepEqual(left, right) {
-		t.Fatalf("service merge depends on batch partition:\nleft=%+v\nright=%+v", left, right)
-	}
-}
-
-func TestWriteServiceToDynamoDBPreservesPriorBatches(t *testing.T) {
-	store := &fakeEntityStore{}
-	ctx := context.Background()
-	first := &types.DynamoDBService{
-		CustomerID: "test", EventSource: "s3.amazonaws.com", TotalEvents: 2,
-		RolesUsing: []string{"role-a"}, ResourcesUsed: []string{"s3:bucket:one"},
-		TopEventNames: map[string]int{"GetObject": 2}, FirstSeen: "2026-07-01", LastSeen: "2026-07-01",
-	}
-	second := &types.DynamoDBService{
-		CustomerID: "test", EventSource: "s3.amazonaws.com", TotalEvents: 1,
-		RolesUsing: []string{"role-b"}, ResourcesUsed: []string{"s3:bucket:two"},
-		TopEventNames: map[string]int{"ListBuckets": 1}, FirstSeen: "2026-07-02", LastSeen: "2026-07-02",
-	}
-
-	if err := WriteServiceToDynamoDB(ctx, store, "services", first); err != nil {
-		t.Fatalf("write first batch: %v", err)
-	}
-	if err := WriteServiceToDynamoDB(ctx, store, "services", second); err != nil {
-		t.Fatalf("write second batch: %v", err)
-	}
-
-	var got types.DynamoDBService
-	if err := attributevalue.UnmarshalMap(store.item, &got); err != nil {
-		t.Fatalf("unmarshal stored service: %v", err)
-	}
-	if got.TotalEvents != 3 || got.RolesCount != 2 || got.ResourcesCount != 2 {
-		t.Fatalf("stored service totals = events:%d roles:%d resources:%d, want 3/2/2", got.TotalEvents, got.RolesCount, got.ResourcesCount)
-	}
-}
-
 func TestMergeAccountAggregatedIsOrderAndPartitionIndependent(t *testing.T) {
 	a := &types.DynamoDBAccount{
 		CustomerID: "test", AccountID: "111111111111", FirstSeen: "2026-07-03", LastSeen: "2026-07-03",
@@ -199,68 +96,6 @@ func TestWriteAccountToDynamoDBPreservesPriorBatches(t *testing.T) {
 	}
 }
 
-func TestMergeResourceAccessItemsKeepsResourceAccountsDistinct(t *testing.T) {
-	first := types.ResourceAccessItem{
-		Resource:          "lambda:function:shared-function",
-		ResourceAccountID: "111111111111",
-		Service:           "lambda.amazonaws.com",
-		EventName:         "Invoke",
-		Count:             1,
-	}
-	second := first
-	second.ResourceAccountID = "222222222222"
-
-	got := MergeResourceAccessItems([]types.ResourceAccessItem{first}, []types.ResourceAccessItem{second})
-	if len(got) != 2 {
-		t.Fatalf("merged accesses = %#v, want two account-qualified entries", got)
-	}
-	if got[0].ResourceAccountID != "111111111111" || got[1].ResourceAccountID != "222222222222" {
-		t.Fatalf("resource accounts = %#v", got)
-	}
-}
-
-func TestMergeRoleAndResourceDoNotAddDistinctCounts(t *testing.T) {
-	role := MergeRoleAggregated(
-		&types.DynamoDBRole{
-			ARN:           "arn:aws:iam::111111111111:role/reader",
-			PeopleCount:   4,
-			SessionsCount: 3,
-			AccountsCount: 1,
-		},
-		&types.DynamoDBRole{
-			ARN:           "arn:aws:iam::111111111111:role/reader",
-			PeopleCount:   2,
-			SessionsCount: 5,
-			AccountsCount: 1,
-		},
-	)
-	if role.PeopleCount != 4 || role.SessionsCount != 5 || role.AccountsCount != 1 {
-		t.Fatalf("role relationship counts = %d/%d/%d, want 4/5/1",
-			role.PeopleCount, role.SessionsCount, role.AccountsCount)
-	}
-
-	resource := MergeResourceAggregated(
-		&types.DynamoDBResource{
-			ResourceKey:   "111111111111#key",
-			Identifier:    "s3:bucket:example",
-			AccountID:     "111111111111",
-			PeopleCount:   4,
-			SessionsCount: 3,
-		},
-		&types.DynamoDBResource{
-			ResourceKey:   "111111111111#key",
-			Identifier:    "s3:bucket:example",
-			AccountID:     "111111111111",
-			PeopleCount:   2,
-			SessionsCount: 5,
-		},
-	)
-	if resource.PeopleCount != 4 || resource.SessionsCount != 5 {
-		t.Fatalf("resource relationship counts = %d/%d, want 4/5",
-			resource.PeopleCount, resource.SessionsCount)
-	}
-}
-
 func TestMergeResourceAggregatedIsOrderIndependent(t *testing.T) {
 	a := &types.DynamoDBResource{
 		CustomerID:  "test",
@@ -318,5 +153,28 @@ func TestMergePersonPreservesDeniedActivity(t *testing.T) {
 	)
 	if got.DeniedEventCount != 3 || got.TopDeniedEventNames["s3.amazonaws.com:GetObject"] != 3 {
 		t.Fatalf("merged person denied activity = %+v", got)
+	}
+}
+
+func TestMergeResourceDoesNotAddDistinctCounts(t *testing.T) {
+	resource := MergeResourceAggregated(
+		&types.DynamoDBResource{
+			ResourceKey:   "111111111111#key",
+			Identifier:    "s3:bucket:example",
+			AccountID:     "111111111111",
+			PeopleCount:   4,
+			SessionsCount: 3,
+		},
+		&types.DynamoDBResource{
+			ResourceKey:   "111111111111#key",
+			Identifier:    "s3:bucket:example",
+			AccountID:     "111111111111",
+			PeopleCount:   2,
+			SessionsCount: 5,
+		},
+	)
+	if resource.PeopleCount != 4 || resource.SessionsCount != 5 {
+		t.Fatalf("resource relationship counts = %d/%d, want 4/5",
+			resource.PeopleCount, resource.SessionsCount)
 	}
 }

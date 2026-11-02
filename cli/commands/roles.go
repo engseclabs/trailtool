@@ -109,6 +109,9 @@ also works.`,
 			if role == nil {
 				return fatal("role not found: %s (check 'trailtool roles list')", args[0])
 			}
+			if err := s.LoadRoleActivity(ctx, CustomerID, role); err != nil {
+				return fatal("%v", err)
+			}
 
 			related, err := s.LoadRelatedNouns(
 				ctx,
@@ -165,6 +168,9 @@ also works.`,
 			}
 			if role == nil {
 				return fatal("role not found: %s (check 'trailtool roles list')", args[0])
+			}
+			if err := s.LoadRoleActivity(ctx, CustomerID, role); err != nil {
+				return fatal("%v", err)
 			}
 
 			result, err := policy.GeneratePolicy(role, includeDenied)
