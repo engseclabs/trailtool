@@ -15,19 +15,19 @@ import (
 )
 
 type fakeRelationStore struct {
-	edges               map[string]types.DynamoDBRelation
-	summaries           map[string]types.DynamoDBRelationSummary
-	transactionCalls    int
-	putCalls            int
-	updateCalls         int
-	batchGetErr         error
-	batchSizes          []int
+	edges            map[string]types.DynamoDBRelation
+	summaries        map[string]types.DynamoDBRelationSummary
+	transactionCalls int
+	putCalls         int
+	updateCalls      int
+	batchGetErr      error
+	batchSizes       []int
 	// unprocessedOnce returns the second half of the next BatchGetItem's
 	// keys as UnprocessedKeys, as DynamoDB does under throttling.
 	unprocessedOnce bool
 	// stale, when set, answers BatchGetItem for a key instead of the store,
 	// as a lagging replica can; returning nil reads as missing.
-	stale func(key map[string]ddbtypes.AttributeValue) (map[string]ddbtypes.AttributeValue, bool)
+	stale               func(key map[string]ddbtypes.AttributeValue) (map[string]ddbtypes.AttributeValue, bool)
 	transactionFailures int
 	putConflicts        int
 	updateConflicts     int
