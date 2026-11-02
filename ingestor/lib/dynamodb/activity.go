@@ -378,7 +378,7 @@ func writeActivity(ctx context.Context, store NounStore, table, sortAttr, partit
 	for i, input := range inputs {
 		g.Go(func() error {
 			if _, err := store.UpdateItem(gctx, input); err != nil {
-				errs[i] = fmt.Errorf("activity %s: %w", stringAttr(input.Key, sortAttr), err)
+				errs[i] = fmt.Errorf("activity %s: %w", attrString(input.Key, sortAttr), err)
 			}
 			return nil
 		})
@@ -437,8 +437,8 @@ func (u nounUpdate) read(ctx context.Context, store NounStore, consistent bool) 
 	}
 	state := nounState{
 		exists: len(out.Item) > 0,
-		first:  stringAttr(out.Item, "first_seen"),
-		last:   stringAttr(out.Item, "last_seen"),
+		first:  attrString(out.Item, "first_seen"),
+		last:   attrString(out.Item, "last_seen"),
 	}
 	for _, attr := range u.legacy {
 		if v, ok := out.Item[attr]; ok {
@@ -631,7 +631,7 @@ func WriteServiceToDynamoDB(ctx context.Context, store NounStore, tableName stri
 	return nil
 }
 
-func stringAttr(item map[string]ddbtypes.AttributeValue, name string) string {
+func attrString(item map[string]ddbtypes.AttributeValue, name string) string {
 	if v, ok := item[name].(*ddbtypes.AttributeValueMemberS); ok {
 		return v.Value
 	}
