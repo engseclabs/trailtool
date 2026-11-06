@@ -54,6 +54,23 @@ func writeAll[T any](ctx context.Context, items map[string]T, fn func(context.Co
 	_ = g.Wait()
 }
 
+// writers are the aggregate-noun and relation write paths. They are a
+// package variable only so the write-cost study (writecost_test.go) can run
+// the same batches through the previous write paths.
+var writers = struct {
+	role      func(context.Context, ddblib.NounStore, string, *types.DynamoDBRole) error
+	service   func(context.Context, ddblib.NounStore, string, *types.DynamoDBService) error
+	resource  func(context.Context, ddblib.EntityStore, string, *types.DynamoDBResource) error
+	account   func(context.Context, ddblib.EntityStore, string, *types.DynamoDBAccount) error
+	relations func(context.Context, ddblib.RelationStore, string, []types.DynamoDBRelation) (ddblib.RelationWriteResult, error)
+}{
+	role:      ddblib.WriteRoleToDynamoDB,
+	service:   ddblib.WriteServiceToDynamoDB,
+	resource:  ddblib.WriteResourceToDynamoDB,
+	account:   ddblib.WriteAccountToDynamoDB,
+	relations: ddblib.WriteRelations,
+}
+
 // DefaultIdleGap bounds the windowed session fallback: consecutive events
 // further apart than this start a new win# session. It applies only to
 // principals AWS gives no credential boundary for (long-lived IAM keys, root).
@@ -114,6 +131,15 @@ func Process(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events
 // The result is non-nil even alongside an error, holding whatever was written
 // before the failure.
 func ProcessWithResult(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, events []types.CloudTrailRecord) (*Result, error) {
+	// A nil *dynamodb.Client must stay a nil interface: tests run without one.
+	var store ddblib.Client
+	if ddbClient != nil {
+		store = ddbClient
+	}
+	return processWithStore(ctx, store, cfg, events)
+}
+
+func processWithStore(ctx context.Context, ddbClient ddblib.Client, cfg Config, events []types.CloudTrailRecord) (*Result, error) {
 	ns := cfg.namespace()
 	events = dedupeByEventID(events)
 	log.Printf("=== Processing Identity-First Aggregation ===")
@@ -133,7 +159,7 @@ func ProcessWithResult(ctx context.Context, ddbClient *dynamodb.Client, cfg Conf
 // into entity records, writing to DynamoDB when a client is present. Split
 // from ProcessWithResult so tests can inject stored links and simulate
 // cross-batch delivery.
-func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config, ns string, groups []identity.Group, stored map[string]*link) (*Result, error) {
+func aggregateGroups(ctx context.Context, ddbClient ddblib.Client, cfg Config, ns string, groups []identity.Group, stored map[string]*link) (*Result, error) {
 	// Aggregation maps for all nouns
 	roles := make(map[string]*types.DynamoDBRole)
 	services := make(map[string]*types.DynamoDBService)
@@ -542,21 +568,21 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 	// concurrency stays bounded and the log output keeps its per-type grouping.
 	writeAll(ctx, roles, func(ctx context.Context, role *types.DynamoDBRole) {
 		role.CustomerID = ns
-		if err := ddblib.WriteRoleToDynamoDB(ctx, ddbClient, cfg.Tables.Roles, role); err != nil {
+		if err := writers.role(ctx, ddbClient, cfg.Tables.Roles, role); err != nil {
 			log.Printf("ERROR: Failed to write role: %v", err)
 		}
 	})
 
 	writeAll(ctx, services, func(ctx context.Context, service *types.DynamoDBService) {
 		service.CustomerID = ns
-		if err := ddblib.WriteServiceToDynamoDB(ctx, ddbClient, cfg.Tables.Services, service); err != nil {
+		if err := writers.service(ctx, ddbClient, cfg.Tables.Services, service); err != nil {
 			log.Printf("ERROR: Failed to write service: %v", err)
 		}
 	})
 
 	writeAll(ctx, resourceMap, func(ctx context.Context, resource *types.DynamoDBResource) {
 		resource.CustomerID = ns
-		if err := ddblib.WriteResourceToDynamoDB(ctx, ddbClient, cfg.Tables.Resources, resource); err != nil {
+		if err := writers.resource(ctx, ddbClient, cfg.Tables.Resources, resource); err != nil {
 			log.Printf("ERROR: Failed to write resource: %v", err)
 		}
 	})
@@ -631,13 +657,13 @@ func aggregateGroups(ctx context.Context, ddbClient *dynamodb.Client, cfg Config
 
 	writeAll(ctx, accounts, func(ctx context.Context, account *types.DynamoDBAccount) {
 		account.CustomerID = ns
-		if err := ddblib.WriteAccountToDynamoDB(ctx, ddbClient, cfg.Tables.Accounts, account); err != nil {
+		if err := writers.account(ctx, ddbClient, cfg.Tables.Accounts, account); err != nil {
 			log.Printf("ERROR: Failed to write account: %v", err)
 		}
 	})
 
 	if cfg.Tables.Relations != "" {
-		written, err := ddblib.WriteRelations(ctx, ddbClient, cfg.Tables.Relations, relations.edges())
+		written, err := writers.relations(ctx, ddbClient, cfg.Tables.Relations, relations.edges())
 		// Whatever was created before a failure stays created, and a retry of
 		// this batch will not report it again, so the result carries it either way.
 		collectCreated(res, relations, written.NewSubjects, written.NewEdges)

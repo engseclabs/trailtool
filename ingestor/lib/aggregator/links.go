@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-
 	ddblib "github.com/engseclabs/trailtool/ingestor/lib/dynamodb"
 	"github.com/engseclabs/trailtool/ingestor/lib/identity"
 	"github.com/engseclabs/trailtool/ingestor/lib/session"
@@ -372,7 +370,7 @@ func linkFromRecord(pk string, rec *types.DynamoDBIdentityLink) *link {
 // tier-2 resolution and anchor continuity work across S3 files: batch A writes
 // the links, batch B (same credentials, different file) reads them here.
 // Returns nil when no client/table is configured.
-func fetchStoredLinks(ctx context.Context, ddbClient *dynamodb.Client, table string, groups []identity.Group) (map[string]*link, error) {
+func fetchStoredLinks(ctx context.Context, ddbClient ddblib.Client, table string, groups []identity.Group) (map[string]*link, error) {
 	if ddbClient == nil || table == "" {
 		return nil, nil
 	}
@@ -675,7 +673,7 @@ func registerLinks(links map[string]*link, g identity.Group, person identity.Per
 // trailtool-identity-links: identity/continuity links and generic creation#
 // records registered during resolution (§2.3 — the C1 mitigation, anchor
 // continuity, and fan-out attribution for later batches).
-func writeIdentityLinks(ctx context.Context, ddbClient *dynamodb.Client, table string, links map[string]*link) error {
+func writeIdentityLinks(ctx context.Context, ddbClient ddblib.Client, table string, links map[string]*link) error {
 	linkTTL := func(eventTime string) int64 {
 		t, err := time.Parse(time.RFC3339, eventTime)
 		if err != nil {
